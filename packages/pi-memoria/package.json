@@ -1,0 +1,34 @@
+{
+  "name": "pi-memoria",
+  "version": "0.3.2",
+  "description": "Global working memory, SQLite FTS5 recall, and complete Pi session search",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/rcsaquino/pi-extensions.git", "directory": "packages/pi-memoria" },
+  "homepage": "https://github.com/rcsaquino/pi-extensions/tree/main/packages/pi-memoria#readme",
+  "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
+  "publishConfig": { "access": "public" },
+  "keywords": ["pi-package", "pi-extension", "memory", "sqlite", "fts5"],
+  "files": ["index.ts", "src", "README.md", "AGENTS.md", "LICENSE"],
+  "pi": { "extensions": ["./index.ts"] },
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "bench": "tsx scripts/benchmark.ts",
+    "verify": "npm run check && npm test"
+  },
+  "dependencies": { "proper-lockfile": "^4.1.2" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@types/node": "^22.19.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "tsx": "^4.20.0",
+    "typebox": "1.3.27",
+    "typescript": "^5.9.3"
+  }
+}

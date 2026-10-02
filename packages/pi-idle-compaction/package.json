@@ -1,0 +1,29 @@
+{
+  "name": "pi-idle-compaction",
+  "version": "0.1.0",
+  "description": "Standalone, fail-closed idle compaction with optional background-work coordination",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/rcsaquino/pi-extensions.git", "directory": "packages/pi-idle-compaction" },
+  "homepage": "https://github.com/rcsaquino/pi-extensions/tree/main/packages/pi-idle-compaction#readme",
+  "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
+  "publishConfig": { "access": "public" },
+  "keywords": ["pi-package"],
+  "files": ["index.ts", "controller.mjs", "background.mjs", "README.md", "AGENTS.md", "LICENSE"],
+  "pi": { "extensions": ["./index.ts"] },
+  "engines": { "node": ">=26.10.0 <27" },
+  "scripts": {
+    "test": "node --import ./scripts/no-network.mjs --test --test-concurrency=1 *.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm test",
+    "link-host": "node scripts/link-host.mjs"
+  },
+  "dependencies": {},
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "^0.99.2 || ^1.0.0" },
+  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "jiti": "2.7.0",
+    "typescript": "5.9.3"
+  }
+}

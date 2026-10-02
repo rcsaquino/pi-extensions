@@ -1,0 +1,27 @@
+{
+  "name": "@rcsaquino/pi-background-tasks",
+  "version": "0.1.0",
+  "description": "Non-blocking same-model Pi workers, with compact task briefs, opt-in context and realistic ETAs",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/rcsaquino/pi-extensions.git", "directory": "packages/pi-background-tasks" },
+  "homepage": "https://github.com/rcsaquino/pi-extensions/tree/main/packages/pi-background-tasks#readme",
+  "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=22.19.0" },
+  "keywords": ["pi-package", "background", "delegation"],
+  "pi": { "extensions": ["./index.ts"] },
+  "files": ["index.ts", "src", "README.md", "AGENTS.md", "LICENSE"],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test --test-concurrency=1 tests/*.test.ts",
+    "verify": "npm run check && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0 <2",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  },
+  "devDependencies": { "@types/node": "^22.19.0", "typescript": "^5.9.0" }
+}

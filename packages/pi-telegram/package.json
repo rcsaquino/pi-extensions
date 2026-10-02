@@ -1,0 +1,47 @@
+{
+  "name": "@rcsaquino/pi-telegram",
+  "version": "0.2.0",
+  "description": "Minimal, final-only Telegram transport for Pi with media and voice.",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/rcsaquino/pi-extensions.git", "directory": "packages/pi-telegram" },
+  "homepage": "https://github.com/rcsaquino/pi-extensions/tree/main/packages/pi-telegram#readme",
+  "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
+  "publishConfig": { "access": "public" },
+  "keywords": [
+    "pi-package",
+    "telegram"
+  ],
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "marked": "^18.0.11"
+  }
+}

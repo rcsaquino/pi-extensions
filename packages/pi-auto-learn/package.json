@@ -1,0 +1,34 @@
+{
+  "name": "pi-auto-learn",
+  "version": "0.1.0",
+  "description": "Background, directory-scoped skill lifecycle learning for Pi",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/rcsaquino/pi-extensions.git", "directory": "packages/pi-auto-learn" },
+  "homepage": "https://github.com/rcsaquino/pi-extensions/tree/main/packages/pi-auto-learn#readme",
+  "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=22.19.0" },
+  "keywords": ["pi-package", "skills"],
+  "pi": { "extensions": ["./index.ts"] },
+  "files": ["index.ts", "src", "README.md", "AGENTS.md", "LICENSE"],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "link-host": "node scripts/link-host.mjs",
+    "test": "node --experimental-strip-types --test --test-concurrency=1 tests/*.test.ts",
+    "verify": "npm run check && npm test",
+    "package": "npm pack --ignore-scripts"
+  },
+  "dependencies": { "yaml": "^2.9.0" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.99.2 || ^1.0.0",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-ai": { "optional": true },
+    "typebox": { "optional": true }
+  },
+  "devDependencies": { "@types/node": "^22.19.0", "typescript": "^5.9.0" }
+}

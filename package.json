@@ -1,0 +1,23 @@
+{
+  "name": "pi-extensions",
+  "version": "0.0.0",
+  "private": true,
+  "description": "My own custom Pi extensions.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rcsaquino/pi-extensions.git"
+  },
+  "homepage": "https://github.com/rcsaquino/pi-extensions#readme",
+  "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "link-host": "node scripts/link-host.mjs",
+    "check:publication": "node --test scripts/publication.test.mjs",
+    "check": "node scripts/workspaces.mjs check && npm run check:publication",
+    "test": "node scripts/workspaces.mjs test && npm run check:publication",
+    "verify": "node scripts/workspaces.mjs verify && npm run check:publication"
+  },
+  "engines": { "node": ">=26.10.0 <27" }
+}

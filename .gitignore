@@ -1,0 +1,37 @@
+# Dependencies, build output and package artifacts
+node_modules/
+dist/
+coverage/
+*.tgz
+*.zip
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# Credentials and local configuration, never source-controlled
+.env
+.env.*
+!.env.example
+!.env.sample
+auth.json
+settings.json
+
+# Extension runtime state, conversation/memory data and test scratch
+.pi/
+.test-tmp/
+.tmp/
+.loader-test-*/
+.adapter-test-*/
+.guard-test-*/
+.npm-cache/
+.bench/
+.cache/
+temp_files/
+artifacts/
+downloads/
+state/
+locks/
+MEMORY.md
+*.sqlite*
+*.db*
+*.jsonl

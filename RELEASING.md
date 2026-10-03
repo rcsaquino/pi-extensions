@@ -12,7 +12,7 @@ Prepared versions are independent and are not claims of publication:
 - `packages/pi-background-tasks`: `@rcsaquino/pi-background-tasks` **0.1.0**.
 - `packages/pi-idle-compaction`: `pi-idle-compaction` **0.1.0**.
 - `packages/pi-latency-analytics`: `pi-latency-analytics` **0.1.0**.
-- `packages/pi-memoria`: `pi-memoria` **0.3.2**, the prepared patch after public 0.3.1.
+- `packages/pi-memoria`: `pi-memoria` **0.3.2**, the patch after public 0.3.1.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.0**.
 
 The scoped identities avoid unrelated unscoped npm packages. The source folder, Pi entry point, tool/command names, and private runtime paths do not change with an npm scope. All packages declare public publication access; the root remains private.

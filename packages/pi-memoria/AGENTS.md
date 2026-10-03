@@ -61,7 +61,7 @@ Add meaningful regression tests for cap boundaries, races, durable retrieval, pa
 
 ## Releasing
 
-Follow the [monorepo release process](https://github.com/rcsaquino/pi-extensions/blob/main/RELEASING.md) only after explicit approval. Version 0.3.2 is prepared as the next patch after the public 0.3.1 release; it is not published by editing this file.
+Follow the [monorepo release process](https://github.com/rcsaquino/pi-extensions/blob/main/RELEASING.md) only after explicit approval. Version 0.3.2 is the patch after the public 0.3.1 release; it is not published by editing this file.
 
 - Verify this package and the root suite, inspect `npm pack --dry-run --ignore-scripts --workspaces=false`, and check the chosen version is not already on npm.
 - Use package-specific tags such as `pi-memoria-v0.3.2`, not a shared root `v0.3.2` tag. Commit, push, tag, release creation, and npm publication remain separately authorized actions; pushing a `pi-memoria-v<version>` tag is the publication authorization for the workflow.

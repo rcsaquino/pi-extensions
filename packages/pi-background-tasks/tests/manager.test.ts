@@ -59,11 +59,12 @@ test('result pagination reports usage only once and accounts nothing during sett
 test('completion notification waits for durable output and is queued only once', async t => {
   const f = await fixture(t); f.record.status = 'completed'; f.record.notification = 'pending';
   const job = { record: f.record, settling: true }; f.manager.jobs.set(f.record.id, job);
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 10)); assert.equal(f.notices.length, 0);
+  const flush = () => (f.manager as unknown as { flushNotifications(): Promise<void> }).flushNotifications();
+  f.manager.scheduleNotifications(); await flush(); assert.equal(f.notices.length, 0);
   await f.manager.store!.write(f.record, 'Verified output'); job.settling = false;
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20));
+  f.manager.scheduleNotifications(); await flush();
   assert.equal(f.notices.length, 1); assert.equal(f.record.notification, 'queued');
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 10)); assert.equal(f.notices.length, 1);
+  f.manager.scheduleNotifications(); await flush(); assert.equal(f.notices.length, 1);
 });
 test('automatic-routing switch is persistent, and finished/unknown tasks cannot be revised', async t => {
   const f = await fixture(t); f.manager.setAuto(false); assert.equal(f.manager.auto, false); assert.deepEqual(f.entries.at(-1), { enabled: false });

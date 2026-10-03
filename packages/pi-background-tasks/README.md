@@ -92,7 +92,9 @@ Default capacity is two workers, with one writer per canonical workspace. Cooper
 - Quit, reload, session replacement, and process termination stop workers. Stuck tools receive bounded cleanup; writer leases are not prematurely released.
 - Crash recovery marks uncertain work interrupted; it does not automatically replay effects or delivery.
 - Tasks do **not** survive host termination. Review partial effects before retrying.
-- Result failures and length stops are failures, not fabricated completion. Final worker claims still require main-chat verification.
+- Completion requires a supported `stop` response with nonblank visible assistant text and no unfinished tool calls. Empty, thinking-only, malformed, deferred, length and unfinished-tool terminal responses are not successful reports. Final worker claims still require main-chat verification.
+- Normally settled failures, cancellations and interruptions save a standalone deterministic fallback. Failed partial prose is labeled unverified. The fallback records safe reasons/counters and any known last-tool outcome, but does **not** verify work, artifacts, tests or effects. A tool returning successfully does not prove completion.
+- Report recovery makes no extra model calls and never replays original tasks or tool effects. Restored interrupted v1 records receive an honest fallback when needed, without inventing their lost terminal reason.
 - Worker model usage is accounted when a final result is retrieved, once only. Model/tool concurrency incurs ordinary cost and can contend with the foreground.
 
 ## Storage and options
@@ -107,7 +109,11 @@ Defaults:
 └── locks/<canonical-cwd-hash>.json
 ```
 
-Directories use `0700`; metadata/results use `0600`. Stored output is final visible text, not private reasoning or full worker transcripts. It may still contain sensitive task material; review it before sharing. Result reads and storage traversal reject symlinks.
+Directories use `0700`; metadata/results use `0600`. Stored output is a valid final visible worker report or a deterministic fallback, optionally with explicitly unverified partial visible prose. It may still contain sensitive task material; review it before sharing. Result reads and storage traversal reject symlinks.
+
+Optional v1 metadata records `reportSource` (`worker` or `fallback`) and allowlisted `terminalDiagnostics`: fixed stop/category/phase enums, validated visible-text counts, tool-call presence, an observed last-tool outcome and lease-cleanup uncertainty. Unknown provenance stays unknown; finalizing does not replace the originating failure phase. Tool identities use a closed known-name vocabulary; other extension/MCP identities are recorded as `other`. No raw errors, provider diagnostic arrays/payloads/headers, credentials, arguments/results, private reasoning, signatures or worker transcripts are copied into diagnostic metadata. Valid model usage counters are preserved without counting reasoning twice.
+
+Output is saved before completion notification reservation. If output/metadata storage fails, automatic completion notification is withheld and explicit result retrieval can return a bounded in-memory fallback with `reportDurable: false` and no saved output path. Usage is then reported once only within the current process, not durably across a restart. Read/recovery faults are explicit; this is not a guarantee of survival when both storage and the process fail, nor of zero delivery latency. An old completed record with a missing/blank result cannot substantiate completion and restores as failed with a fallback.
 
 - `--background-dir <path>`: choose private state/result storage.
 - `--background-max-workers <N>`: default 2; allowed range 1–8.

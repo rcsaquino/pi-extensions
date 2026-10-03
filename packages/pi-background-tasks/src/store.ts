@@ -3,7 +3,26 @@ import { constants } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import type { RecordData } from './types.ts';
-import { isActive } from './types.ts';
+import { addUsage, emptyUsage, isActive } from './types.ts';
+import { buildSettlementReport, safeCounter, safeDiagnostics, safeStoredError, safeToolName } from './report.ts';
+
+function safeRecord(record: RecordData): RecordData {
+  const usage = emptyUsage(); addUsage(usage, record.usage);
+  const safe: RecordData = {
+    version: record.version, id: record.id, title: record.title, sessionId: record.sessionId, cwd: record.cwd,
+    provider: record.provider, model: record.model, thinking: record.thinking, status: record.status, access: record.access,
+    ...(record.contextMode !== undefined ? { contextMode: record.contextMode } : {}),
+    startedAt: safeCounter(record.startedAt), ...(record.finishedAt !== undefined ? { finishedAt: safeCounter(record.finishedAt) } : {}),
+    etaSeconds: safeCounter(record.etaSeconds), etaMaxSeconds: safeCounter(record.etaMaxSeconds), estimateReason: record.estimateReason,
+    lastActivityAt: safeCounter(record.lastActivityAt), lastTool: safeToolName(record.lastTool),
+    toolCalls: safeCounter(record.toolCalls), turns: safeCounter(record.turns), usage, usageReported: record.usageReported === true,
+    notification: ['pending', 'queued', 'read'].includes(record.notification) ? record.notification : 'read',
+    overrunNotified: record.overrunNotified === true, error: safeStoredError(record.error),
+    ...(record.reportSource === 'worker' || record.reportSource === 'fallback' ? { reportSource: record.reportSource } : {}),
+  };
+  if (record.terminalDiagnostics !== undefined) safe.terminalDiagnostics = safeDiagnostics(record.terminalDiagnostics);
+  return safe;
+}
 
 export const hash = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 24);
 export const validId = (id: string): boolean => /^bg-[a-f0-9]{12}$/.test(id);
@@ -32,6 +51,8 @@ export class Store {
   readonly root: string;
   readonly recordsDir: string;
   readonly sessionId: string;
+  /** Bounded report-only recovery if storage is unavailable, not durable task continuation. */
+  readonly recoveryReports = new Map<string, string>();
   constructor(root: string, sessionId: string) {
     this.root = resolve(root); this.sessionId = sessionId;
     this.recordsDir = join(this.root, 'sessions', hash(sessionId));
@@ -43,7 +64,7 @@ export class Store {
   }
   async write(record: RecordData, output?: string): Promise<void> {
     if (output !== undefined) await atomicPrivateWrite(this.path(record.id, 'md'), output);
-    await atomicPrivateWrite(this.path(record.id, 'json'), JSON.stringify(record, null, 2) + '\n');
+    await atomicPrivateWrite(this.path(record.id, 'json'), JSON.stringify(safeRecord(record), null, 2) + '\n');
   }
   async output(id: string): Promise<string> {
     const handle = await fs.open(this.path(id, 'md'), constants.O_RDONLY | noFollow);
@@ -59,10 +80,32 @@ export class Store {
       if (record.version !== 1 || record.sessionId !== this.sessionId || `${record.id}.json` !== file ||
           !['running', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted'].includes(record.status) ||
           (record.contextMode !== undefined && !['brief', 'selected', 'full'].includes(record.contextMode))) throw new Error('Invalid background task metadata.');
-      if (isActive(record.status)) {
+      record = safeRecord(record);
+      const interrupted = isActive(record.status);
+      if (interrupted) {
         record.status = 'interrupted'; record.finishedAt = Date.now(); record.notification = 'pending';
         record.error = 'Pi stopped or reloaded before this task settled. Effects may be partial. It was NOT replayed.';
-        await this.write(record);
+        record.terminalDiagnostics = safeDiagnostics({ ...record.terminalDiagnostics, stopReason: 'missing', category: 'interrupted' });
+      }
+      let output: string | undefined;
+      let unreadable = false;
+      try { output = await this.output(record.id); }
+      catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'ELOOP') throw e; // Never treat an unsafe symlink as a result.
+        unreadable = code !== 'ENOENT';
+      }
+      if (interrupted || !output?.trim()) {
+        if (!interrupted && (record.status === 'completed' || !record.terminalDiagnostics)) {
+          if (record.status === 'completed') record.status = 'failed';
+          record.terminalDiagnostics = safeDiagnostics({ stopReason: 'missing', category: 'missing_report' });
+        }
+        record.reportSource = 'fallback';
+        const report = buildSettlementReport(record);
+        try {
+          if (unreadable) throw new Error('Result storage unavailable.');
+          await this.write(record, report.text);
+        } catch { this.recoveryReports.set(record.id, buildSettlementReport(record, '', true).text); }
       }
       records.push(record);
     }

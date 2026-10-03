@@ -4,6 +4,21 @@ import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 
 export type Status = 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type ContextMode = 'brief' | 'selected' | 'full';
+export type WorkerPhase = 'preparing' | 'compacting' | 'requesting' | 'tool' | 'finalizing' | 'unknown';
+export type TerminalCategory = 'provider_or_stream_error' | 'request_preparation_error' | 'compaction_error'
+  | 'output_limit' | 'deferred_response' | 'unfinished_tool_turn' | 'empty_report' | 'missing_report'
+  | 'unsupported_terminal' | 'cancelled' | 'runtime_limit' | 'turn_limit' | 'shutdown' | 'interrupted'
+  | 'lease_cleanup_error' | 'unknown' | 'complete';
+export interface TerminalDiagnostics {
+  stopReason: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted' | 'deferred' | 'pending' | 'missing' | 'unknown';
+  category: TerminalCategory;
+  lastPhase: WorkerPhase;
+  failurePhase?: WorkerPhase;
+  visibleTextCharacters: number;
+  hadToolCalls: boolean;
+  lastToolOutcome?: 'completed' | 'error' | 'aborted';
+  leaseCleanupFailed?: boolean;
+}
 export interface Dispatch {
   task: string;
   title: string;
@@ -48,6 +63,9 @@ export interface RecordData {
   notification: 'pending' | 'queued' | 'read';
   overrunNotified: boolean;
   error?: string;
+  /** Allowlisted terminal summary only. Absent on old v1 records. */
+  terminalDiagnostics?: TerminalDiagnostics;
+  reportSource?: 'worker' | 'fallback';
 }
 export interface Job {
   record: RecordData;
@@ -58,6 +76,20 @@ export interface Job {
   done?: Promise<void>;
   settling?: boolean;
   release?: () => Promise<void>;
+  /** Ephemeral observation, never a transcript or raw error. */
+  progress?: {
+    lastPhase: WorkerPhase;
+    failurePhase?: WorkerPhase;
+    failureCategory?: TerminalCategory;
+    lastToolCallId?: string;
+    lastToolOutcome?: TerminalDiagnostics['lastToolOutcome'];
+    pendingTools: Set<string>;
+    abortedTools: Set<string>;
+  };
+  abortCategory?: 'cancelled' | 'runtime_limit' | 'turn_limit' | 'shutdown';
+  /** Bounded explicit-retrieval fallback when storage is unavailable. Not a durable result. */
+  memoryReport?: string;
+  storageFailed?: boolean;
   /** Ephemeral dispatch-captured transport capability. Never persisted or exposed to workers. */
   noticeRouter?: (noticeId: string, content: string) => boolean;
 }
@@ -72,8 +104,10 @@ export function emptyUsage(): Usage {
 }
 export function addUsage(total: Usage, next?: Usage): void {
   if (!next) return;
-  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'] as const) total[key] += next[key] || 0;
-  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total'] as const) total.cost[key] += next.cost?.[key] || 0;
-  if (next.reasoning) total.reasoning = (total.reasoning || 0) + next.reasoning;
-  if (next.cacheWrite1h) total.cacheWrite1h = (total.cacheWrite1h || 0) + next.cacheWrite1h;
+  const tokens = (value: unknown): number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  const cost = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'] as const) total[key] = tokens(total[key] + tokens(next[key]));
+  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total'] as const) total.cost[key] = cost(total.cost[key] + cost(next.cost?.[key]));
+  if (tokens(next.reasoning)) total.reasoning = tokens((total.reasoning || 0) + tokens(next.reasoning));
+  if (tokens(next.cacheWrite1h)) total.cacheWrite1h = tokens((total.cacheWrite1h || 0) + tokens(next.cacheWrite1h));
 }

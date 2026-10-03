@@ -23,7 +23,8 @@ Install dependencies only when needed. The package declares Node 22.19+ and Pi 1
 - `src/policy.ts`: ETA/context validation, routing, coherent history, tool/path guards, and worker instructions.
 - `src/manager.ts`: admission, capacity, leases, cancellation, notifications, ETA, and usage/result bookkeeping.
 - `src/worker.ts`: independent agent, inherited model/tool behavior, bounded execution, and compaction.
-- `src/store.ts`: private atomic task metadata/results and shared writer leases.
+- `src/store.ts`: private atomic task metadata/results, report-only interruption recovery, and shared writer leases.
+- `src/report.ts`: pure terminal validation, closed diagnostic sanitization and deterministic settlement reports.
 - `src/types.ts`: dispatch, profile, runtime, and persisted-record contracts.
 
 ## Behavioral invariants
@@ -38,7 +39,9 @@ Install dependencies only when needed. The package declares Node 22.19+ and Pi 1
 - Read-only workers cannot use mutating/unclassified tools. Hidden/model-only tools stay excluded; nested calls cannot recursively spawn workers, manage another job, or hijack Telegram delivery.
 - ETA updates are remaining duration plus elapsed time, with reasons and bounded uncertainty. They do not extend the runtime safety timeout. No invented percentages/deadlines.
 - Persist output before queuing completion. Deliver through the main chat and do not blindly replay uncertain notifications after a crash.
-- Store visible final text only, never reasoning, full transcripts, auth objects, or raw provider errors. Reject unsafe storage/result symlinks and traversal. Final text itself still needs privacy review.
+- Accept worker prose only after a nonblank visible `stop` response without unfinished tool calls. Persist standalone deterministic fallbacks for other settlements; label failed partial prose unverified. No finalizer model calls or task/tool replay.
+- Persist only closed diagnostic enums, validated counters/timestamps and known tool identities (`other` for unlisted identities). Preserve observed failure provenance, not guessed provider/preparation categories. Never copy reasoning, signatures, full transcripts, arguments/results, auth, raw errors or provider diagnostics. Visible prose itself still needs privacy review.
+- Reject unsafe storage/result symlinks and traversal. A storage-failure fallback is bounded and process-local, explicitly non-durable; withhold completion reservation and retain once-only retrieval usage within that process.
 - Report usage exactly once when results are fetched, including nested usage without double-counting reasoning. Pagination and notification delivery must not duplicate it.
 - Failures, length stops, capacity conflicts, and interrupted state remain explicit; never fabricate successful completion or replay uncertain effects.
 
@@ -48,6 +51,7 @@ Install dependencies only when needed. The package declares Node 22.19+ and Pi 1
 - `integration.test.ts`: actual Pi session responsiveness, context modes, permission forwarding, cancellation, model changes, usage, and shutdown.
 - `manager.test.ts`: ETA revisions, overdue notification, cancellation, durable completion, and automatic routing state.
 - `store.test.ts`: permissions, atomic output, context metadata/legacy records, corruption, cross-session writer leases, and interruption recovery.
+- `reporting.test.ts`, `restore-reporting.test.ts`: strict terminal reporting, safe failure provenance, standalone fallbacks, secret exclusion, limits/shutdown/lease uncertainty, storage faults, legacy restoration, notification durability and once-only paginated retrieval.
 - `compaction.test.ts`: same-profile compaction and coherent tool-call/result retention.
 - `loader.test.ts`: distributable entry point without starting runtime resources.
 

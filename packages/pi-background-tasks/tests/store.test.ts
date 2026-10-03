@@ -38,6 +38,9 @@ test('crashed tasks become interrupted and are never replayed', async t => {
   const { store } = await fixture(t); await store.write(data());
   const restored = await store.restore(); assert.equal(restored[0]!.status, 'interrupted');
   assert.match(restored[0]!.error!, /NOT replayed/); assert.equal(restored[0]!.notification, 'pending');
+  assert.equal(restored[0]!.reportSource, 'fallback'); assert.equal(restored[0]!.terminalDiagnostics!.category, 'interrupted');
+  const report = await store.output(restored[0]!.id);
+  assert.match(report, /Status: interrupted/); assert.match(report, /does NOT verify/); assert.match(report, /No automatic replay/);
   assert.equal((await store.restore())[0]!.status, 'interrupted');
 });
 test('task paths cannot escape storage', async t => {

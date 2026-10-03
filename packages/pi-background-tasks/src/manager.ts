@@ -7,6 +7,34 @@ import { Store } from './store.ts';
 import type { Dispatch, Job, RecordData } from './types.ts';
 import { emptyUsage, isActive } from './types.ts';
 import { assistantText, createWorker, finalAssistant } from './worker.ts';
+import { buildSettlementReport, safeDiagnostics, safeReason, terminalCategory } from './report.ts';
+import type { TerminalView } from './report.ts';
+import type { TerminalCategory } from './types.ts';
+
+function abortWorker(job: Job, category: NonNullable<Job['abortCategory']>): void {
+  job.abortCategory ??= category;
+  if (job.progress) job.progress.failurePhase ??= job.progress.lastPhase;
+  job.controller?.abort(); job.agent?.abort();
+}
+function terminalView(job: Job): TerminalView | undefined {
+  // Full-mode inherited assistant history is not a final response from this worker.
+  if (!job.agent || !job.record.turns) return undefined;
+  const final = finalAssistant(job.agent);
+  if (!final) return undefined;
+  const content = final.content;
+  return { stopReason: final.stopReason, text: assistantText(final),
+    hadToolCalls: (Array.isArray(content) && content.some(c => c?.type === 'toolCall')) || !!job.progress?.pendingTools.size,
+    malformed: !Array.isArray(content) || content.some(c => !c || !['text', 'thinking', 'toolCall'].includes(c.type) || (c.type === 'text' && typeof c.text !== 'string')) };
+}
+function captureDiagnostics(job: Job, category: TerminalCategory, view = terminalView(job)): void {
+  const p = job.progress;
+  job.record.terminalDiagnostics = safeDiagnostics({
+    stopReason: view?.stopReason ?? 'missing', category, lastPhase: p?.lastPhase ?? 'unknown',
+    ...(category !== 'complete' ? { failurePhase: p?.failurePhase ?? p?.lastPhase ?? 'unknown' } : {}),
+    visibleTextCharacters: view?.text.length ?? 0, hadToolCalls: view?.hadToolCalls ?? !!p?.pendingTools.size,
+    lastToolOutcome: p?.lastToolOutcome,
+  });
+}
 
 export class BackgroundManager {
   readonly jobs = new Map<string, Job>();
@@ -34,7 +62,11 @@ export class BackgroundManager {
     const root = typeof configured === 'string' && configured.trim() ? resolve(ctx.cwd, configured) : join(ctx.cwd, 'temp_files', 'pi-background-tasks');
     this.store = new Store(root, ctx.sessionManager.getSessionId());
     await this.store.init();
-    for (const record of await this.store.restore()) this.jobs.set(record.id, { record });
+    for (const record of await this.store.restore()) {
+      const memoryReport = this.store.recoveryReports.get(record.id);
+      this.jobs.set(record.id, { record, ...(memoryReport ? { memoryReport, storageFailed: true } : {}) });
+    }
+    if (this.store.recoveryReports.size) ctx.ui.notify('Some restored background reports could not be saved. Retrieve their in-memory fallback explicitly; check runtime storage.', 'error');
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === 'custom' && entry.customType === 'background-auto' && typeof (entry.data as { enabled?: unknown })?.enabled === 'boolean') {
         this.auto = (entry.data as { enabled: boolean }).enabled;
@@ -100,47 +132,59 @@ export class BackgroundManager {
   }
   private async run(job: Job, task: string): Promise<void> {
     let output = '';
+    let category: TerminalCategory = 'unknown';
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       if (job.controller!.signal.aborted || this.closed) throw new Error('Cancelled before worker started.');
       const minutes = Number(this.pi.getFlag('background-timeout-minutes') ?? '240');
       timeout = setTimeout(() => {
-        job.record.error = 'Background task reached the configured runtime limit; effects may be partial.';
-        job.controller!.abort(); job.agent!.abort();
+        abortWorker(job, 'runtime_limit');
       }, (Number.isFinite(minutes) && minutes > 0 ? minutes : 240) * 60_000); timeout.unref();
       await job.agent!.prompt(`Delegated task ${job.record.id}:\n\n${task}`);
-      const final = finalAssistant(job.agent!); output = assistantText(final);
-      if (job.controller!.signal.aborted || final?.stopReason === 'aborted') {
-        job.record.status = job.record.error ? 'failed' : 'cancelled';
-      } else if (!final || final.stopReason === 'error' || final.stopReason === 'length' || final.stopReason === 'deferred' || final.content.some(c => c.type === 'toolCall')) {
-        job.record.status = 'failed';
-        // Provider errors can contain payloads or credentials. Do not echo their raw error strings into chat/storage.
-        job.record.error = 'Worker did not produce a complete final response. Output may be partial; check the task and retry only after reviewing possible effects.';
-      } else if (job.record.turns >= 200) {
-        job.record.status = 'failed'; job.record.error = 'Worker reached the 200-turn safety limit.';
-      } else job.record.status = 'completed';
+      const view = terminalView(job); output = view?.text ?? '';
+      category = job.abortCategory ?? (job.record.turns >= 200 ? 'turn_limit'
+        : job.controller!.signal.aborted ? 'cancelled' : terminalCategory(view));
+      if (category === 'unknown' || category === 'missing_report') category = job.progress?.failureCategory ?? category;
+      if (job.record.status !== 'interrupted') job.record.status = category === 'complete' ? 'completed'
+        : category === 'cancelled' || category === 'shutdown' ? 'cancelled' : 'failed';
+      else category = job.abortCategory ?? 'interrupted';
+      if (category !== 'complete') job.record.error = safeReason(category);
     } catch {
-      job.record.status = job.controller!.signal.aborted ? 'cancelled' : 'failed';
-      job.record.error ??= this.closed ? 'Stopped because Pi is shutting down or reloading; effects may be partial.' : 'Worker failed. Effects may be partial; no automatic replay was performed.';
+      category = job.abortCategory ?? (this.closed ? 'shutdown' : job.controller!.signal.aborted ? 'cancelled' : job.progress?.failureCategory ?? 'unknown');
+      if (job.record.status !== 'interrupted') job.record.status = category === 'cancelled' || category === 'shutdown' ? 'cancelled' : 'failed';
+      job.record.error = safeReason(category);
     } finally {
       job.settling = true;
       if (timeout) clearTimeout(timeout);
       job.record.finishedAt = Date.now(); job.record.notification = 'pending';
+      captureDiagnostics(job, category);
+      if (job.progress) job.progress.lastPhase = 'finalizing';
       // Do not release ownership until all cooperating tool calls have settled.
-      try { await job.release?.(); job.release = undefined; } catch { job.record.error ??= 'Writer lease cleanup failed; inspect runtime storage before starting another writer.'; }
-      const saved = structuredClone(job.record);
+      try { await job.release?.(); job.release = undefined; } catch {
+        if (job.record.status === 'completed') {
+          job.record.status = 'failed'; category = 'lease_cleanup_error'; captureDiagnostics(job, category);
+        }
+        job.record.terminalDiagnostics!.leaseCleanupFailed = true;
+        job.record.error = safeReason('lease_cleanup_error');
+      }
+      const report = buildSettlementReport(job.record, output);
+      job.record.reportSource = report.source;
       await this.writes.catch(() => {});
-      try { await this.store!.write(saved, output || job.record.error || '(No text result)'); }
+      try { await this.store!.write(structuredClone(job.record), report.text); }
       catch {
-        job.record.status = 'failed'; job.record.error = 'Task result could not be saved. Review workspace effects before retrying.';
-        if (!this.closed) this.ctx?.ui.notify('Background task result could not be saved. Check runtime storage.', 'error');
+        if (job.record.status === 'completed') job.record.status = 'failed';
+        job.record.error = 'Task result could not be saved. Review workspace effects before retrying.';
+        job.record.reportSource = 'fallback'; job.storageFailed = true;
+        // No transcripts or unbounded prose retained for storage-failure recovery.
+        job.memoryReport = buildSettlementReport(job.record, '', true).text;
+        if (!this.closed) this.ctx?.ui.notify('Background task result could not be saved. Retrieve its in-memory fallback explicitly; check runtime storage.', 'error');
       }
       job.settling = false;
       if (!this.closed) {
-        this.pi.appendEntry('background-task', { id: saved.id, status: saved.status, finishedAt: saved.finishedAt });
+        this.pi.appendEntry('background-task', { id: job.record.id, status: job.record.status, finishedAt: job.record.finishedAt });
         this.render(); this.emitActivity(); this.scheduleNotifications();
       }
-      job.agent = undefined; job.ctx = undefined;
+      job.agent = undefined; job.ctx = undefined; job.progress = undefined;
       // Keep rootCallId so an uncooperative late nested tool is still recognized and blocked.
     }
   }
@@ -150,7 +194,7 @@ export class BackgroundManager {
   async cancel(id: string): Promise<RecordData> {
     this.assertOpen(); const job = this.get(id);
     if (!isActive(job.record.status)) return structuredClone(job.record);
-    job.record.status = 'cancelling'; job.controller!.abort(); job.agent?.abort();
+    job.record.status = 'cancelling'; abortWorker(job, 'cancelled');
     await this.persist(job); this.render();
     return structuredClone(job.record);
   }
@@ -179,17 +223,28 @@ export class BackgroundManager {
     this.assertOpen(); const job = this.get(id);
     if (job.settling || isActive(job.record.status)) return { content: [{ type: 'text', text: `${statusLine(job.record)}${job.settling ? '\nFinalizing saved output. Do not report completion yet.' : ''}` }], details: structuredClone(job.record) };
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 24000) throw new Error('Invalid output page.');
-    const full = await this.store!.output(id).catch((e: NodeJS.ErrnoException) => {
-      if (e.code !== 'ENOENT') throw e;
-      return job.record.error ?? '(No saved result)';
+    const unavailable = (): string => {
+      if (job.record.status === 'completed') job.record.status = 'failed';
+      job.record.error = safeReason('missing_report'); job.record.reportSource = 'fallback';
+      const previous = job.record.terminalDiagnostics;
+      job.record.terminalDiagnostics = previous && previous.category !== 'complete' ? previous
+        : safeDiagnostics({ ...previous, category: 'missing_report', stopReason: previous?.stopReason ?? 'missing' });
+      job.storageFailed = true;
+      return job.memoryReport = buildSettlementReport(job.record, '', true).text;
+    };
+    let full = job.memoryReport ?? await this.store!.output(id).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ELOOP') throw e; // Unsafe result symlinks still fail closed.
+      return unavailable();
     });
+    if (!full.trim()) full = unavailable();
     const usage = job.record.usageReported ? undefined : structuredClone(job.record.usage);
     const old = { usageReported: job.record.usageReported, notification: job.record.notification };
     job.record.usageReported = true; job.record.notification = 'read';
-    try { await this.persist(job); } catch (e) { Object.assign(job.record, old); throw e; }
+    // When storage failed, accounting is exactly once only within this process.
+    if (!job.storageFailed) try { await this.persist(job); } catch (e) { Object.assign(job.record, old); throw e; }
     return {
-      content: [{ type: 'text', text: `${statusLine(job.record)}${job.record.error ? `\n${job.record.error}` : ''}\n\n${full.slice(offset, offset + limit)}${full.length > offset + limit ? `\n\n[Truncated. Read next page with offset ${offset + limit}, or local file ${this.store!.path(id, 'md')}.]` : ''}` }],
-      details: { task: structuredClone(job.record), totalCharacters: full.length, nextOffset: full.length > offset + limit ? offset + limit : null, outputPath: this.store!.path(id, 'md') },
+      content: [{ type: 'text', text: `${statusLine(job.record)}${job.record.error ? `\n${job.record.error}` : ''}\n\n${full.slice(offset, offset + limit)}${full.length > offset + limit ? `\n\n[Truncated. Read next page with offset ${offset + limit}${job.storageFailed ? '' : `, or local file ${this.store!.path(id, 'md')}`}.]` : ''}` }],
+      details: { task: structuredClone(job.record), totalCharacters: full.length, nextOffset: full.length > offset + limit ? offset + limit : null, outputPath: job.storageFailed ? null : this.store!.path(id, 'md'), reportDurable: !job.storageFailed },
       ...(usage ? { usage } : {}),
     };
   }
@@ -217,7 +272,7 @@ export class BackgroundManager {
     this.flushingNotifications = true;
     try {
       for (const job of this.jobs.values()) {
-        if (job.settling || job.record.notification !== 'pending' || isActive(job.record.status)) continue;
+        if (job.settling || job.storageFailed || job.record.notification !== 'pending' || isActive(job.record.status)) continue;
         // Save the delivery reservation BEFORE handing it to another extension. A failed
         // write must not duplicate a send, and uncertain delivery is never blindly replayed.
         job.record.notification = 'queued';
@@ -272,7 +327,7 @@ export class BackgroundManager {
     this.notices = [];
     if (this.timer) clearInterval(this.timer);
     const active = [...this.jobs.values()].filter(j => isActive(j.record.status));
-    for (const job of active) { job.record.status = 'cancelling'; job.controller?.abort(); job.agent?.abort(); }
+    for (const job of active) { job.record.status = 'cancelling'; abortWorker(job, 'shutdown'); }
     // Cooperative cancellation is allowed 1.5 seconds; don't deadlock shutdown on an uncooperative tool.
     let stopTimer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([Promise.all([...this.jobs.values()].map(j => j.done)), new Promise<void>(r => { stopTimer = setTimeout(r, 1500); })]);
@@ -281,7 +336,11 @@ export class BackgroundManager {
       job.record.status = 'interrupted'; job.record.finishedAt = Date.now(); job.record.notification = 'pending';
       job.record.error = 'Runtime stopped before cancellation settled. Tool effects may be partial. No task replay was attempted.';
       // Keep the lease: an uncooperative tool may still be writing. A future process can clear a dead-PID lease.
-      await this.persist(job).catch(() => {});
+      captureDiagnostics(job, 'shutdown');
+      const report = buildSettlementReport(job.record); job.record.reportSource = 'fallback';
+      await this.writes.catch(() => {});
+      try { await this.store!.write(structuredClone(job.record), report.text); }
+      catch { job.storageFailed = true; job.memoryReport = buildSettlementReport(job.record, '', true).text; }
     }
     await this.writes.catch(() => {});
   }

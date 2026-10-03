@@ -100,6 +100,12 @@ jobs:
               --workspaces=false --no-package-lock --no-fund --no-audit
           done
 
+      - name: Install the development Pi host and link peers
+        run: |
+          set -euo pipefail
+          npm install -g @earendil-works/pi-coding-agent@1.0.0 --ignore-scripts --no-fund --no-audit
+          npm run link-host
+
       - name: Verify the full suite
         run: npm run verify
 

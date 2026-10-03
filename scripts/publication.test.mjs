@@ -182,6 +182,8 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /package-manager-cache: false/);
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /@earendil-works\/pi-coding-agent@1\.0\.0/);
+  assert.match(workflow, /npm run link-host/);
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /working-directory: packages\/pi-memoria/);
   assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);

@@ -18,7 +18,7 @@ pi-memoria gives Pi one memory shared across every project: instructions that mu
 ## Requirements
 
 - **Node.js 22.19+** (uses `node:sqlite`; earlier baselines 22.19/24.20, maintained suite 26.10.0).
-- A Node-based **Pi** host. The pinned development baseline is 0.87.1; packed-package loading is also checked on Pi 1.0.0. Standalone/Bun builds are not validated with `node:sqlite`.
+- A Node-based **Pi** host. The pinned development baseline is 1.0.0, the maintained Pi host. Standalone/Bun builds are not validated with `node:sqlite`.
 - **ripgrep (`rg`) on PATH** for session search.
 
 ## Installation

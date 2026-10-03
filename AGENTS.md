@@ -13,7 +13,7 @@ This is a private npm workspace containing six independent Pi extension packages
 - `scripts/workspaces.mjs`: sequential shared verification runner.
 - `scripts/link-host.mjs`: development-only missing/broken host dependency links.
 - `scripts/publication.test.mjs`: offline release-metadata, included-file, import-closure, documentation, and publication-workflow regression checks.
-- `.github/workflows/publish-pi-memoria.yml`: tag-driven npm publication for `pi-memoria` through a trusted publisher (OIDC); inert until the npm package settings are configured and a `pi-memoria-v<version>` tag is pushed.
+- `.github/workflows/publish-pi-memoria.yml`: tag-driven staging of `pi-memoria` through a stage-only trusted publisher (OIDC), followed by maintainer 2FA approval on npm; inert until the npm package settings are configured and a `pi-memoria-v<version>` tag is pushed.
 - `RELEASING.md`: package-specific release preparation and manual publication, plus the one automated `pi-memoria` path.
 
 Keep package versions, APIs, dependencies, and installability independent unless consolidation is explicitly requested. Do not modify another package simply because it shares this repository.
@@ -84,7 +84,7 @@ Source edits do not authorize package registration, enabling another extension, 
 - Keep the requested scope small and preserve unrelated user work.
 - Keep README claims and AGENTS instructions consistent with actual scripts, manifests, tool schemas, and implementation.
 - Changes to contact/support details require the user's direction; do not invent an email address or promise an unconfigured support channel.
-- Do not commit, push, tag, bump versions, create releases, publish packages, or alter CI/trusted publishing without explicit approval. Pushing a `pi-memoria-v<version>` tag authorizes npm publication by the workflow.
-- Follow [RELEASING.md](RELEASING.md) after explicit approval. Only `pi-memoria` has automated publication (`.github/workflows/publish-pi-memoria.yml`, on `pi-memoria-v*` tags after full verification); every other package is manual, and publishing a GitHub release does not itself publish npm packages.
+- Do not commit, push, tag, bump versions, create releases, publish packages, or alter CI/trusted publishing without explicit approval. Pushing a `pi-memoria-v<version>` tag authorizes the workflow to stage the release; a maintainer approves it with npm 2FA.
+- Follow [RELEASING.md](RELEASING.md) after explicit approval. Only `pi-memoria` has an automated path, which stages the release on `pi-memoria-v*` tags after full verification (`.github/workflows/publish-pi-memoria.yml`); every other package is manual, and publishing a GitHub release does not itself publish npm packages.
 - Use the manifest's exact npm name and package-specific tags. Keep source/runtime paths unscoped when changing only a package's npm identity.
 - Do not reuse memoria's old standalone trusted-publisher identity or claim npm write access was verified by a dry run.

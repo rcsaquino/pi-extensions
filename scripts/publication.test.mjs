@@ -170,7 +170,7 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   const path = join(root, '.github/workflows/publish-pi-memoria.yml');
   assert.ok(existsSync(path), 'Missing pi-memoria publication workflow');
   const workflow = read(path);
-  assert.match(workflow, /^name: Publish pi-memoria$/m);
+  assert.match(workflow, /^name: Stage pi-memoria release$/m);
   assert.match(workflow, /push:\n\s+tags:\n\s+- 'pi-memoria-v\*'/);
   assert.match(workflow, /permissions:\n\s+contents: read\n\s+id-token: write/);
   assert.doesNotMatch(workflow, /pull_request|workflow_dispatch|workflow_call/);
@@ -184,7 +184,9 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /working-directory: packages\/pi-memoria/);
-  assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);
+  assert.match(workflow, /npm stage publish --ignore-scripts --access public --workspaces=false/);
+  assert.doesNotMatch(workflow, /(^|\s)npm publish\b/, 'Workflow must be stage-only and never direct-publish');
+  assert.match(workflow, /npm stage approve/);
   for (const other of ['pi-telegram', 'pi-auto-learn', 'pi-background-tasks', 'pi-idle-compaction', 'pi-latency-analytics']) {
     assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
   }

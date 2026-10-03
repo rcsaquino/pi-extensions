@@ -1,18 +1,16 @@
-# Stages pi-memoria for npm approval when a pi-memoria-v<version> tag is pushed.
+# Publishes pi-memoria to npm when a pi-memoria-v<version> tag is pushed.
 #
 # One-time npm setup (npmjs.com -> pi-memoria -> Settings -> Trusted publishing):
 #   Organization or user: rcsaquino
 #   Repository:           pi-extensions
 #   Workflow filename:    publish-pi-memoria.yml
 #   Environment name:     (leave blank unless a GitHub environment gate is added)
-#   Allowed actions:      leave direct publishing unchecked (stage-only);
-#                         staging is always allowed and keeps 2FA approval manual
+#   Allowed actions:      include "npm publish" (newer npm configurations
+#                         default to stage-only, which this workflow does not use)
 #
-# Staging does not require 2FA; a maintainer reviews the staged version and
-# approves it with 2FA before it becomes public. Provenance comes from the
-# trusted-publishing flow; no npm token or --provenance flag is involved.
-# See RELEASING.md.
-name: Stage pi-memoria release
+# Provenance attestations are generated automatically by trusted publishing;
+# no npm token or --provenance flag is involved. See RELEASING.md.
+name: Publish pi-memoria
 
 on:
   push:
@@ -105,23 +103,21 @@ jobs:
       - name: Verify the full suite
         run: npm run verify
 
-      - name: Stage pi-memoria for approval
+      - name: Publish pi-memoria
         working-directory: packages/pi-memoria
-        run: npm stage publish --ignore-scripts --access public --workspaces=false
+        run: npm publish --ignore-scripts --access public --workspaces=false
 
-      - name: Report the staged release
+      - name: Confirm publication
         run: |
           set -euo pipefail
           version="$(node -p "require('./packages/pi-memoria/package.json').version")"
-          {
-            echo "### Staged pi-memoria@${version}"
-            echo ""
-            echo "The release is staged, not public. A maintainer must review and approve it with 2FA:"
-            echo ""
-            echo "1. Review on npmjs.com: **Staged Packages** for \`pi-memoria\`"
-            echo "2. Or locally: \`npm stage list\`, \`npm stage view <stage-id>\`, \`npm stage download <stage-id>\`"
-            echo "3. Approve: \`npm stage approve <stage-id>\` (or Approve on npmjs.com)"
-            echo ""
-            echo "To discard it instead, reject first with \`npm stage reject <stage-id>\`; a rejected version can be staged again."
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "pi-memoria@${version} staged for 2FA approval."
+          for attempt in $(seq 1 12); do
+            if npm view "pi-memoria@${version}" version dist.tarball >/dev/null 2>&1; then
+              npm view "pi-memoria@${version}" version dist.tarball
+              npm view pi-memoria dist-tags
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::pi-memoria@${version} was published but is not yet visible in the registry; confirm manually."
+          exit 1

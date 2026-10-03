@@ -54,7 +54,7 @@ Before an approved release, query the public npm registry for the exact name and
 2. Refuses a version that is already published or that does not advance the published `latest`.
 3. Installs every package's dependencies through the documented package-local commands, installs the pinned Pi 1.0.0 development host, runs `npm run link-host` to supply the peer packages a clean CI checkout lacks, then runs the full `npm run verify` gate (types/tests plus offline publication regressions).
 4. Publishes from `packages/pi-memoria` with `npm publish --ignore-scripts --access public --workspaces=false`, using npm trusted publishing (OIDC) and automatically generated provenance. No npm token is stored in the repository.
-5. Confirms the new version, tarball, and dist-tags from the public registry.
+5. Confirms the new version, tarball, and dist-tags from the public registry, retrying for five minutes because npm processing can lag behind the publish command.
 
 One-time npm configuration is required before the first run. In the `pi-memoria` package settings on npmjs.com, add a GitHub Actions trusted publisher:
 
@@ -66,7 +66,7 @@ One-time npm configuration is required before the first run. In the `pi-memoria`
 
 The old trusted publisher for the standalone `rcsaquino/pi-memoria` repository does not apply. npm does not verify these fields when saving, so double-check them; a mismatch only surfaces as an authentication failure during a tagged publish. Strongly recommended afterwards: restrict the package's publishing access to 2FA without tokens, and add a tag protection rule for `pi-memoria-v*`.
 
-If the workflow fails after a successful publish (for example during the confirmation step), do not re-run it: the version guard refuses the already-published version. Confirm the registry state manually and prepare a new patch version if another publish is required.
+If the workflow fails after a successful publish (for example during the confirmation step), do not re-run it: the version guard refuses the already-published version. Confirm the registry state manually; the publish itself may have succeeded. Prepare a new patch version only if the release is genuinely missing.
 
 ## Source history and tags
 

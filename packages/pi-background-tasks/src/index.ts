@@ -26,7 +26,7 @@ export default function backgroundTasks(pi: ExtensionAPI): void {
     name: 'background_dispatch', label: 'Background task', exposure: 'model-only', executionMode: 'sequential',
     description: 'Non-blocking delegation. For substantive tasks estimated to take more than 120 seconds, call this BEFORE long execution with a realistic ETA and reason. Manual requests always delegate. Returns an accepted task ID immediately without waiting. Worker inherits the main model/provider/thinking, instructions, skill access and callable tools; NO conversation history is copied by default. Supply a complete compact task brief, with selected reference context or user-requested full history as explicit opt-ins. Main chat remains free. Short auto tasks return inline. Do not wait, sleep or poll.',
     promptSnippet: 'Delegate work non-blockingly, with a realistic completion estimate.',
-    promptGuidelines: ['Delegate tasks estimated over two minutes with background_dispatch. Include an honest ETA, reason and self-contained brief; omit history by default. Acknowledge the task ID, then return control.'],
+    promptGuidelines: ['Delegate tasks estimated over two minutes with background_dispatch. Include an honest ETA, reason and self-contained brief; omit history by default. Acknowledge the work naturally with an honest estimated duration, then return control. Keep task IDs internal unless genuinely necessary for clarity or troubleshooting, or explicitly requested; avoid robotic job-ticket acknowledgments and fixed catchphrases, and vary the wording naturally.'],
     parameters: dispatchSchema,
     execute: async (callId, args, signal, _update, ctx) => manager.dispatch(args as Dispatch, ctx, callId, signal),
   });
@@ -92,7 +92,7 @@ export default function backgroundTasks(pi: ExtensionAPI): void {
         }
         if (['status', 'cancel', 'result', 'auto'].includes(action!)) throw new Error('Invalid /bg command. Use /bg help.');
         if (ctx.mode !== 'rpc' && ctx.mode !== 'tui') throw new Error('Background delegation requires a long-lived TUI or RPC session.');
-        pi.sendUserMessage(`Manual background delegation request. Estimate total time realistically, then call background_dispatch with mode manual before doing the task. Include a justified ETA and a self-contained brief with authorization limits, necessary facts, requirements, skill/reference paths and deliverable paths. Default to context_mode brief, without conversation history. Use selected context_text only for needed reference material, or full only if the user explicitly asks to share history. Acknowledge the accepted ID and estimate, and return control without waiting.\n\nTask:\n${action === 'run' ? text.slice(3).trim() : text}`, { deliverAs: 'followUp', expandPromptTemplates: false });
+        pi.sendUserMessage(`Manual background delegation request. Estimate total time realistically, then call background_dispatch with mode manual before doing the task. Include a justified ETA and a self-contained brief with authorization limits, necessary facts, requirements, skill/reference paths and deliverable paths. Default to context_mode brief, without conversation history. Use selected context_text only for needed reference material, or full only if the user explicitly asks to share history. Acknowledge the work naturally with an honest estimated duration, explicitly as an estimate, and return control without waiting. Keep task IDs internal unless genuinely necessary for clarity or troubleshooting, or explicitly requested; avoid robotic job-ticket acknowledgments and fixed catchphrases, and vary the wording naturally.\n\nTask:\n${action === 'run' ? text.slice(3).trim() : text}`, { deliverAs: 'followUp', expandPromptTemplates: false });
       } catch (e) { ctx.ui.notify(e instanceof Error ? e.message : 'Background command failed.', 'error'); }
     },
   });
@@ -102,8 +102,13 @@ export default function backgroundTasks(pi: ExtensionAPI): void {
   });
   pi.on('before_agent_start', (event, ctx) => {
     // Structured prompt update, not an opaque replacement. Never modifies the original user message.
-    event.systemPromptOptions.appendSystemPrompt += `\n\n${MAIN_POLICY}\nAutomatic routing is currently ${manager.auto ? 'on' : 'off'}.`;
+    const text = `${MAIN_POLICY}\nAutomatic routing is currently ${manager.auto ? 'on' : 'off'}.`;
+    event.systemPromptOptions.sections.background_policy = text;
     manager.ctx = ctx;
+    // Opaque forced prompts bypass structured sections, so include this section explicitly.
+    if (event.systemPromptOptions.forceSystemPrompt !== undefined) {
+      return { systemPrompt: `${event.systemPrompt}\n\n<background_policy>\n${text}\n</background_policy>` };
+    }
   });
   pi.on('tool_call', (event, ctx) => manager.guard(event, ctx));
   pi.on('agent_settled', () => { manager.scheduleNotifications(); });

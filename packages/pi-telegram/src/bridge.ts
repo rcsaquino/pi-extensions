@@ -3,14 +3,15 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import type { AgentActivityOutcome, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentActivityOutcome, ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
 import { ApiError, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type TgMessage, type TgUpdate } from "./api.ts";
 import { type Config, SafeError, redact, safeError, stamp } from "./config.ts";
 import { ConnectionLease } from "./connection-lease.ts";
+import { HumanInputScope } from "./human-input.ts";
 
 const ALBUM_WAIT_MS = 1000;
 interface QueuedRequest { messages: TgMessage[]; readyAt: number; content?: (TextContent | ImageContent)[] }
-interface Request extends QueuedRequest {
+interface Reply {
   controller: AbortController;
   started: boolean;
   submittedAt?: number;
@@ -23,6 +24,9 @@ interface Request extends QueuedRequest {
   spoke?: boolean;
   delivered?: boolean;
 }
+interface Request extends QueuedRequest, Reply {}
+interface Report extends Reply { chat: number; noticeId: string }
+interface Notice { chat: number; id: string; content: string }
 export interface SendParams { path?: string; paths?: string[]; kind?: MediaKind; speech?: string }
 
 /** One Pi conversation and reply owner. Same-chat follow-ups steer; other chats wait. */
@@ -31,6 +35,13 @@ export class TelegramBridge {
   private controller = new AbortController();
   private queue: QueuedRequest[] = [];
   private active?: Request;
+  private report?: Report;
+  private foregroundOwner?: Request;
+  private notices: Notice[] = [];
+  private noticeIds = new Set<string>();
+  private generation = 0;
+  private humanInput?: HumanInputScope;
+  private offOwner?: () => void;
   private directory: string;
   private stateDirectory: string;
   private offset?: number;
@@ -54,11 +65,54 @@ export class TelegramBridge {
     this.stateDirectory = resolve(config.stateDir || config.dataDir, bot);
   }
 
+  private listen(): void {
+    this.humanInput = new HumanInputScope(this.pi);
+    this.offOwner = this.pi.events.on("background-tasks:claim-owner:v1", data => {
+      const query = data as { sessionId?: string; accept?: (route: (id: string, content: string) => boolean) => void };
+      const request = this.active;
+      if (!this.running || this.report || !request?.started || request.settling || request.controller.signal.aborted || this.foregroundOwner !== request ||
+        query.sessionId !== this.ctx.sessionManager.getSessionId() || typeof query.accept !== "function") return;
+      // Capture the authenticated owner NOW, never an ambient last-chat fallback.
+      const chat = request.messages[0].chat.id;
+      const generation = this.generation;
+      const expiresAt = Date.now() + 7 * 86400_000;
+      query.accept((id, content) => {
+        if (!this.running || generation !== this.generation || Date.now() > expiresAt ||
+          query.sessionId !== this.ctx.sessionManager.getSessionId()) return false;
+        if (this.noticeIds.has(id)) return true;
+        if (this.notices.length >= 128 || this.noticeIds.size >= 1024) return false;
+        this.noticeIds.add(id);
+        this.notices.push({ chat, id, content });
+        return true;
+      });
+    });
+  }
+
   get status(): string { return this.state; }
   get ownsConnection(): boolean { return this.running; }
   isTelegramPrompt(prompt: string): boolean {
+    if (this.report?.prompt === prompt) return true;
     return Boolean(this.active?.prompt && (prompt.includes(this.active.prompt) ||
       [...this.active.steeringPrompts || []].some(text => prompt.includes(text))));
+  }
+
+  /** Navigation revokes ephemeral capabilities, including a switch that is later cancelled. */
+  invalidate(): void {
+    this.generation++;
+    this.active?.controller.abort();
+    this.report?.controller.abort();
+    this.active = this.report = this.foregroundOwner = undefined;
+    this.queue = []; this.notices = []; this.noticeIds.clear();
+  }
+
+  private reply(): Request | Report | undefined { return this.report || this.active; }
+  private chat(reply: Request | Report): number { return "chat" in reply ? reply.chat : reply.messages[0].chat.id; }
+  private submit(request: Request, content: (TextContent | ImageContent)[], deliverAs: "steer" | "followUp"): void {
+    const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+    const generation = this.generation;
+    this.humanInput!.send(text, this.ctx.sessionManager.getSessionId(),
+      () => this.running && generation === this.generation && !request.controller.signal.aborted,
+      () => this.pi.sendUserMessage(content, { deliverAs, expandPromptTemplates: false }));
   }
 
   private statusChanged(connected: boolean, detail?: string): void {
@@ -75,6 +129,7 @@ export class TelegramBridge {
     if (this.stopTask) { await this.stopTask; return this.start(); }
     this.running = true;
     this.controller = new AbortController();
+    this.listen();
     this.statusChanged(false, "connecting");
     this.startTask = this.startOwned().finally(() => { this.startTask = undefined; });
     return this.startTask;
@@ -129,7 +184,9 @@ export class TelegramBridge {
     if (this.stopTask) return this.stopTask;
     this.running = false;
     this.controller.abort();
-    this.active?.controller.abort();
+    this.invalidate();
+    this.humanInput?.close(); this.offOwner?.();
+    this.humanInput = this.offOwner = undefined;
     if (this.worker) clearInterval(this.worker);
     if (this.typing) clearInterval(this.typing);
     this.worker = this.typing = undefined;
@@ -203,8 +260,9 @@ export class TelegramBridge {
     return task;
   }
 
-  private async text(chat: number, text: string): Promise<void> {
-    await this.serial(() => this.api.sendText(chat, text, this.controller.signal));
+  private async text(chat: number, text: string, signal?: AbortSignal): Promise<void> {
+    const combined = signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal;
+    await this.serial(() => { combined.throwIfAborted(); return this.api.sendText(chat, text, combined); });
   }
 
   private async receive(message: TgMessage): Promise<void> {
@@ -274,7 +332,7 @@ export class TelegramBridge {
       }
       const prompt = followUp.content.filter(block => block.type === "text").map(block => block.text).join("\n");
       (request.steeringPrompts ||= new Set()).add(prompt);
-      this.pi.sendUserMessage(followUp.content, { deliverAs: "steer", expandPromptTemplates: false });
+      this.submit(request, followUp.content, "steer");
     } catch (error) {
       if (this.running) await this.text(followUp.messages[0].chat.id, safeError(error)).catch(() => {});
     }
@@ -282,10 +340,16 @@ export class TelegramBridge {
 
   private async processQueue(): Promise<void> {
     if (!this.running) return;
+    if (this.report) {
+      if (!this.report.started && this.report.submittedAt && Date.now() - this.report.submittedAt > 10_000 && this.ctx.isIdle()) {
+        this.report.controller.abort(); this.report = undefined;
+      }
+      return;
+    }
     if (this.active) {
       const request = this.active;
       if (!request.started && request.submittedAt && Date.now() - request.submittedAt > 10_000 && this.ctx.isIdle()) {
-        this.active = undefined;
+        request.controller.abort(); this.foregroundOwner = undefined; this.active = undefined;
         await this.text(request.messages[0].chat.id, "Pi did not start this request. Check the TUI for configuration or extension errors.");
       } else if (this.connected && request.started && !request.settling && !this.ctx.isIdle()) {
         // Do not let another chat's queued request block the current owner's correction.
@@ -294,7 +358,20 @@ export class TelegramBridge {
       }
       return;
     }
-    if (!this.connected || !this.ctx.isIdle() || this.ctx.hasPendingMessages() || !this.queue.length || this.queue[0].readyAt > Date.now()) return;
+    if (!this.connected || !this.ctx.isIdle() || this.ctx.hasPendingMessages()) return;
+    if (!this.queue.length) {
+      const notice = this.notices.shift();
+      if (!notice) return;
+      const noticeId = randomUUID();
+      this.report = { chat: notice.chat, noticeId, prompt: notice.content, controller: new AbortController(),
+        started: false, submittedAt: Date.now(), outcome: "completed" };
+      try {
+        this.pi.sendMessage({ customType: "background-notice", content: notice.content, display: false,
+          details: { telegramNoticeId: noticeId } }, { triggerTurn: true, deliverAs: "followUp" });
+      } catch { this.report.controller.abort(); this.report = undefined; }
+      return;
+    }
+    if (this.queue[0].readyAt > Date.now()) return;
     const request: Request = { ...this.queue.shift()!, controller: new AbortController(), started: false, outcome: "completed" };
     this.active = request;
     this.refreshTyping();
@@ -306,18 +383,40 @@ export class TelegramBridge {
       signal.throwIfAborted();
       request.prompt = content.filter(block => block.type === "text").map(block => block.text).join("\n");
       request.submittedAt = Date.now();
-      this.pi.sendUserMessage(content, { deliverAs: "followUp", expandPromptTemplates: false });
+      this.submit(request, content, "followUp");
     } catch (error) {
-      if (this.active === request) this.active = undefined;
+      request.controller.abort();
+      if (this.active === request) this.active = this.foregroundOwner = undefined;
       if (this.running) await this.text(request.messages[0].chat.id, safeError(error)).catch(() => {});
     }
   }
 
-  userStart(message: { role: string; content?: unknown }): void {
-    if (!this.active?.prompt || message.role !== "user") return;
+  input(event: InputEvent): void {
+    // Text equality alone is not authority: an intervening local/generic input can
+    // repeat the exact Telegram prompt. Only this bridge's async submission is owned.
+    if (this.humanInput?.matches(event, this.ctx.sessionManager.getSessionId())) return;
+    this.active?.controller.abort(); this.report?.controller.abort();
+    this.foregroundOwner = undefined;
+  }
+
+  userStart(message: { role: string; content?: unknown; customType?: string; details?: unknown }): void {
+    if (message.role === "custom") {
+      const id = (message.details as { telegramNoticeId?: unknown } | undefined)?.telegramNoticeId;
+      if (this.report && message.customType === "background-notice" && id === this.report.noticeId && !this.report.started) {
+        this.report.started = true;
+      } else if (this.report) { this.report.started = false; this.report.controller.abort(); }
+      this.foregroundOwner = undefined;
+      if (this.active) this.active.controller.abort();
+      return;
+    }
+    if (message.role !== "user") return;
+    // A local/RPC user that intervenes in a report must not capture its chat or final.
+    if (this.report) { this.report.started = false; this.report.controller.abort(); }
+    this.foregroundOwner = undefined;
+    if (!this.active?.prompt) return;
     const text = typeof message.content === "string" ? message.content : Array.isArray(message.content)
       ? message.content.filter(block => block?.type === "text").map(block => block.text).join("\n") : "";
-    const steering = [...this.active.steeringPrompts || []].find(prompt => text.includes(prompt));
+    const steering = [...this.active.steeringPrompts || []].find(prompt => text === prompt);
     if (steering) {
       this.active.steeringPrompts!.delete(steering);
       this.active.revision = (this.active.revision || 0) + 1;
@@ -327,47 +426,56 @@ export class TelegramBridge {
       this.active.spoke = this.active.delivered = false;
       this.active.outcome = "completed";
     }
-    if (text.includes(this.active.prompt) || steering) this.active.started = true;
+    if (text === this.active.prompt || steering) { this.active.started = true; this.foregroundOwner = this.active; }
+    else this.active.controller.abort();
   }
 
   assistantEnd(message: { role: string; content?: unknown; stopReason?: string }): void {
-    if (!this.active?.started || message.role !== "assistant" || !Array.isArray(message.content)) return;
+    const request = this.reply();
+    if (!request?.started || request.controller.signal.aborted || message.role !== "assistant" || !Array.isArray(message.content)) return;
     if (message.stopReason === "toolUse" || message.content.some(block => block?.type === "toolCall")) {
-      this.active.final = undefined;
+      request.final = undefined;
       return;
     }
     const successful = ["stop", "length"].includes(message.stopReason || "");
-    this.active.outcome = successful ? "completed" : message.stopReason === "aborted" ? "aborted" : "error";
-    this.active.final = successful ? message.content.filter(block => block?.type === "text").map(block => block.text).join("\n").trim() : undefined;
+    request.outcome = successful ? "completed" : message.stopReason === "aborted" ? "aborted" : "error";
+    request.final = successful ? message.content.filter(block => block?.type === "text").map(block => block.text).join("\n").trim() : undefined;
   }
 
-  boundary(outcome: AgentActivityOutcome): void { if (this.active?.started) this.active.outcome = outcome; }
+  boundary(outcome: AgentActivityOutcome): void { const request = this.reply(); if (request?.started) request.outcome = outcome; }
 
   async settled(): Promise<void> {
-    const request = this.active;
-    if (!request?.started) return;
+    const request = this.reply();
+    if (request?.settling) return;
+    if (!request?.started || request.controller.signal.aborted) {
+      if (this.report === request) this.report = undefined;
+      if (this.active === request && request?.controller.signal.aborted) this.active = this.foregroundOwner = undefined;
+      return;
+    }
     request.settling = true;
     const revision = request.revision;
-    const chat = request.messages[0].chat.id;
+    const chat = this.chat(request);
     try {
       if (!this.running) return;
       if (request.outcome !== "completed") {
-        await this.text(chat, request.outcome === "aborted" ? "Pi request was cancelled." : "Pi could not complete this request. Check the TUI for details.");
+        await this.text(chat, request.outcome === "aborted" ? "Pi request was cancelled." : "Pi could not complete this request. Check the TUI for details.", request.controller.signal);
       } else if (request.spoke) {
         // An explicit voice message is the complete reply, even if the model says 'Sent' afterward.
         return;
       } else if (request.final) {
         // Input format does not opt the user into speech. Only explicit tool sends produce voice.
-        await this.text(chat, request.final);
+        await this.text(chat, request.final, request.controller.signal);
       }
       // A successful empty final or attachment-only reply intentionally sends no chat.
     } catch (error) {
-      if (this.running) {
-        await this.text(chat, safeError(error)).catch(() => {});
+      if (this.running && !request.controller.signal.aborted) {
+        await this.text(chat, safeError(error), request.controller.signal).catch(() => {});
         if (this.ctx.hasUI) this.ctx.ui.notify(safeError(error), "warning");
       }
     } finally {
+      if (this.report === request) this.report = undefined;
       if (this.active === request && request.revision === revision) {
+        this.foregroundOwner = undefined;
         if (this.running && request.steeringPrompts?.size) {
           // A slow input hook can finish after settlement and start a new run.
           // Retain the reply owner until that already-submitted input is consumed.
@@ -381,8 +489,9 @@ export class TelegramBridge {
   }
 
   async send(params: SendParams, signal?: AbortSignal): Promise<void> {
-    const request = this.active;
-    if (!this.running || !this.connected || !request?.started) throw new SafeError("telegram_send requires an active request from an allowed Telegram user.");
+    const request = this.reply();
+    if (!this.running || !this.connected || !request?.started || request.settling || request.controller.signal.aborted ||
+      (request === this.active && this.foregroundOwner !== request)) throw new SafeError("telegram_send requires an active request or task-linked report from an allowed Telegram user.");
     const modes = [Boolean(params.path), params.paths !== undefined, Boolean(params.speech)].filter(Boolean).length;
     if (modes !== 1) throw new SafeError("Provide exactly one of path, paths or speech.");
     if (params.paths && (params.paths.length < 1 || params.paths.length > 10)) throw new SafeError("Provide 1–10 attachment paths.");
@@ -392,11 +501,11 @@ export class TelegramBridge {
     await this.serial(async () => {
       combined.throwIfAborted();
       if (params.speech) {
-        await this.api.speak(request.messages[0].chat.id, params.speech, combined);
+        await this.api.speak(this.chat(request), params.speech, combined);
         request.spoke = request.delivered = true;
       } else {
         const files = await Promise.all((params.paths || [params.path!]).map(path => outboundFile(this.ctx.cwd, path, params.kind, this.config.dataDir)));
-        await this.api.sendGroup(request.messages[0].chat.id, files, combined);
+        await this.api.sendGroup(this.chat(request), files, combined);
         request.delivered = true;
         if (files.some(file => file.kind === "voice")) request.spoke = true;
       }

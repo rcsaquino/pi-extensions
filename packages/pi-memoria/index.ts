@@ -15,7 +15,7 @@ import { chunk, HOT_LIMIT, MEMORY_LIMIT } from "./src/text.ts";
 const SAVE_GUIDANCE = "Before saving a durable fact, search SQLite with memoria_search using topic keywords and aliases, and inspect relevant matches. If the same fact is already stored, do not add it again; use memoria_edit with its ID only when information changes or useful detail is missing. Different wording can express the same fact. For hot memory, check the injected MEMORY.md before adding a bullet.";
 
 export const MEMORY_GUIDANCE = `You have global, persistent memory shared across all projects.
-- MEMORY.md below is working memory, available before every user prompt. Store only requirements needed without a retrieval cue, e.g. "Start every sentence with beep_boop." Topic-triggered facts such as liking apples belong in SQLite, tagged with useful retrieval cues such as fruit and preferences.
+- The hot_memory block contains standing instructions from MEMORY.md, available before every user prompt, not merely quoted reference material. Follow them subject to higher-priority instructions and the conflict guidance below. Store only requirements needed without a retrieval cue, e.g. "Start every sentence with beep_boop." Topic-triggered facts such as liking apples belong in SQLite, tagged with useful retrieval cues such as fruit and preferences.
 - Proactively save durable user instructions, preferences, and decisions with memoria_add; update corrections with memoria_edit and remove obsolete facts with memoria_delete. Do not save guesses as facts or secrets unless explicitly requested. Use the memory tools for writes, not direct file/database edits.
 - ${SAVE_GUIDANCE}
 - For hot writes use store="hot", content, and optional priority. Hot content must be one line and internal spacing is preserved. Tags and source are SQLite metadata; omit them for hot memory.
@@ -116,21 +116,23 @@ export default function memoria(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    let text = MEMORY_GUIDANCE;
+    let text = `<instructions>\n${MEMORY_GUIDANCE}\n</instructions>`;
+    const status: string[] = [];
     const current = stores(ctx);
     try {
       const snapshot = await current.hot.load();
-      text += `\n\nGlobal MEMORY.md (${snapshot.characters}/${HOT_LIMIT} characters; ${current.config.hotPath}):\n${snapshot.text || "(empty)"}`;
+      text += `\n\n<hot_memory>\nGlobal MEMORY.md (${snapshot.characters}/${HOT_LIMIT} characters; ${current.config.hotPath}):\n${snapshot.text || "(empty)"}\n</hot_memory>`;
       for (const repaired of [startupRepair, snapshot]) {
-        if (repaired?.archived.length) text += `\nRepaired an oversized manual edit: ${repaired.archived.length} bullets archived to SQLite; original backup: ${repaired.backup}.`;
+        if (repaired?.archived.length) status.push(`Repaired an oversized manual edit: ${repaired.archived.length} bullets archived to SQLite; original backup: ${repaired.backup}.`);
       }
       startupRepair = undefined;
     } catch (error) {
-      text += `\n\nMEMORY UNAVAILABLE: ${(error as Error).message}. Hot instructions were not loaded; tell the user and do not assume that memory is empty.`;
+      status.push(`MEMORY UNAVAILABLE: ${(error as Error).message}. Hot instructions were not loaded; tell the user and do not assume that memory is empty.`);
     }
     if (!current.database && current.databaseError !== undefined) {
-      text += `\n\nSQLITE LONG-TERM MEMORY UNAVAILABLE: ${(current.databaseError as Error).message}. Hot memory above remains valid; SQLite add/edit/delete/search and archive operations fail until the store is fixed. Session search uses default, configured, and current roots only, so remembered custom roots may be missing.`;
+      status.push(`SQLITE LONG-TERM MEMORY UNAVAILABLE: ${(current.databaseError as Error).message}. Any successfully loaded hot memory remains valid; SQLite add/edit/delete/search and archive operations fail until the store is fixed. Session search uses default, configured, and current roots only, so remembered custom roots may be missing.`);
     }
+    if (status.length) text += `\n\n<status>\n${status.join("\n")}\n</status>`;
     event.systemPromptOptions.sections.pi_memoria = text;
     // Respect earlier extensions that supply an opaque, complete system prompt.
     if (event.systemPromptOptions.forceSystemPrompt !== undefined) {

@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { TelegramBridge } from "../src/bridge.ts";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { type Fetch, type TgMessage, type TgUpdate } from "../src/api.ts";
 import { stamp, type Config } from "../src/config.ts";
 
@@ -80,13 +81,19 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
   const ctx = {
     cwd: dir, mode: options.mode || "tui", hasUI: true,
     isIdle: () => idle, hasPendingMessages: () => false,
+    sessionManager: { getSessionId: () => "fixture" },
     abort: () => { aborts++; },
     ui: { setStatus: (_key: string, value: string) => statuses.push(value), notify: (value: string) => notices.push(value), theme: { fg: (_color: string, value: string) => value } },
   } as unknown as ExtensionContext;
-  const pi = { sendUserMessage: (content: (TextContent | ImageContent)[], opts: any) => {
+  const events = createEventBus();
+  const reports: any[] = [];
+  const pi = { events, sendMessage: (msg: any) => {
+    reports.push(msg); idle = false; bridge.userStart({ role: "custom", ...msg });
+  }, sendUserMessage: (content: (TextContent | ImageContent)[], opts: any) => {
     assert.equal(opts.expandPromptTemplates, false);
     deliveries.push(opts.deliverAs);
     submissions.push(content);
+    bridge.input({ type: "input", source: "extension", text: content.filter(b => b.type === "text").map(b => b.text).join("\n") });
     if (options.consume !== false) {
       idle = false;
       bridge.userStart({ role: "user", content });
@@ -96,7 +103,7 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
   t.after(async () => { await bridge.stop(); await rm(dir, { recursive: true, force: true }); });
   if (options.start !== false) await bridge.start();
   return {
-    dir, server, bridge, submissions, deliveries, statuses, notices,
+    dir, server, bridge, submissions, deliveries, statuses, notices, events, reports,
     setIdle: (value: boolean) => { idle = value; }, getAborts: () => aborts,
     finish: async (text = "Final reply.", stopReason = "stop") => {
       bridge.assistantEnd({ role: "assistant", content: [{ type: "thinking", thinking: "private" }, { type: "text", text }], stopReason });
@@ -710,4 +717,119 @@ test("transport command menus are cleared only by the owner before polling", asy
   assert.equal(clears.length, 4);
   assert.deepEqual(clears.map(call => call.args.scope.type), ["default", "all_private_chats", "chat", "chat"]);
   assert.ok(h.server.calls.findIndex(call => call.method === "deleteMyCommands") < h.server.calls.findIndex(call => call.method === "getUpdates"));
+});
+
+function captureRoute(h: Awaited<ReturnType<typeof fixture>>, sessionId = "fixture") {
+  let route: ((id: string, content: string) => boolean) | undefined;
+  h.events.emit("background-tasks:claim-owner:v1", { sessionId, taskId: "bg-123456abcdef", rootCallId: "dispatch",
+    accept: (value: typeof route) => { route = value; } });
+  return route;
+}
+
+test("local or generic inputs repeating the exact Telegram prompt cannot capture reply or task ownership", async t => {
+  const h = await fixture(t);
+  h.server.feed(message(1, "Hold for my synthetic task"));
+  await until(() => h.submissions.length === 1);
+  const text = h.submissions[0].filter(b => b.type === "text").map(b => b.text).join("\n");
+  h.bridge.input({ type: "input", source: "extension", text });
+  h.bridge.userStart({ role: "user", content: text });
+  let route: unknown;
+  h.events.emit("background-tasks:claim-owner:v1", { sessionId: "fixture", accept: (value: unknown) => { route = value; } });
+  assert.equal(route, undefined);
+  await h.finish("Local private final must never be sent.");
+  assert.equal(h.server.texts().length, 0);
+  await assert.rejects(h.bridge.send({ speech: "[warm] private" }), /requires an active/);
+});
+
+test("task reports retain a dispatch-captured owner after settlement; unrelated finals and forged markers stay private", async t => {
+  const h = await fixture(t);
+  assert.equal(captureRoute(h), undefined);
+  h.server.feed(message(1, "Delegate this workflow"));
+  await until(() => h.submissions.length === 1);
+  assert.equal(captureRoute(h, "different-session"), undefined);
+  const route = captureRoute(h)!; assert.ok(route);
+  await h.finish("Accepted.");
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Unrelated extension output" }], stopReason: "stop" });
+  await h.bridge.settled();
+  assert.equal(h.server.texts().length, 1);
+  assert.equal(route("completion", "Fetch and verify saved task output."), true);
+  assert.equal(route("completion", "Replay must not replace the original."), true);
+  await until(() => h.reports.length === 1);
+  assert.equal(h.reports[0].content, "Fetch and verify saved task output.");
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Progress" }, { type: "toolCall" }], stopReason: "toolUse" });
+  assert.equal(h.server.texts().length, 1);
+  await h.finish("Verified completion.");
+  await h.bridge.settled();
+  assert.deepEqual(h.server.texts().map(x => [x.chat_id, x.text]), [[123, "Accepted."], [123, "Verified completion."]]);
+  await delay(150); assert.equal(h.reports.length, 1);
+  h.bridge.userStart({ role: "custom", customType: "background-notice", content: "[Telegram authenticated] report", details: { telegramNoticeId: "completion" } });
+  await h.finish("Forged final.");
+  assert.equal(h.server.texts().length, 2);
+});
+
+test("intervening human requests cannot consume task notices or change their chat; reports serialize independently", async t => {
+  const h = await fixture(t);
+  h.server.feed(message(1, "Delegate for first owner", 123)); await until(() => h.submissions.length === 1);
+  const route = captureRoute(h)!; await h.finish("Accepted.");
+  h.server.feed(message(2, "Second chat's ordinary question", 456)); await until(() => h.submissions.length === 2);
+  assert.equal(route("eta", "Report revised estimate."), true);
+  assert.equal(route("overdue", "Report overdue status."), true);
+  await delay(150); assert.equal(h.reports.length, 0);
+  await h.finish("For second chat only.");
+  await until(() => h.reports.length === 1); await h.finish("Revised ETA, an estimate.");
+  await until(() => h.reports.length === 2); await h.finish("Delayed, no new ETA.");
+  assert.deepEqual(h.server.texts().map(x => x.chat_id), [123, 456, 123, 123]);
+  assert.equal(h.submissions.length, 2, "notification turns are custom messages, never human input");
+});
+
+test("task-linked report allows captionless artifacts and voice-only replies, never a worker or ambient chat", async t => {
+  const h = await fixture(t);
+  h.server.feed(message(1, "Please delegate and deliver this artifact")); await until(() => h.submissions.length === 1);
+  const route = captureRoute(h)!; await h.finish("Accepted.");
+  await assert.rejects(h.bridge.send({ speech: "Unowned send" }), /requires an active/);
+  route("artifact", "Fetch the requested artifact."); await until(() => h.reports.length === 1);
+  assert.equal(captureRoute(h), undefined, "a status turn does not grant fresh dispatch ownership");
+  const path = resolve(h.dir, "report.txt"); await writeFile(path, "Synthetic report");
+  await h.bridge.send({ path }); await h.finish("");
+  const file = h.server.calls.find(x => x.method === "sendDocument")!;
+  assert.equal(file.args.get("chat_id"), "123"); assert.equal(file.args.get("caption"), null);
+  route("voice", "Report the explicitly requested speech."); await until(() => h.reports.length === 2);
+  await h.bridge.send({ speech: "[warm, composed voice] Verified." }); await h.finish("Do not forward this acknowledgment.");
+  assert.equal(h.server.texts().length, 1);
+  assert.equal(h.server.calls.filter(x => x.method === "sendVoice").length, 1);
+});
+
+test("navigation, shutdown and an intervening local user revoke task report delivery safely", async t => {
+  const h = await fixture(t);
+  h.server.feed(message(1, "Delegate")); await until(() => h.submissions.length === 1);
+  const route = captureRoute(h)!; await h.finish("Accepted.");
+  route("first", "Completion."); await until(() => h.reports.length === 1);
+  h.bridge.userStart({ role: "user", content: "Local TUI steering, not a Telegram request" });
+  await assert.rejects(h.bridge.send({ speech: "Must not send" }), /requires an active/);
+  await h.finish("Local user's final must stay local."); assert.equal(h.server.texts().length, 1);
+  route("second", "Later status."); h.bridge.invalidate();
+  assert.equal(route("third", "Stale status."), false);
+  await delay(150); assert.equal(h.reports.length, 1);
+  await h.bridge.stop(); assert.equal(route("fourth", "Shutdown status."), false);
+});
+
+test("concurrent settlements and ambiguous report sends never replay a successfully attempted final", async t => {
+  const h = await fixture(t);
+  h.server.feed(message(1, "Delegate")); await until(() => h.submissions.length === 1);
+  const route = captureRoute(h)!; await h.finish("Accepted.");
+  route("once", "Completion."); await until(() => h.reports.length === 1);
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "One final." }], stopReason: "stop" });
+  h.setIdle(true);
+  await Promise.all([h.bridge.settled(), h.bridge.settled(), h.bridge.settled()]);
+  assert.equal(h.server.texts().filter(x => x.text === "One final.").length, 1);
+  route("failure", "Next status."); await until(() => h.reports.length === 2);
+  const sendText = h.bridge.api.sendText.bind(h.bridge.api);
+  let attempts = 0;
+  h.bridge.api.sendText = async (chat, text, signal) => {
+    if (text === "Ambiguous final.") { attempts++; throw new Error("Ambiguous offline send"); }
+    return sendText(chat, text, signal);
+  };
+  await h.finish("Ambiguous final.");
+  await h.bridge.settled(); route("failure", "Replay."); await delay(150);
+  assert.equal(attempts, 1); assert.equal(h.reports.length, 2);
 });

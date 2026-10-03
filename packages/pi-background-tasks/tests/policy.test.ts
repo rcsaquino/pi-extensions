@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
-import { AUTO_THRESHOLD_SECONDS, canonicalPath, captureProfile, coherentHistory, contextMessages, guardTool, routesToBackground, validateDispatch, within, workerOwnsCall, workerToolAllowed } from '../src/policy.ts';
+import { AUTO_THRESHOLD_SECONDS, MAIN_POLICY, canonicalPath, captureProfile, coherentHistory, contextMessages, guardTool, routesToBackground, validateDispatch, within, workerOwnsCall, workerToolAllowed } from '../src/policy.ts';
 import { emptyUsage, addUsage } from '../src/types.ts';
 import type { RecordData, Dispatch } from '../src/types.ts';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -13,6 +13,13 @@ const task: Dispatch = { task: 'Implement and verify feature', title: 'Feature',
 const record = (overrides = {}): RecordData => ({ version: 1, id: 'bg-111111111111', title: 'Test', sessionId: 'test', cwd: '/workspace', provider: 'fake', model: 'main', thinking: 'high', status: 'running', access: 'write', startedAt: 1, etaSeconds: 300, etaMaxSeconds: 480, estimateReason: 'Testing', lastActivityAt: 1, toolCalls: 0, turns: 0, usage: emptyUsage(), usageReported: false, notification: 'read', overrunNotified: false, ...overrides });
 const tool = (name: string, exposure = 'direct'): ToolInfo => ({ name, description: '', parameters: {} as never, exposure: exposure as ToolInfo['exposure'], sourceInfo: {} as never });
 
+test('main policy requests a natural honest ETA acknowledgment without unsolicited task IDs', () => {
+  assert.match(MAIN_POLICY, /Acknowledge the work naturally with an honest estimated duration, explicitly as an estimate/);
+  assert.match(MAIN_POLICY, /Keep task IDs internal unless genuinely necessary for clarity or troubleshooting, or explicitly requested/);
+  assert.match(MAIN_POLICY, /avoid robotic job-ticket acknowledgments/);
+  assert.match(MAIN_POLICY, /fixed catchphrases, and vary the wording naturally/);
+  assert.doesNotMatch(MAIN_POLICY, /Tell the user the accepted task ID/);
+});
 test('automatic threshold is strictly more than two minutes, using uncertainty upper bound', () => {
   assert.equal(AUTO_THRESHOLD_SECONDS, 120);
   for (const seconds of [1, 60, 119, 120]) assert.equal(routesToBackground({ ...task, eta_seconds: seconds, eta_max_seconds: seconds }, true), false);

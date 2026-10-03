@@ -2,13 +2,21 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { DefaultResourceLoader, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, ExtensionRunner, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, type BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
 import { ExpectedError } from "../src/errors.ts";
 import { toolError } from "../src/results.ts";
 import { temporary } from "./helpers.ts";
 
 function occurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
+}
+
+function block(text: string, name: string): string {
+  assert.equal(occurrences(text, `<${name}>`), 1);
+  assert.equal(occurrences(text, `</${name}>`), 1);
+  const match = new RegExp(`<${name}>\\n([\\s\\S]*?)\\n</${name}>`, "u").exec(text);
+  assert.ok(match, `${name} must be a separate nested block`);
+  return match[1]!;
 }
 
 /** Load the real extension through Pi's loader with isolated storage. */
@@ -41,10 +49,28 @@ async function harness(t: TestContext) {
   assert.deepEqual(loaded.errors, []);
   assert.equal(loaded.extensions.length, 1);
   const extension = loaded.extensions[0]!;
-  const ctx = {
-    cwd: directory, hasUI: false,
-    sessionManager: { getSessionDir: () => root, getSessionFile: () => sessionFile, getLeafId: () => "entry" },
-  } as unknown as ExtensionContext;
+  const sessionManager = SessionManager.inMemory(directory);
+  // Keep the original synthetic source citation without opening a real session.
+  sessionManager.getSessionDir = () => root;
+  sessionManager.getSessionFile = () => sessionFile;
+  sessionManager.getLeafId = () => "entry";
+  const modelRuntime = await ModelRuntime.create({
+    credentials: {
+      read: async () => undefined, list: async () => [],
+      modify: async () => { throw new Error("Credential writes are forbidden in this fixture"); },
+      delete: async () => { throw new Error("Credential writes are forbidden in this fixture"); },
+    },
+    modelsPath: null,
+    modelsStorePath: join(directory, "models-cache.json"),
+    allowModelNetwork: false, refreshOnCreate: false,
+  });
+  const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, directory, sessionManager, new ModelRegistry(modelRuntime));
+  const ctx = runner.createContext();
+  // This direct-execution fixture has no nested-tool pipeline bound. The SDK
+  // advertises no callable tools and returns a structured failure, never a fake success.
+  const toolContext = runner.createToolContext("fixture", undefined);
+  assert.deepEqual(toolContext.tools, []);
+  assert.equal((await toolContext.executeTool("unavailable_fixture_tool", {})).isError, true);
   const dispatch = async (name: string, event: unknown = {}) => {
     let result: unknown;
     for (const handler of extension.handlers.get(name) ?? []) result = await handler(event, ctx);
@@ -52,13 +78,24 @@ async function harness(t: TestContext) {
   };
   t.after(() => dispatch("session_shutdown"));
   const call = async (name: string, args: Record<string, unknown>, signal?: AbortSignal) => {
-    const result = await extension.tools.get(name)!.definition.execute("test", args, signal, undefined, ctx);
+    const result = await extension.tools.get(name)!.definition.execute("test", args, signal, undefined, runner.createToolContext("test", signal));
     const text = result.content.map((part) => part.type === "text" ? part.text : "").join("");
     return { result, details: result.details as Record<string, any>, text };
   };
   const prompt = () => ({ systemPrompt: "base prompt", systemPromptOptions: { sections: { other: "preserve me" } as Record<string, string>, forceSystemPrompt: undefined as string | undefined } });
   const section = (event: ReturnType<typeof prompt>) => (event.systemPromptOptions.sections as Record<string, string>).pi_memoria!;
-  return { directory, agentDir, memoryDir, root, sessionFile, extension, dispatch, call, prompt, section };
+  const renderPrompt = async (forceSystemPrompt?: string) => {
+    let rendered = "";
+    const handlers = extension.handlers.get("before_agent_start")!;
+    handlers.push(async (event) => { rendered = (event as BeforeAgentStartEvent).systemPrompt; });
+    try {
+      const result = await runner.emitBeforeAgentStart("Fixture prompt", undefined, {
+        cwd: directory, appendSystemPrompt: "Eve addendum fixture.", sections: { other: "preserve me" }, forceSystemPrompt,
+      });
+      return { rendered, options: result.systemPromptOptions };
+    } finally { handlers.pop(); }
+  };
+  return { directory, agentDir, memoryDir, root, sessionFile, extension, dispatch, call, prompt, section, renderPrompt };
 }
 
 test("Pi loads the package, executes all five tools, injects fresh global memory, and closes/reopens cleanly", async (t) => {
@@ -128,6 +165,92 @@ test("Pi loads the package, executes all five tools, injects fresh global memory
   assert.equal((await h.call("memoria_search", {})).details.results.length, 0);
 });
 
+test("structured and forced prompts separate instructions from fresh hot memory and preserve the addendum", async (t) => {
+  const h = await harness(t);
+  await h.dispatch("session_start");
+  const empty = await h.renderPrompt();
+  const emptyMemory = block(empty.rendered, "pi_memoria");
+  assert.match(block(emptyMemory, "hot_memory"), /Global MEMORY\.md \(0\/5000 characters;/u);
+  assert.match(block(emptyMemory, "hot_memory"), /\n\(empty\)$/u);
+  assert.doesNotMatch(emptyMemory, /<status>/u);
+
+  const manual = "- [h_fresh0000000000] [p=90] Fresh standing instruction.\n";
+  await writeFile(join(h.memoryDir, "MEMORY.md"), manual);
+  const fresh = await h.renderPrompt();
+  assert.equal(fresh.options.appendSystemPrompt, "Eve addendum fixture.");
+  assert.equal(block(fresh.rendered, "addendum"), "Eve addendum fixture.");
+  assert.equal(fresh.options.sections.other, "preserve me");
+  assert.equal(block(fresh.rendered, "other"), "preserve me");
+  const memory = block(fresh.rendered, "pi_memoria");
+  assert.equal(memory, fresh.options.sections.pi_memoria);
+  const instructions = block(memory, "instructions");
+  assert.match(instructions, /standing instructions.*not merely quoted reference material/u);
+  assert.match(instructions, /subject to higher-priority instructions/u);
+  assert.match(instructions, /Resolve conflicting memories from current user instructions and original evidence/u);
+  const hot = block(memory, "hot_memory");
+  assert.equal(hot, `Global MEMORY.md (${manual.length}/5000 characters; ${join(h.memoryDir, "MEMORY.md")}):\n${manual}`);
+  assert.doesNotMatch(instructions, /Fresh standing instruction\./u);
+  assert.doesNotMatch(hot, /Before saving a durable fact/u);
+  const save = h.extension.tools.get("memoria_add")!.definition.promptGuidelines!;
+  assert.equal(save.length, 1);
+  assert.match(save[0]!, /^Before saving a durable fact/u);
+
+  await writeFile(join(h.memoryDir, "MEMORY.md"), manual.replace("Fresh", "Changed"));
+  const forcedBase = "Opaque prompt.\n<addendum>\nEve addendum fixture.\n</addendum>";
+  const forced = await h.renderPrompt(forcedBase);
+  assert.ok(forced.rendered.startsWith(`${forcedBase}\n\n<pi_memoria>`));
+  assert.equal(block(forced.rendered, "pi_memoria"), forced.options.sections.pi_memoria);
+  assert.match(block(forced.rendered, "hot_memory"), /Changed standing instruction/u);
+  assert.doesNotMatch(forced.rendered, /Fresh standing instruction/u);
+  assert.equal(block(forced.rendered, "addendum"), "Eve addendum fixture.");
+});
+
+test("failed hot loads report status without fabricating empty or valid hot memory, and recover on the next read", async (t) => {
+  const h = await harness(t);
+  await mkdir(join(h.memoryDir, "MEMORY.md"), { recursive: true });
+  await mkdir(join(h.memoryDir, "memoria.sqlite"));
+  await h.dispatch("session_start");
+  const failed = await h.renderPrompt("Opaque prompt.");
+  const memory = block(failed.rendered, "pi_memoria");
+  block(memory, "instructions");
+  const status = block(memory, "status");
+  assert.match(status, /MEMORY UNAVAILABLE:.*Hot instructions were not loaded; tell the user and do not assume that memory is empty/u);
+  assert.match(status, /SQLITE LONG-TERM MEMORY UNAVAILABLE/u);
+  assert.match(status, /remembered custom roots may be missing/u);
+  assert.doesNotMatch(memory, /<hot_memory>|\(empty\)|Hot memory above remains valid/u);
+
+  await rm(join(h.memoryDir, "MEMORY.md"), { recursive: true });
+  await writeFile(join(h.memoryDir, "MEMORY.md"), "- [h_recover00000000] [p=90] Recovered startup rule.\n");
+  const recovered = await h.renderPrompt();
+  assert.match(block(recovered.rendered, "hot_memory"), /Recovered startup rule/u);
+  assert.doesNotMatch(block(recovered.rendered, "status"), /Hot instructions were not loaded/u);
+  assert.match(block(recovered.rendered, "status"), /Any successfully loaded hot memory remains valid/u);
+});
+
+test("startup and prompt-time oversized repairs report archival counts and backups separately from hot instructions", async (t) => {
+  const h = await harness(t);
+  await mkdir(h.memoryDir, { recursive: true });
+  const oversized = `- [h_low000000000000] [p=10] ${"L".repeat(3000)}\n- [h_high00000000000] [p=90] ${"H".repeat(3000)}\n`;
+  await writeFile(join(h.memoryDir, "MEMORY.md"), oversized);
+  await h.dispatch("session_start");
+  for (const force of [undefined, "Opaque prompt."]) {
+    if (force) await writeFile(join(h.memoryDir, "MEMORY.md"), oversized);
+    const repaired = await h.renderPrompt(force);
+    const status = block(repaired.rendered, "status");
+    assert.match(status, /Repaired an oversized manual edit: 1 bullets archived to SQLite; original backup:/u);
+    const backup = /original backup: (.+)\.$/u.exec(status)![1]!;
+    assert.equal(await readFile(backup, "utf8"), oversized);
+    const hot = block(repaired.rendered, "hot_memory");
+    assert.match(hot, /h_high00000000000/u);
+    assert.doesNotMatch(hot, /h_low000000000000|Repaired an oversized/u);
+    assert.match(hot, /\(\d+\/5000 characters;/u);
+    const clean = await h.renderPrompt();
+    assert.doesNotMatch(clean.rendered, /<status>|Repaired an oversized manual edit/u);
+  }
+  const archived = await h.call("memoria_search", { tags: ["hot-archive"] });
+  assert.ok(archived.details.results.length > 0);
+});
+
 test("valid hot memory loads and hot-only operations work when SQLite cannot open", async (t) => {
   const h = await harness(t);
   await mkdir(join(h.memoryDir, "memoria.sqlite"), { recursive: true });
@@ -185,7 +308,8 @@ test("archive-requiring hot failures leave the live file byte-for-byte unchanged
   await writeFile(join(h.memoryDir, "MEMORY.md"), manual);
   const event = h.prompt();
   await h.dispatch("before_agent_start", event);
-  assert.match(h.section(event), /MEMORY UNAVAILABLE/u);
+  assert.match(block(h.section(event), "status"), /MEMORY UNAVAILABLE/u);
+  assert.doesNotMatch(h.section(event), /<hot_memory>|\(empty\)|Hot memory above remains valid/u);
   assert.equal(await readFile(join(h.memoryDir, "MEMORY.md"), "utf8"), manual);
   assert.equal(low.details.memory.priority, 10);
 });

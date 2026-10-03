@@ -14,7 +14,7 @@ async function fixture(t: TestContext) {
     appendEntry: (_kind: string, data: unknown) => entries.push(data),
     sendMessage: (message: { content: string }, options: { deliverAs: string; triggerTurn: boolean }) => { assert.equal(options.deliverAs, 'followUp'); assert.equal(options.triggerTurn, true); notices.push(message.content); },
   } as unknown as ExtensionAPI;
-  const ctx = { cwd: root, mode: 'rpc', hasUI: false, sessionManager: { getSessionId: () => 'fixture', getBranch: () => [] }, ui: { notify: () => {} } } as unknown as ExtensionContext;
+  const ctx = { cwd: root, mode: 'rpc', hasUI: false, isIdle: () => true, hasPendingMessages: () => false, sessionManager: { getSessionId: () => 'fixture', getBranch: () => [] }, ui: { notify: () => {} } } as unknown as ExtensionContext;
   const manager = new BackgroundManager(pi); await manager.init(ctx);
   t.after(async () => { await manager.shutdown(); await fs.rm(root, { recursive: true, force: true }); });
   const record: RecordData = { version: 1, id: 'bg-123456abcdef', title: 'Fixture', sessionId: 'fixture', cwd: root, provider: 'fake', model: 'main', thinking: 'high', status: 'running', access: 'write', startedAt: Date.now(), etaSeconds: 30, etaMaxSeconds: 60, estimateReason: 'Original estimate', lastActivityAt: Date.now(), toolCalls: 0, turns: 0, usage: emptyUsage(), usageReported: false, notification: 'read', overrunNotified: false };
@@ -70,4 +70,33 @@ test('automatic-routing switch is persistent, and finished/unknown tasks cannot 
   f.record.status = 'completed'; f.manager.jobs.set(f.record.id, { record: f.record });
   await assert.rejects(f.manager.updateEta(f.record.id, 10, undefined, 'Late revision'), /finished/);
   assert.throws(() => f.manager.get('bg-000000000000'), /Unknown/);
+});
+
+test('completion persists its reservation before routing, retries only failed storage and never falls back after revoked ownership', async t => {
+  const f = await fixture(t); f.record.status = 'completed'; f.record.notification = 'pending';
+  let calls = 0; let storedBeforeRoute = false;
+  f.manager.jobs.set(f.record.id, { record: f.record, noticeRouter: () => {
+    calls++; storedBeforeRoute = f.record.notification === 'queued'; return false;
+  } });
+  const write = f.manager.store!.write.bind(f.manager.store);
+  f.manager.store!.write = async () => { throw new Error('Synthetic storage unavailable'); };
+  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20));
+  assert.equal(calls, 0); assert.equal(f.record.notification, 'pending');
+  f.manager.store!.write = write;
+  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20));
+  assert.equal(calls, 1); assert.equal(storedBeforeRoute, true); assert.equal(f.record.notification, 'queued');
+  assert.equal(f.notices.length, 0, 'revoked transport ownership cannot fall back to ambient main chat');
+  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(calls, 1);
+});
+
+test('unowned TUI/RPC notices wait for idle and pending messages before starting a separate report turn', async t => {
+  const f = await fixture(t); f.record.status = 'completed'; f.record.notification = 'pending';
+  f.manager.jobs.set(f.record.id, { record: f.record });
+  let idle = false, pending = false;
+  f.ctx.isIdle = () => idle; f.ctx.hasPendingMessages = () => pending;
+  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(f.notices.length, 0);
+  idle = true; pending = true;
+  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(f.notices.length, 0);
+  pending = false;
+  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(f.notices.length, 1);
 });

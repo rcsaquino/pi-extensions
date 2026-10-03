@@ -8,6 +8,7 @@ import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from '@eare
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from '@earendil-works/pi-ai';
 import type { Api, AssistantMessage, JsonObject, Model, SimpleStreamOptions, TranscriptContext } from '@earendil-works/pi-ai';
 import extension from '../src/index.ts';
+import { MAIN_POLICY } from '../src/policy.ts';
 import { Store } from '../src/store.ts';
 import type { Dispatch, RecordData } from '../src/types.ts';
 import { scratch } from './helpers.ts';
@@ -18,7 +19,7 @@ async function eventually<T>(fn: () => Promise<T> | T, predicate: (value: T) => 
   for (;;) { const value = await fn(); if (predicate(value)) return value; if (Date.now() > end) throw new Error('Timed out waiting for test condition.'); await new Promise(r => setTimeout(r, 10)); }
 }
 interface Call { worker: boolean; model: string; reasoning?: string; budgets: unknown; system: string; tools: string[]; text: string; lastRole: string; transcript: string }
-async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc') {
+async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', forcedPrompt?: string) {
   const root = await scratch('bg-sdk-test-');
   const agentDir = join(root, 'agent'); await fs.mkdir(agentDir);
   const previous = process.env.PI_CODING_AGENT_DIR, offline = process.env.PI_OFFLINE;
@@ -123,6 +124,11 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc') {
         return { content: [{ type: 'text', text: 'Enabled' }], details: undefined };
       },
     });
+    pi.on('before_agent_start', event => {
+      event.systemPromptOptions.sections.fixture_context = 'Unrelated section fixture.';
+      event.systemPromptOptions.sections.pi_memoria = '<instructions>\nMemory guidance fixture.\n</instructions>\n<hot_memory>\nStanding instruction fixture.\n</hot_memory>';
+      if (forcedPrompt !== undefined) event.systemPromptOptions.forceSystemPrompt = forcedPrompt;
+    });
     pi.on('tool_call', event => { hooks.push(event.toolName); if (event.toolName === 'read' && event.input.path === '/denied') return { block: true, reason: 'Inherited permission guard.' }; });
   };
   const settings = SettingsManager.inMemory({ defaultTools: ['read', 'bash', 'edit', 'write'], defaultProvider: provider, defaultModel: model.id, defaultThinkingLevel: 'high', thinkingBudgets: { medium: 1000, high: 9000 }, retry: { enabled: false }, cacheWarming: 'off', enableAnalytics: false, enableInstallTelemetry: false });
@@ -150,6 +156,58 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc') {
     slowState: () => ({ slowStarted, slowAborted }), nestedEffects: () => nestedEffects,
   };
 }
+
+function promptBlock(prompt: string, name: string): string {
+  assert.equal(prompt.split(`<${name}>`).length - 1, 1, `${name} opening wrapper must appear once`);
+  assert.equal(prompt.split(`</${name}>`).length - 1, 1, `${name} closing wrapper must appear once`);
+  const match = new RegExp(`<${name}>\\n([\\s\\S]*?)\\n</${name}>`).exec(prompt);
+  assert.ok(match, `${name} section must be independently wrapped`);
+  return match[1]!;
+}
+
+test('real Pi SDK: background policy has a dedicated section and routing updates preserve addendum and unrelated sections', async t => {
+  const f = await fixture(t);
+  await f.session.prompt('Initial prompt');
+  const initial = f.calls.at(-1)!.system;
+  assert.equal(promptBlock(initial, 'background_policy'), `${MAIN_POLICY}\nAutomatic routing is currently on.`);
+  assert.equal(promptBlock(initial, 'addendum'), 'Inherited identity and workspace rules.');
+  assert.equal(promptBlock(initial, 'fixture_context'), 'Unrelated section fixture.');
+  const memory = promptBlock(initial, 'pi_memoria');
+  assert.match(memory, /<instructions>[\s\S]*<hot_memory>/);
+  const original = f.session.messages.find(m => m.role === 'system')!;
+  assert.ok(original.role === 'system' && original.sections?.background_policy);
+  assert.equal(original.role === 'system' && original.sections?.addendum, '<addendum>\nInherited identity and workspace rules.\n</addendum>');
+
+  for (const routing of ['off', 'on'] as const) {
+    await f.session.prompt(`/bg auto ${routing}`);
+    await f.session.prompt(`Routing ${routing} prompt`);
+    const current = f.calls.at(-1)!.system;
+    assert.equal(promptBlock(current, 'background_policy'), `${MAIN_POLICY}\nAutomatic routing is currently ${routing}.`);
+    assert.equal(promptBlock(current, 'addendum'), promptBlock(initial, 'addendum'));
+    assert.equal(promptBlock(current, 'pi_memoria'), memory);
+    assert.equal(promptBlock(current, 'fixture_context'), 'Unrelated section fixture.');
+    const update = f.session.messages.filter(m => m.role === 'system').at(-1)!;
+    assert.ok(update.role === 'system');
+    assert.deepEqual(Object.keys(update.sections ?? {}), ['background_policy']);
+  }
+  assert.deepEqual(f.errors, []);
+});
+
+test('real Pi SDK: forced prompts receive one background wrapper and the current routing state without replacing the opaque addendum', async t => {
+  const base = 'Opaque prompt.\n<addendum>\nInherited identity and workspace rules.\n</addendum>\n<other>\nOpaque unrelated section.\n</other>';
+  const f = await fixture(t, 'rpc', base);
+  await f.session.prompt('Initial forced prompt');
+  for (const routing of ['on', 'off', 'on'] as const) {
+    await f.session.prompt(`/bg auto ${routing}`);
+    await f.session.prompt(`Forced routing ${routing} prompt`);
+    const current = f.calls.at(-1)!.system;
+    assert.ok(current.startsWith(`${base}\n\n<background_policy>`));
+    assert.equal(promptBlock(current, 'background_policy'), `${MAIN_POLICY}\nAutomatic routing is currently ${routing}.`);
+    assert.equal(promptBlock(current, 'addendum'), 'Inherited identity and workspace rules.');
+    assert.equal(promptBlock(current, 'other'), 'Opaque unrelated section.');
+  }
+  assert.deepEqual(f.errors, []);
+});
 
 test('real Pi SDK: default worker stays responsive and inherits capabilities, but not conversation or previously loaded skill text', async t => {
   const f = await fixture(t);
@@ -245,6 +303,17 @@ test('real Pi SDK: manual command obtains realistic ETA then returns, even for s
   await f.session.prompt('/bg Read the source and summarize it.');
   await eventually(() => f.calls, rows => rows.some(c => c.worker));
   assert.equal((await f.records())[0]!.etaSeconds, 30);
+  const mainCall = f.calls.find(c => !c.worker)!;
+  assert.match(mainCall.system, /Acknowledge the work naturally with an honest estimated duration/);
+  assert.match(mainCall.system, /Keep task IDs internal unless genuinely necessary for clarity or troubleshooting, or explicitly requested/);
+  assert.match(mainCall.system, /fixed catchphrases, and vary the wording naturally/);
+  const request = f.session.messages.find(m => m.role === 'user');
+  assert.ok(request && request.role === 'user');
+  const requestText = typeof request.content === 'string' ? request.content : JSON.stringify(request.content);
+  assert.match(requestText, /Acknowledge the work naturally with an honest estimated duration, explicitly as an estimate/);
+  assert.match(requestText, /Keep task IDs internal unless genuinely necessary for clarity or troubleshooting, or explicitly requested/);
+  assert.match(requestText, /fixed catchphrases, and vary the wording naturally/);
+  assert.doesNotMatch(requestText, /Acknowledge the accepted ID/);
   assert.equal(f.session.isStreaming, false);
 });
 test('real Pi SDK: read-only worker cannot use shell or mutating tools', async t => {

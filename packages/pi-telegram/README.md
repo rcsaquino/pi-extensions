@@ -80,6 +80,10 @@ During a Telegram run, the same chat's corrections use Pi **steering** at the ne
 > [!IMPORTANT]
 > Allowlisted users and the local TUI share one Pi conversation. This is not isolated multi-user hosting. The input buffer and pending work are not a durable job queue.
 
+When `pi-background-tasks` is loaded, accepted dispatch during an authenticated Telegram request captures that task's originating session/private chat in an ephemeral capability. Completion, ETA and overdue notices wait until Pi is idle with no pending messages or human request; the main agent then owns a separate task-linked report turn, including `telegram_send` attachments. Another chat or local TUI/RPC request cannot take its target. There is no last-chat fallback or broad forwarding of unrelated assistant finals. Navigation, shutdown/reload and session replacement revoke routing; routes expire after seven days and are not restored after process exit. Retrieve saved status/results explicitly if a revoked or ambiguous notice was not delivered. Workers still cannot send Telegram messages.
+
+Authenticated incoming submissions also expose a one-use, async-scoped receipt to `pi-auto-learn` when present. This does not change Pi's `extension` input source, enable guests, or add a transcript marker. Generic extension input remains unauthenticated; executable extensions themselves are trusted peers.
+
 Only the final answer after `agent_settled` is forwarded. Thinking, intermediate commentary, tool results, retry output, and streaming deltas are not delivered. Markdown becomes plain text plus native Telegram entities, not raw Markdown or `parse_mode`. Formatting handles UTF-16 offsets, emoji-safe splitting, non-overlapping code entities, and Telegram's 4,096-unit text limit. Tables become labeled rows; raw HTML stays literal.
 
 ## Media and voice
@@ -135,7 +139,7 @@ npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```
 
-`TELEGRAM_TEST_DIR` selects isolated scratch. Root `npm run verify` supplies this automatically. Tests use fake HTTP/providers plus real Pi loader/SDK checks, private fixtures, and local synthetic audio. They never require a second live poller or paid speech synthesis.
+`TELEGRAM_TEST_DIR` selects isolated scratch. Root `npm run verify` supplies this automatically. Tests use fake HTTP/providers plus real Pi loader/SDK checks (including the optional three-package integration), private fixtures, and local synthetic audio. They never require a second live poller or paid speech synthesis.
 
 Read [AGENTS.md](AGENTS.md) for module boundaries, invariants, and targeted checks. Live Telegram/STT/TTS acceptance requires separate approval and is not implied by offline tests.
 

@@ -10,7 +10,7 @@
 
 The npm package is `@rcsaquino/pi-background-tasks`; the source directory and runtime paths remain `pi-background-tasks`. It is distinct from the unrelated unscoped npm package.
 
-Runs independent in-process workers while the main chat remains available. Each worker captures the active provider, physical model, and thinking level at dispatch. Conversation history is **not copied by default**. A realistic duration estimate is mandatory, and accepted work returns a task ID immediately.
+Runs independent in-process workers while the main chat remains available. Each worker captures the active provider, physical model, and thinking level at dispatch. Conversation history is **not copied by default**. A realistic duration estimate is mandatory, and accepted work returns an internal task ID immediately.
 
 ## Requirements
 
@@ -60,7 +60,7 @@ Model-facing tools:
 
 Manual requests always delegate. Automatic routing uses an honest upfront estimate and delegates when its upper bound is **strictly greater than 120 seconds**. Exactly 120 seconds stays inline. The model must make the estimate and follow the policy; this is not a stopwatch predicting unseen future work.
 
-An accepted response includes the task ID and estimated duration. Do not sleep, repeatedly poll, wait on a long tool promise, or duplicate the worker's work in the main chat. Completion/failure/overdue notifications become ordinary main-chat follow-ups. Estimates can change with evidence; they are not guaranteed deadlines or invented progress percentages.
+The tool's accepted response includes an internal task ID and estimated duration. Acknowledge the work naturally to the user with an honest duration, explicitly as an estimate; keep IDs internal unless genuinely necessary for clarity or troubleshooting, or explicitly requested. Avoid robotic job-ticket acknowledgments and fixed catchphrases; vary the wording naturally. IDs remain available for native controls, lookup, and correlation. Do not sleep, repeatedly poll, wait on a long tool promise, or duplicate the worker's work in the main chat. Completion/failure/overdue notifications become main-chat follow-ups when idle, never merged into active human work. With `pi-telegram` loaded, dispatch inside an authenticated Telegram request captures task-linked routing so later reports reach the originating private chat even after the acknowledgment settles. The main agent retrieves results and delivers attachments; workers never own transport. Local/TUI/RPC dispatch has no ambient Telegram target. Routing is ephemeral and revoked on navigation, session replacement or shutdown; uncertain or revoked delivery is not blindly replayed. Completion reserves its notification durably before routing, so a lost/revoked notice may require explicit status/result retrieval. Estimates can change with evidence; they are not guaranteed deadlines or invented progress percentages.
 
 ## Context and inheritance
 

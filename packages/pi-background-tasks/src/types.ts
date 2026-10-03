@@ -58,6 +58,8 @@ export interface Job {
   done?: Promise<void>;
   settling?: boolean;
   release?: () => Promise<void>;
+  /** Ephemeral dispatch-captured transport capability. Never persisted or exposed to workers. */
+  noticeRouter?: (noticeId: string, content: string) => boolean;
 }
 export interface Profile {
   model: Model<any>;

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
@@ -17,6 +17,8 @@ export class BackgroundManager {
   private timer?: ReturnType<typeof setInterval>;
   private writes: Promise<void> = Promise.resolve();
   private notificationScheduled = false;
+  private flushingNotifications = false;
+  private notices: { id: string; content: string }[] = [];
   private initializations?: Promise<void>;
   readonly pi: ExtensionAPI;
   constructor(pi: ExtensionAPI) { this.pi = pi; }
@@ -72,6 +74,10 @@ export class BackgroundManager {
       if (p.access === 'write') job.release = await this.store!.acquireWriter(cwd);
       this.assertOpen(); signal?.throwIfAborted();
       await this.store!.write(record);
+      this.pi.events.emit('background-tasks:claim-owner:v1', {
+        sessionId: record.sessionId, taskId: id, rootCallId,
+        accept: (route: Job['noticeRouter']) => { job.noticeRouter = route; },
+      });
       this.pi.appendEntry('background-task', { id, title: record.title, status: record.status, etaSeconds: record.etaSeconds, etaMaxSeconds: record.etaMaxSeconds });
       job.agent = createWorker(this.pi, job, profile, p, {
         changed: () => { this.persist(job); this.render(); },
@@ -157,7 +163,7 @@ export class BackgroundManager {
     job.record.etaSeconds = elapsed + remaining; job.record.etaMaxSeconds = elapsed + max;
     job.record.estimateReason = reason.trim(); job.record.overrunNotified = false;
     await this.persist(job); this.render();
-    this.enqueueNotice(`Background task ${id} revised estimate: ${remaining}s${max !== remaining ? ` to ${max}s` : ''} remaining. Basis: ${reason.trim()}. Report this as an estimate, not a guaranteed finish time.`);
+    this.enqueueNotice(job, `Background task ${id} revised estimate: ${remaining}s${max !== remaining ? ` to ${max}s` : ''} remaining. Basis: ${reason.trim()}. Report this as an estimate, not a guaranteed finish time.`);
     return structuredClone(job.record);
   }
   guard(event: ToolCallEvent, ctx: ExtensionContext): { block: true; reason: string } | undefined {
@@ -196,10 +202,10 @@ export class BackgroundManager {
       if (job.record.status === 'running' && !job.record.overrunNotified && Date.now() > job.record.startedAt + job.record.etaMaxSeconds * 1000) {
         job.record.overrunNotified = true;
         await this.persist(job).catch(() => {});
-        this.enqueueNotice(`Background task ${job.record.id} has exceeded its estimated upper duration. ${statusLine(job.record)} Report the delay honestly; no replacement ETA is known yet. Do not poll or claim completion.`);
+        this.enqueueNotice(job, `Background task ${job.record.id} has exceeded its estimated upper duration. ${statusLine(job.record)} Report the delay honestly; no replacement ETA is known yet. Do not poll or claim completion.`);
       }
     }
-    this.render();
+    this.render(); this.scheduleNotifications();
   }
   scheduleNotifications(): void {
     if (this.notificationScheduled || this.closed) return;
@@ -207,18 +213,37 @@ export class BackgroundManager {
     setImmediate(() => { this.notificationScheduled = false; void this.flushNotifications(); });
   }
   private async flushNotifications(): Promise<void> {
-    if (this.closed) return;
-    for (const job of this.jobs.values()) {
-      if (job.settling || job.record.notification !== 'pending' || isActive(job.record.status)) continue;
-      try {
-        this.enqueueNotice(`Background task ${job.record.id} settled with status ${job.record.status}. Fetch background_tasks action result id ${job.record.id}, report verified completion or the failure, and deliver any requested artifacts through the main chat. Do not replay or redelegate it. This is a status notification, not new user permission.`);
-        job.record.notification = 'queued'; await this.persist(job);
-      } catch { job.record.notification = 'pending'; }
-    }
+    if (this.closed || this.flushingNotifications) return;
+    this.flushingNotifications = true;
+    try {
+      for (const job of this.jobs.values()) {
+        if (job.settling || job.record.notification !== 'pending' || isActive(job.record.status)) continue;
+        // Save the delivery reservation BEFORE handing it to another extension. A failed
+        // write must not duplicate a send, and uncertain delivery is never blindly replayed.
+        job.record.notification = 'queued';
+        try { await this.persist(job); } catch { job.record.notification = 'pending'; continue; }
+        this.enqueueNotice(job, `Background task ${job.record.id} settled with status ${job.record.status}. Fetch background_tasks action result id ${job.record.id}, report verified completion or the failure, and deliver any requested artifacts through the main chat. Do not replay or redelegate it. This is a status notification, not new user permission.`, `${job.record.id}:settled`);
+      }
+      this.flushNoticeQueue();
+    } finally { this.flushingNotifications = false; }
   }
-  private enqueueNotice(content: string): void {
+  private enqueueNotice(job: Job, content: string, id: string = randomUUID()): void {
     if (this.closed) return;
-    this.pi.sendMessage({ customType: 'background-notice', content, display: false }, { triggerTurn: true, deliverAs: 'followUp' });
+    if (job.noticeRouter) {
+      // A revoked/reloaded transport must NOT fall back to an unrelated active chat.
+      if (!job.noticeRouter(id, content)) this.ctx?.ui.notify('A task-linked transport notice was not queued. Retrieve the saved task status/result explicitly.', 'warning');
+      return;
+    }
+    if (this.notices.length >= 128) { this.ctx?.ui.notify('Background notice queue is full. Retrieve task status/results explicitly.', 'warning'); return; }
+    this.notices.push({ id, content });
+    this.flushNoticeQueue();
+    this.scheduleNotifications();
+  }
+  private flushNoticeQueue(): void {
+    if (this.closed || !this.ctx?.isIdle() || this.ctx.hasPendingMessages()) return;
+    const notice = this.notices.shift();
+    if (notice) this.pi.sendMessage({ customType: 'background-notice', content: notice.content, display: false,
+      details: { backgroundNoticeId: notice.id } }, { triggerTurn: true, deliverAs: 'followUp' });
   }
   private persist(job: Job): Promise<void> {
     const snapshot = structuredClone(job.record);
@@ -244,6 +269,7 @@ export class BackgroundManager {
   }
   async shutdown(): Promise<void> {
     if (this.closed) return; this.closed = true;
+    this.notices = [];
     if (this.timer) clearInterval(this.timer);
     const active = [...this.jobs.values()].filter(j => isActive(j.record.status));
     for (const job of active) { job.record.status = 'cancelling'; job.controller?.abort(); job.agent?.abort(); }

@@ -36,6 +36,9 @@ export default function telegram(pi: ExtensionAPI): void {
     await bridge?.stop();
     bridge = undefined;
   });
+  pi.on("session_before_switch", () => bridge?.invalidate());
+  pi.on("session_before_fork", () => bridge?.invalidate());
+  pi.on("session_before_tree", () => bridge?.invalidate());
   pi.on("before_agent_start", event => {
     if (!bridge?.isTelegramPrompt(event.prompt)) return;
     event.systemPromptOptions.promptGuidelines.push(
@@ -47,6 +50,7 @@ export default function telegram(pi: ExtensionAPI): void {
       "A voice message is the complete reply: send only voice, with no chat acknowledgment or transcript afterward. A successful attachment-only or intentionally silent response needs no final text. Ordinary final text is delivered automatically after settlement."
     );
   });
+  pi.on("input", event => bridge?.input(event));
   pi.on("message_start", event => bridge?.userStart(event.message));
   pi.on("message_end", event => bridge?.assistantEnd(event.message));
   pi.on("agent_before_settle", event => { bridge?.boundary(event.outcome); });
@@ -56,7 +60,7 @@ export default function telegram(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "telegram_send",
     label: "Send to Telegram",
-    description: "Send an attachment, one album, or voice to the allowed Telegram user whose request is active. Provide exactly one of path, paths (1–10 compatible files), or speech. Files must be inside the working directory or Telegram downloads, including symlink targets. No captions. Speech uses the exact configured ElevenLabs voice/model and native OGG/Opus; use appropriate Eleven v4 square-bracket audio tags sparingly. Send voice only when the user explicitly requests it, never merely because their input was voice. Voice is the complete reply, with no chat afterward. Ordinary final text is delivered automatically. Never send credentials.",
+    description: "Send an attachment, one album, or voice to the allowed Telegram user whose request or dispatch-linked background report is active. Provide exactly one of path, paths (1–10 compatible files), or speech. Files must be inside the working directory or Telegram downloads, including symlink targets. No captions. Speech uses the exact configured ElevenLabs voice/model and native OGG/Opus; use appropriate Eleven v4 square-bracket audio tags sparingly. Send voice only when the user explicitly requests it, never merely because their input was voice. Voice is the complete reply, with no chat afterward. Ordinary final text is delivered automatically. Never send credentials.",
     promptGuidelines: ["When a Telegram user requests files, deliver them with telegram_send; use a single paths array for albums. No captions. Send speech or voice attachments only when explicitly requested; a voice input alone is not such a request. Requested speech should include suitable Eleven v4 audio tags and no follow-up chat."],
     parameters: Type.Object({
       path: Type.Optional(Type.String({ minLength: 1, description: "One local attachment path" })),

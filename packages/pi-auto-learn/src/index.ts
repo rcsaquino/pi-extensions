@@ -9,7 +9,8 @@ import { Store } from './state.ts';
 import { Writer } from './safe-writer.ts';
 import { Learner } from './learner.ts';
 import { BusyError } from './lock.ts';
-import { capture, guestInput } from './observations.ts';
+import { capture } from './observations.ts';
+import { InputAdmission, messageText } from './input-admission.ts';
 import { resolveProfile, selectionKey } from './model-profile.ts';
 import { displaySafe } from './privacy.ts';
 import { readFileSafe, targetPath, within } from './filesystem.ts';
@@ -45,7 +46,10 @@ export default function autoLearn(pi: ExtensionAPI): void {
   let context: ExtensionContext | undefined;
   let stopped = false;
   let active = false;
-  let admitted = true;
+  let admitted = false;
+  const admission = new InputAdmission(pi);
+  let boundaryCompleted = false;
+  let activityEpoch = 0;
   let used = new Set<string>();
   let failures = new Set<string>();
   let dispatched: { selectedKey: string; message: AssistantMessage } | undefined;
@@ -159,11 +163,16 @@ export default function autoLearn(pi: ExtensionAPI): void {
   });
   pi.on('input', (event, ctx) => {
     context = ctx; stopWork(); active = true; retryCount = 0;
-    admitted = event.source !== 'extension' && !guestInput(event.text);
+    activityEpoch++; admitted = false; boundaryCompleted = false;
+    admission.input(event, session(ctx));
     used = new Set(); failures = new Set();
-    void enqueue(async () => { if (store) { if ((await store.config()).admitGuests) admitted = event.source !== 'extension'; await store.activity(session(ctx), true); } });
+    void enqueue(async () => { if (store) await store.activity(session(ctx), true); });
   });
-  pi.on('agent_start', (_event, ctx) => { context = ctx; active = true; stopWork(); void enqueue(async () => store?.activity(session(ctx), true)); });
+  pi.on('message_start', (event, ctx) => {
+    admission.consume(event.message.role, 'content' in event.message ? event.message.content : undefined, session(ctx));
+    if (event.message.role === 'custom') { activityEpoch++; admitted = false; stopWork(); }
+  });
+  pi.on('agent_start', (_event, ctx) => { activityEpoch++; context = ctx; active = true; boundaryCompleted = false; stopWork(); void enqueue(async () => store?.activity(session(ctx), true)); });
   pi.on('before_agent_start', async (event, ctx) => {
     context = ctx; stopWork();
     if (!writer || !learner) return;
@@ -209,28 +218,36 @@ export default function autoLearn(pi: ExtensionAPI): void {
     if (id && !event.isError) used.add(id);
     reads.delete(event.toolCallId);
   });
+  pi.on('agent_before_settle', event => { boundaryCompleted = event.outcome === 'completed'; });
   pi.on('agent_settled', (_event, ctx) => {
     context = ctx; active = false;
     const usedIds = [...used]; const failureIds = [...failures];
     const branch = ctx.sessionManager.getBranch();
-    const evidence: Evidence | undefined = admitted ? capture(branch, session(ctx), usedIds, failureIds) : undefined;
     const latestUser = [...branch].reverse().find(e => e.type === 'message' && e.message.role === 'user');
+    const eligible = admission.snapshot(session(ctx), latestUser?.type === 'message' ? messageText('content' in latestUser.message ? latestUser.message.content : undefined) : '');
+    const evidence: Evidence | undefined = boundaryCompleted ? capture(branch, session(ctx), usedIds, failureIds) : undefined;
+    const completed = boundaryCompleted;
+    const epoch = activityEpoch;
+    boundaryCompleted = false;
     void enqueue(async () => {
       if (!store || !learner) return;
-      await store.activity(session(ctx), false);
+      if (epoch === activityEpoch) await store.activity(session(ctx), false);
       const latestAssistant = [...branch].reverse().find(e => e.type === 'message' && e.message.role === 'assistant');
-      if (admitted && !disabled() && latestUser && latestAssistant?.type === 'message' && latestAssistant.message.role === 'assistant' && latestAssistant.message.stopReason === 'stop' && (await store.config()).enabled) await learner.observe(session(ctx), latestUser.id, evidence, usedIds);
-      await schedule();
+      const config = await store.config();
+      const allowed = completed && eligible(config.admitGuests);
+      if (epoch === activityEpoch) admitted = allowed && !active;
+      if (allowed && !disabled() && latestUser && latestAssistant?.type === 'message' && latestAssistant.message.role === 'assistant' && latestAssistant.message.stopReason === 'stop' && config.enabled) await learner.observe(session(ctx), latestUser.id, evidence, usedIds);
+      if (epoch === activityEpoch) await schedule();
     });
   });
-  const invalidate = () => { stopWork(); dispatched = undefined; };
+  const invalidate = () => { activityEpoch++; stopWork(); dispatched = undefined; admitted = false; admission.clear(); };
   pi.on('model_select', invalidate);
   pi.on('thinking_level_select', invalidate);
   pi.on('session_before_switch', invalidate);
   pi.on('session_before_fork', invalidate);
   pi.on('session_before_tree', invalidate);
   pi.on('session_shutdown', async (_event, ctx) => {
-    stopped = true; active = false; stopWork();
+    stopped = true; active = false; stopWork(); admission.clear(); admitted = false;
     if (integrity) clearInterval(integrity); if (heartbeat) clearInterval(heartbeat);
     await pending;
     await backgroundTask?.catch(() => undefined);

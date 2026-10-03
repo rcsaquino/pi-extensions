@@ -125,7 +125,7 @@ npm --prefix packages/pi-latency-analytics run bench
 
 The benchmark uses synthetic normalized events and a real background writer/database under ignored `.bench/`. It measures observer costs, not live end-to-end latency or delivery overhead. State the workload/environment when reporting numbers.
 
-Tests cover timing, overlap, privacy, settlement, ambiguity, multiple writers, permissions, bounded buffers, interruption recovery, and actual Pi loader/SDK behavior with synthetic streams. They do not require a live provider. See [AGENTS.md](AGENTS.md) for module invariants and regression targets. This checkout has no automatic CI or npm publication workflow; releases are deliberate operator actions.
+Tests cover timing, overlap, privacy, settlement, ambiguity, multiple writers, permissions, bounded buffers, interruption recovery, and actual Pi loader/SDK behavior with synthetic streams. They do not require a live provider. See [AGENTS.md](AGENTS.md) for module invariants and regression targets. This package has no automatic CI or npm publication workflow; releases are deliberate operator actions.
 
 ## Support and contact
 

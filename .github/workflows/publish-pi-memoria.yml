@@ -1,0 +1,123 @@
+# Publishes pi-memoria to npm when a pi-memoria-v<version> tag is pushed.
+#
+# One-time npm setup (npmjs.com -> pi-memoria -> Settings -> Trusted publishing):
+#   Organization or user: rcsaquino
+#   Repository:           pi-extensions
+#   Workflow filename:    publish-pi-memoria.yml
+#   Environment name:     (leave blank unless a GitHub environment gate is added)
+#   Allowed actions:      include "npm publish" (newer npm configurations
+#                         default to stage-only, which this workflow does not use)
+#
+# Provenance attestations are generated automatically by trusted publishing;
+# no npm token or --provenance flag is involved. See RELEASING.md.
+name: Publish pi-memoria
+
+on:
+  push:
+    tags:
+      - 'pi-memoria-v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-pi-memoria
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'rcsaquino/pi-extensions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the tagged commit with history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node 26.10 and npm
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Require the tagged commit to be on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "::error::${GITHUB_REF_NAME} does not point at a commit on main."
+            exit 1
+          fi
+
+      - name: Validate tag, version and registry state
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./packages/pi-memoria/package.json').version")"
+          if [ "${GITHUB_REF_NAME}" != "pi-memoria-v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match prepared version ${version}."
+            exit 1
+          fi
+          if npm view "pi-memoria@${version}" version >/dev/null 2>&1; then
+            echo "::error::pi-memoria@${version} is already published; refusing to replace it."
+            exit 1
+          fi
+          latest="$(npm view pi-memoria version)"
+          if ! node -e '
+            const [next, latest] = process.argv.slice(1);
+            const parse = value => value.split(/-/)[0].split(/\./).map(Number);
+            const a = parse(next); const b = parse(latest);
+            for (let i = 0; i < 3; i++) {
+              if ((a[i] ?? 0) !== (b[i] ?? 0)) process.exit((a[i] ?? 0) > (b[i] ?? 0) ? 0 : 1);
+            }
+            process.exit(0);
+          ' "${version}" "${latest}"; then
+            echo "::error::pi-memoria@${version} does not advance published latest ${latest}."
+            exit 1
+          fi
+          echo "pi-memoria@${version} is unpublished and advances the published latest."
+
+      - name: Ensure test prerequisites
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null || ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ripgrep ffmpeg
+          fi
+          command -v rg
+          command -v ffmpeg
+          command -v flock
+
+      - name: Install package dependencies
+        run: |
+          set -euo pipefail
+          for package in packages/*; do
+            echo "Installing ${package}"
+            npm --prefix "${package}" install --ignore-scripts --legacy-peer-deps \
+              --workspaces=false --no-package-lock --no-fund --no-audit
+          done
+
+      - name: Verify the full suite
+        run: npm run verify
+
+      - name: Publish pi-memoria
+        working-directory: packages/pi-memoria
+        run: npm publish --ignore-scripts --access public --workspaces=false
+
+      - name: Confirm publication
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./packages/pi-memoria/package.json').version")"
+          for attempt in $(seq 1 12); do
+            if npm view "pi-memoria@${version}" version dist.tarball >/dev/null 2>&1; then
+              npm view "pi-memoria@${version}" version dist.tarball
+              npm view pi-memoria dist-tags
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::pi-memoria@${version} was published but is not yet visible in the registry; confirm manually."
+          exit 1

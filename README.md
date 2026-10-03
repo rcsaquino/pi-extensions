@@ -104,7 +104,7 @@ There is no common compile step: Pi loads package TypeScript entry points direct
 
 ## Release preparation
 
-See [RELEASING.md](RELEASING.md) for independent package versions, npm names, dry-run checks, and the manual publication process. The root remains private. This checkout has no automatic CI or publication workflow; Git initialization, pushes, tags, GitHub releases, and npm publication are separate operator actions.
+See [RELEASING.md](RELEASING.md) for independent package versions, npm names, dry-run checks, and the publication process, including the tag-driven `pi-memoria` workflow. The root remains private. Apart from that workflow, Git initialization, pushes, tags, GitHub releases, and npm publication are separate operator actions.
 
 ## Safety and runtime data
 

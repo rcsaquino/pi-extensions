@@ -165,3 +165,27 @@ test('environment example is inert and interrupted test scratch stays ignored', 
     assert.ok(ignore.includes(pattern), `Missing ignore: ${pattern}`);
   }
 });
+
+test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinned', () => {
+  const path = join(root, '.github/workflows/publish-pi-memoria.yml');
+  assert.ok(existsSync(path), 'Missing pi-memoria publication workflow');
+  const workflow = read(path);
+  assert.match(workflow, /^name: Publish pi-memoria$/m);
+  assert.match(workflow, /push:\n\s+tags:\n\s+- 'pi-memoria-v\*'/);
+  assert.match(workflow, /permissions:\n\s+contents: read\n\s+id-token: write/);
+  assert.doesNotMatch(workflow, /pull_request|workflow_dispatch|workflow_call/);
+  assert.doesNotMatch(workflow, /NPM_TOKEN|secrets\./);
+  for (const match of workflow.matchAll(/uses:\s*(\S+)/g)) {
+    assert.match(match[1], /^actions\/[a-z-]+@[0-9a-f]{40}$/, `Unpinned action ${match[1]}`);
+  }
+  assert.match(workflow, /node-version: '26\.10\.0'/);
+  assert.match(workflow, /package-manager-cache: false/);
+  assert.match(workflow, /fetch-depth: 0/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /merge-base --is-ancestor/);
+  assert.match(workflow, /working-directory: packages\/pi-memoria/);
+  assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);
+  for (const other of ['pi-telegram', 'pi-auto-learn', 'pi-background-tasks', 'pi-idle-compaction', 'pi-latency-analytics']) {
+    assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
+  }
+});

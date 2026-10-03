@@ -61,12 +61,12 @@ Add meaningful regression tests for cap boundaries, races, durable retrieval, pa
 
 ## Releasing
 
-Follow the [manual monorepo release process](https://github.com/rcsaquino/pi-extensions/blob/main/RELEASING.md) only after explicit approval. Version 0.3.2 is prepared as the next patch after the public 0.3.1 release; it is not published by editing this file.
+Follow the [monorepo release process](https://github.com/rcsaquino/pi-extensions/blob/main/RELEASING.md) only after explicit approval. Version 0.3.2 is prepared as the next patch after the public 0.3.1 release; it is not published by editing this file.
 
 - Verify this package and the root suite, inspect `npm pack --dry-run --ignore-scripts --workspaces=false`, and check the chosen version is not already on npm.
-- Use package-specific tags such as `pi-memoria-v0.3.2`, not a shared root `v0.3.2` tag. Commit, push, tag, release creation, and npm publication remain separately authorized actions.
-- There is no automatic npm publication workflow in this checkout. Creating a GitHub release does not publish npm packages.
-- An old trusted-publisher configuration targeting the standalone `rcsaquino/pi-memoria` repository does not authorize a new monorepo workflow. If automation is later chosen, configure the exact monorepo/workflow identity on npm separately; never claim it is already active.
+- Use package-specific tags such as `pi-memoria-v0.3.2`, not a shared root `v0.3.2` tag. Commit, push, tag, release creation, and npm publication remain separately authorized actions; pushing a `pi-memoria-v<version>` tag is the publication authorization for the workflow.
+- `.github/workflows/publish-pi-memoria.yml` publishes this package on a `pi-memoria-v<version>` tag after the full suite verifies, using npm trusted publishing (OIDC) with automatic provenance. Creating a GitHub release does not itself publish npm packages.
+- The old trusted-publisher configuration targeting the standalone `rcsaquino/pi-memoria` repository does not apply. The npm trusted publisher must target `rcsaquino/pi-extensions` with workflow filename `publish-pi-memoria.yml` and allow `npm publish`; verify it on npm before the first tagged release and never claim it is configured until then.
 - Manual publication needs the account's current npm authorization and any required interactive 2FA. A dry run cannot verify those permissions. Never include credentials in commands, documentation, logs, or model context.
 - Confirm the exact published version and dist-tag from the public registry before reporting success. Keep release notes factual and specific to this package.
 

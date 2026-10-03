@@ -58,4 +58,4 @@ Run targeted regressions, package verification, then shared checks for API/path 
 
 Keep the database outside source control and do not expose real activity metadata in reports/tests. Inspection is not authorization to delete records, migrate the live database, change global paths/settings, reload/restart the host, or instrument another extension.
 
-Pi loads TypeScript directly; retain `index.ts` and the complete relative `lib/` tree. No shared compile step or physical duplicate host runtime is required. This checkout has no automatic CI or publication workflow. Do not commit, push, tag, release, bump versions, or publish without explicit approval.
+Pi loads TypeScript directly; retain `index.ts` and the complete relative `lib/` tree. No shared compile step or physical duplicate host runtime is required. This package has no automatic CI or publication workflow. Do not commit, push, tag, release, bump versions, or publish without explicit approval.

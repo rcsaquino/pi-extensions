@@ -82,6 +82,8 @@ During a Telegram run, the same chat's corrections use Pi **steering** at the ne
 
 When `pi-background-tasks` is loaded, accepted dispatch during an authenticated Telegram request captures that task's originating session/private chat in an ephemeral capability. Completion, ETA and overdue notices wait until Pi is idle with no pending messages or human request; the main agent then owns a separate task-linked report turn, including `telegram_send` attachments. Another chat or local TUI/RPC request cannot take its target. There is no last-chat fallback or broad forwarding of unrelated assistant finals. Navigation, shutdown/reload and session replacement revoke routing; routes expire after seven days and are not restored after process exit. Retrieve saved status/results explicitly if a revoked or ambiguous notice was not delivered. Workers still cannot send Telegram messages.
 
+Report admission also waits for the bridge's foreground settlement observation, not just Pi's early idle flag. An older run's `agent_settled` event cannot discard a report that has been submitted but has not started. Pending reports are not delivery authority: only their matching bridge-generated custom message opens the foreground window. Started reports retain their captured session and recipient through result retrieval and ordinary continuation/compaction; input, navigation, cancellation, settlement and shutdown can revoke the window. Uploads revalidate the same owner immediately before transport, including after file/speech preparation or an explicit rate-limit backoff. A late queued tool cannot borrow the next user's target.
+
 Authenticated incoming submissions also expose a one-use, async-scoped receipt to `pi-auto-learn` when present. This does not change Pi's `extension` input source, enable guests, or add a transcript marker. Generic extension input remains unauthenticated; executable extensions themselves are trusted peers.
 
 Only the final answer after `agent_settled` is forwarded. Thinking, intermediate commentary, tool results, retry output, and streaming deltas are not delivered. Markdown becomes plain text plus native Telegram entities, not raw Markdown or `parse_mode`. Formatting handles UTF-16 offsets, emoji-safe splitting, non-overlapping code entities, and Telegram's 4,096-unit text limit. Tables become labeled rows; raw HTML stays literal.
@@ -129,6 +131,16 @@ A kernel-backed lease is acquired before any Telegram API call. The first instan
 Never remove an ownership lock inode while an instance could use it. Empty lock files do not prove ownership. Instances must share the agent directory and compatible ownership implementation; other hosts/directories and legacy bridges remain subject to Telegram conflict rules.
 
 Telegram chats are not end-to-end encrypted. Incoming audio goes to Groq and speech scripts go to ElevenLabs; provider charges and retention policies apply. Error messages redact configured secrets and never expose authenticated URLs or raw provider responses. An ambiguous outgoing network failure is not blindly retried; explicit rate-limit rejections receive bounded retries.
+
+`telegram_send` refusals are local pre-upload checks with stable `TG_*` codes and closed boolean/context diagnostics, not evidence of Telegram receipt or a network timeout:
+
+- `TG_BRIDGE_STOPPED` / `TG_BRIDGE_DISCONNECTED`: transport availability.
+- `TG_NO_CONTEXT` / `TG_CONTEXT_NOT_STARTED`: absent or pending delivery context.
+- `TG_CONTEXT_SETTLING` / `TG_CONTEXT_CANCELLED`: closed or revoked window.
+- `TG_CONTEXT_NOT_OWNER` / `TG_CONTEXT_REPLACED`: wrong or stale foreground owner.
+- `TG_SESSION_CHANGED` / `TG_RECIPIENT_NOT_ALLOWED` / `TG_CALL_CANCELLED`: session, allowlist or tool-call revalidation.
+
+Transport failures have separate `TG_TRANSPORT_*` codes. Only an observed abort/deadline signal establishes cancellation/timeout; otherwise the network cause remains unverified. Failed or unreadable outgoing acknowledgements leave **delivery outcome unknown**. They do not consume/reassign ownership or trigger an automatic upload replay. An explicit retry is possible only in a still-valid window or a new authenticated request; verify uncertain receipt first. Errors contain no recipient IDs, task/message content, paths, URLs or raw provider details.
 
 ## Development
 

@@ -99,6 +99,38 @@ test('two workers share one SQLite database without mixing sessions', async t =>
   assert.equal(first.health().dropped_records,0); assert.equal(second.health().dropped_records,0);
 });
 
+test('startup retries SQLite contention off-thread and leaves one atomic instance registration', async t => {
+  const path = join(temp(t),'analytics.sqlite'); const holder = new AnalyticsDatabase(path,randomUUID());
+  holder.db.exec('BEGIN IMMEDIATE');
+  const writer = new WriterClient(path,randomUUID());
+  let released = false;
+  const timer = setTimeout(() => { holder.db.exec('COMMIT'); released = true; },650);
+  t.after(async () => { clearTimeout(timer); if (!released) holder.db.exec('ROLLBACK'); await writer.close(); holder.close(); });
+  assert.equal(writer.health().state,'starting');
+  const start = performance.now(); let observed = 0;
+  const c = new Collector(() => observed++); c.agentStart(); c.finish();
+  assert.ok(observed > 0); assert.ok(performance.now()-start < 100, 'local observer does not wait on the remote SQL lock');
+  const status = await writer.query({action:'status'});
+  assert.equal(released,true); assert.equal(status.instances.length,2);
+  assert.equal(writer.health().state,'ready'); assert.equal(writer.health().dropped_records,0);
+});
+
+test('repeated concurrent fresh databases initialize six writers without cross-session contamination or lost records', async t => {
+  const dir = temp(t);
+  for (let round = 0; round < 3; round++) {
+    const path = join(dir,`concurrent-${round}.sqlite`), writers = [];
+    try {
+      for (let i = 0; i < 6; i++) {
+        const id = randomUUID(), writer = new WriterClient(path,id); writers.push(writer);
+        activity(r => writer.enqueue(r),id,`session-${i}`,`fixture_${i}`);
+      }
+      const results = await Promise.all(writers.map((writer,i) => writer.query({action:'last',sessionId:`session-${i}`})));
+      for (let i = 0; i < 6; i++) { assert.equal(results[i][0].tools[0].name,`fixture_${i}`); assert.equal(writers[i].health().dropped_records,0); }
+      assert.equal((await writers[0].query({action:'status'})).traces,6);
+    } finally { await Promise.all(writers.map(writer => writer.close())); }
+  }
+});
+
 test('bounded buffer drops do not block callers and mark traces incomplete', async t => {
   const instance = randomUUID(), writer = new WriterClient(join(temp(t),'analytics.sqlite'),instance,{maxRecords:3,batchSize:64});
   t.after(() => writer.close()); activity(r => writer.enqueue(r),instance);

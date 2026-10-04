@@ -4,6 +4,45 @@ import { resolve } from "node:path";
 import { parseEnv } from "node:util";
 
 export class SafeError extends Error {}
+
+export type DeliveryRefusalCode = "TG_BRIDGE_STOPPED" | "TG_BRIDGE_DISCONNECTED" | "TG_NO_CONTEXT" | "TG_CONTEXT_NOT_STARTED" |
+  "TG_CONTEXT_SETTLING" | "TG_CONTEXT_CANCELLED" | "TG_CONTEXT_NOT_OWNER" | "TG_CONTEXT_REPLACED" |
+  "TG_SESSION_CHANGED" | "TG_RECIPIENT_NOT_ALLOWED" | "TG_CALL_CANCELLED";
+export interface DeliveryState {
+  running: boolean; connected: boolean; context: "none" | "request" | "report";
+  started: boolean; settling: boolean; cancelled: boolean; owned: boolean;
+}
+const refusalReasons: Record<DeliveryRefusalCode, string> = {
+  TG_BRIDGE_STOPPED: "bridge is not running",
+  TG_BRIDGE_DISCONNECTED: "bridge is disconnected",
+  TG_NO_CONTEXT: "no authenticated request or dispatch-linked report is active",
+  TG_CONTEXT_NOT_STARTED: "delivery context is queued but has not started",
+  TG_CONTEXT_SETTLING: "delivery context is settling",
+  TG_CONTEXT_CANCELLED: "delivery context was cancelled or revoked",
+  TG_CONTEXT_NOT_OWNER: "delivery context does not own the foreground turn",
+  TG_CONTEXT_REPLACED: "captured delivery context is no longer current",
+  TG_SESSION_CHANGED: "delivery context belongs to a different session",
+  TG_RECIPIENT_NOT_ALLOWED: "captured recipient is no longer allowed",
+  TG_CALL_CANCELLED: "tool call was cancelled",
+};
+/** Closed, state-only diagnostics: never recipient IDs, content, paths, or raw exceptions. */
+export class DeliveryRefusal extends SafeError {
+  constructor(readonly code: DeliveryRefusalCode, readonly state: DeliveryState) {
+    super(`telegram_send refused locally [${code}]: ${refusalReasons[code]}. No upload initiated by this refusal. ` +
+      `State: running=${state.running}, connected=${state.connected}, context=${state.context}, started=${state.started}, ` +
+      `settling=${state.settling}, cancelled=${state.cancelled}, owned=${state.owned}.`);
+  }
+}
+
+export type TransportFailureCode = "TG_TRANSPORT_CANCELLED" | "TG_TRANSPORT_TIMEOUT" | "TG_TRANSPORT_FAILED" | "TG_TRANSPORT_RESPONSE";
+export class TransportFailure extends SafeError {
+  constructor(readonly code: TransportFailureCode, readonly deliveryOutcome: "unknown" | "not_applicable") {
+    const reason = code === "TG_TRANSPORT_CANCELLED" ? "request was cancelled" : code === "TG_TRANSPORT_TIMEOUT" ? "request deadline elapsed"
+      : code === "TG_TRANSPORT_RESPONSE" ? "response could not be confirmed" : "network request failed (cause unverified)";
+    super(`Telegram transport [${code}]: ${reason}.` + (deliveryOutcome === "unknown"
+      ? " Delivery outcome unknown; do not automatically retry." : ""));
+  }
+}
 export function safeError(error: unknown): string {
   return error instanceof SafeError ? error.message : "Telegram operation failed. Check local configuration and connectivity.";
 }

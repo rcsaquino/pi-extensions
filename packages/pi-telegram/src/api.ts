@@ -1,7 +1,7 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { type Config, SafeError, redact } from "./config.ts";
+import { type Config, SafeError, TransportFailure, redact } from "./config.ts";
 import { formattedChunks, telegramFormat } from "./format.ts";
 import { isOpus, joinSpeech, speechChunks } from "./voice.ts";
 
@@ -83,26 +83,33 @@ export function safeFilename(name: string): string {
 export class TelegramApi {
   constructor(readonly config: Config, private fetcher: Fetch = globalThis.fetch) {}
 
-  private async request(url: string, init: RequestInit, signal: AbortSignal, timeout: number): Promise<Response> {
+  private async request(url: string, init: RequestInit, signal: AbortSignal, timeout: number, outgoing = false): Promise<Response> {
+    const deadline = AbortSignal.timeout(timeout);
     try {
       return await this.fetcher(url, {
-        ...init, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
+        ...init, redirect: "error", signal: AbortSignal.any([signal, deadline]),
       });
     } catch {
-      throw new SafeError(signal.aborted ? "Telegram operation cancelled." : "Network request failed or timed out.");
+      // Only the observed signals establish cancellation/deadline, never raw provider errors.
+      throw new TransportFailure(signal.aborted ? "TG_TRANSPORT_CANCELLED" : deadline.aborted ? "TG_TRANSPORT_TIMEOUT" : "TG_TRANSPORT_FAILED",
+        outgoing ? "unknown" : "not_applicable");
     }
   }
 
-  async call<T>(method: string, args: Record<string, unknown> | FormData, signal: AbortSignal, timeout = 45_000): Promise<T> {
+  async call<T>(method: string, args: Record<string, unknown> | FormData, signal: AbortSignal, timeout = 45_000, beforeUpload?: () => void): Promise<T> {
+    const outgoing = ["sendMessage", "sendDocument", "sendPhoto", "sendVideo", "sendVoice", "sendMediaGroup"].includes(method);
     for (let attempt = 0; ; attempt++) {
+      beforeUpload?.(); // Revalidate again after an explicit 429 rejection/backoff, before any next upload.
       const response = await this.request(`https://api.telegram.org/bot${this.config.token}/${method}`, {
         method: "POST",
         ...(args instanceof FormData ? { body: args } : { headers: { "content-type": "application/json" }, body: JSON.stringify(args) }),
-      }, signal, timeout);
+      }, signal, timeout, outgoing);
       let body: { ok?: boolean; result?: T; error_code?: number; parameters?: { retry_after?: number } };
       try {
         body = JSON.parse((await readLimited(response, 2 * 1024 * 1024)).toString());
+        if (!body || typeof body !== "object" || typeof body.ok !== "boolean") throw new SafeError("Invalid Telegram API response.");
       } catch (error) {
+        if (outgoing) throw new TransportFailure("TG_TRANSPORT_RESPONSE", "unknown");
         if (error instanceof SafeError) throw error;
         throw new SafeError("Invalid Telegram API response.");
       }
@@ -136,18 +143,18 @@ export class TelegramApi {
     return new Blob([new Uint8Array(data)], { type: mime });
   }
 
-  async sendMedia(chat: number, kind: MediaKind, data: Buffer, filename: string, signal: AbortSignal): Promise<void> {
+  async sendMedia(chat: number, kind: MediaKind, data: Buffer, filename: string, signal: AbortSignal, beforeUpload?: () => void): Promise<void> {
     this.validateMedia(kind, data);
     const form = new FormData();
     form.set("chat_id", String(chat));
     form.set(kind, this.mediaBlob(kind, data, filename), safeFilename(filename));
     if (kind === "video") form.set("supports_streaming", "true");
-    await this.call(`send${kind[0].toUpperCase()}${kind.slice(1)}`, form, signal, 120_000);
+    await this.call(`send${kind[0].toUpperCase()}${kind.slice(1)}`, form, signal, 120_000, beforeUpload);
   }
 
   /** A single Telegram album, not a series of independent sendPhoto/sendDocument calls. */
-  async sendGroup(chat: number, files: OutgoingFile[], signal: AbortSignal): Promise<void> {
-    if (files.length === 1) return this.sendMedia(chat, files[0].kind, files[0].data, files[0].filename, signal);
+  async sendGroup(chat: number, files: OutgoingFile[], signal: AbortSignal, beforeUpload?: () => void): Promise<void> {
+    if (files.length === 1) return this.sendMedia(chat, files[0].kind, files[0].data, files[0].filename, signal, beforeUpload);
     if (files.length < 2 || files.length > 10) throw new SafeError("Telegram albums require 2–10 attachments.");
     if (files.some(file => file.kind === "voice")) throw new SafeError("Telegram cannot group voice notes into an album; send one voice note separately.");
     if (files.some(file => file.kind === "document") && !files.every(file => file.kind === "document")) {
@@ -158,7 +165,7 @@ export class TelegramApi {
     form.set("chat_id", String(chat));
     form.set("media", JSON.stringify(files.map((file, index) => ({ type: file.kind, media: `attach://file${index}` }))));
     files.forEach((file, index) => form.set(`file${index}`, this.mediaBlob(file.kind, file.data, file.filename), safeFilename(file.filename)));
-    await this.call("sendMediaGroup", form, signal, 120_000);
+    await this.call("sendMediaGroup", form, signal, 120_000, beforeUpload);
   }
 
   /** Remove the bot's advertised slash-command menu; there are no extension command handlers. */
@@ -219,9 +226,10 @@ export class TelegramApi {
     return joinSpeech(parts, this.config.tmpDir || resolve(this.config.dataDir, "tmp"), signal);
   }
 
-  async speak(chat: number, text: string, signal: AbortSignal): Promise<void> {
+  async speak(chat: number, text: string, signal: AbortSignal, beforeUpload?: () => void): Promise<void> {
     const data = await this.generateSpeech(text, signal);
-    await this.sendMedia(chat, "voice", data, "reply.ogg", signal);
+    beforeUpload?.();
+    await this.sendMedia(chat, "voice", data, "reply.ogg", signal, beforeUpload);
   }
 }
 

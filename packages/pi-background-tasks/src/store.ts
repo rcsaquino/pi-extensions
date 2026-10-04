@@ -1,10 +1,12 @@
 import * as fs from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, lstatSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { RecordData } from './types.ts';
 import { addUsage, emptyUsage, isActive } from './types.ts';
 import { buildSettlementReport, safeCounter, safeDiagnostics, safeStoredError, safeToolName } from './report.ts';
+import { safeManifest } from './staging.ts';
+import { Directory, readRegular } from './files.ts';
 
 function safeRecord(record: RecordData): RecordData {
   const usage = emptyUsage(); addUsage(usage, record.usage);
@@ -12,6 +14,12 @@ function safeRecord(record: RecordData): RecordData {
     version: record.version, id: record.id, title: record.title, sessionId: record.sessionId, cwd: record.cwd,
     provider: record.provider, model: record.model, thinking: record.thinking, status: record.status, access: record.access,
     ...(record.contextMode !== undefined ? { contextMode: record.contextMode } : {}),
+    ...(record.execution === 'direct' || record.execution === 'staged' ? { execution: record.execution } : {}),
+    ...(record.queuedAt !== undefined ? { queuedAt: safeCounter(record.queuedAt) } : {}),
+    ...(record.queueWaitMs !== undefined ? { queueWaitMs: safeCounter(record.queueWaitMs) } : {}),
+    ...(['capacity', 'resources', 'admission'].includes(record.waitingReason ?? '') ? { waitingReason: record.waitingReason } : {}),
+    ...(record.manifest !== undefined ? { manifest: safeManifest(record.manifest, record.id) } : {}),
+    ...(['ready', 'published', 'review-required'].includes(record.publication ?? '') ? { publication: record.publication } : {}),
     startedAt: safeCounter(record.startedAt), ...(record.finishedAt !== undefined ? { finishedAt: safeCounter(record.finishedAt) } : {}),
     etaSeconds: safeCounter(record.etaSeconds), etaMaxSeconds: safeCounter(record.etaMaxSeconds), estimateReason: record.estimateReason,
     lastActivityAt: safeCounter(record.lastActivityAt), lastTool: safeToolName(record.lastTool),
@@ -29,23 +37,17 @@ export const validId = (id: string): boolean => /^bg-[a-f0-9]{12}$/.test(id);
 const noFollow = constants.O_NOFOLLOW ?? 0;
 
 export async function privateDirectory(path: string): Promise<void> {
-  // Check every existing component so an attacker cannot redirect runtime writes with a symlink.
-  const absolute = resolve(path);
-  let current = absolute.startsWith('/') ? '/' : absolute.split(/[/\\]/)[0]!;
-  for (const part of absolute.slice(current.length).split(/[/\\]/).filter(Boolean)) {
-    current = join(current, part);
-    try { await fs.mkdir(current, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
-    const stat = await fs.lstat(current);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Background storage cannot traverse symlinks or non-directories.');
-  }
+  const dir = await Directory.open(path, true);
+  try { const stat = await dir.handle.stat(); if ((stat.mode & 0o077) || (process.getuid && stat.uid !== process.getuid())) throw new Error('Background storage must be private and owned.'); }
+  finally { await dir.close(); }
 }
 export async function atomicPrivateWrite(path: string, content: string): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  const handle = await fs.open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600);
+  const dir = await Directory.open(dirname(path)); let temp: string | undefined;
   try {
-    await handle.writeFile(content, 'utf8'); await handle.sync(); await handle.close();
-    await fs.rename(temporary, path);
-  } catch (e) { await handle.close().catch(() => {}); await fs.unlink(temporary).catch(() => {}); throw e; }
+    temp = await dir.prepare(Buffer.from(content)); await dir.check();
+    // Replace a final symlink atomically, never follow it or chmod its target.
+    await fs.rename(dir.entry(temp), dir.entry(basename(path))); await dir.handle.sync();
+  } finally { if (temp) await fs.unlink(dir.entry(temp)).catch(() => {}); await dir.close(); }
 }
 export class Store {
   readonly root: string;
@@ -67,24 +69,23 @@ export class Store {
     await atomicPrivateWrite(this.path(record.id, 'json'), JSON.stringify(safeRecord(record), null, 2) + '\n');
   }
   async output(id: string): Promise<string> {
-    const handle = await fs.open(this.path(id, 'md'), constants.O_RDONLY | noFollow);
-    try { return await handle.readFile('utf8'); } finally { await handle.close(); }
+    return readStoredText(this.path(id, 'md'), 4 * 1024 * 1024);
   }
   async restore(): Promise<RecordData[]> {
     const records: RecordData[] = [];
     for (const file of await fs.readdir(this.recordsDir)) {
       if (!/^bg-[a-f0-9]{12}\.json$/.test(file)) continue;
-      const handle = await fs.open(join(this.recordsDir, file), constants.O_RDONLY | noFollow);
-      let record: RecordData;
-      try { record = JSON.parse(await handle.readFile('utf8')) as RecordData; } finally { await handle.close(); }
+      let record = JSON.parse(await readStoredText(join(this.recordsDir, file), 1024 * 1024)) as RecordData;
       if (record.version !== 1 || record.sessionId !== this.sessionId || `${record.id}.json` !== file ||
-          !['running', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted'].includes(record.status) ||
-          (record.contextMode !== undefined && !['brief', 'selected', 'full'].includes(record.contextMode))) throw new Error('Invalid background task metadata.');
+          !['queued', 'starting', 'running', 'cancelling', 'completed', 'failed', 'cancelled', 'interrupted'].includes(record.status) ||
+          (record.contextMode !== undefined && !['brief', 'selected', 'full'].includes(record.contextMode)) ||
+          (record.execution !== undefined && !['direct', 'staged'].includes(record.execution))) throw new Error('Invalid background task metadata.');
       record = safeRecord(record);
+      const wasQueued = record.status === 'queued';
       const interrupted = isActive(record.status);
       if (interrupted) {
         record.status = 'interrupted'; record.finishedAt = Date.now(); record.notification = 'pending';
-        record.error = 'Pi stopped or reloaded before this task settled. Effects may be partial. It was NOT replayed.';
+        record.error = wasQueued ? 'Pi stopped or reloaded while this task was queued. It was NOT replayed; no worker execution was resumed.' : 'Pi stopped or reloaded before this task settled. Effects may be partial. It was NOT replayed.';
         record.terminalDiagnostics = safeDiagnostics({ ...record.terminalDiagnostics, stopReason: 'missing', category: 'interrupted' });
       }
       let output: string | undefined;
@@ -111,35 +112,51 @@ export class Store {
     }
     return records.sort((a, b) => a.startedAt - b.startedAt);
   }
-  async acquireWriter(cwd: string): Promise<() => Promise<void>> {
-    const path = join(this.root, 'locks', `${hash(cwd)}.json`);
-    const token = randomUUID();
-    // Never steal a live or malformed lease, and never silently replay work after a crash.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const handle = await fs.open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600);
-        try { await handle.writeFile(JSON.stringify({ pid: process.pid, sessionId: this.sessionId, token }), 'utf8'); }
-        finally { await handle.close(); }
-        return async () => {
-          try {
-            const existing = await readLock(path);
-            if (existing.token === token) await fs.unlink(path);
-          } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-        };
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-        const existing = await readLock(path);
-        if (!Number.isSafeInteger(existing.pid) || existing.pid < 1) throw new Error('Malformed workspace writer lease; inspect storage before proceeding.');
-        let alive = true;
-        try { process.kill(existing.pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
-        if (alive) throw new Error('A live background writer already owns this workspace. Finish/cancel it first.');
-        await fs.unlink(path);
+  hasWriterEvidence(cwd: string): boolean {
+    try { lstatSync(join(this.root, 'locks', `${hash(cwd)}.json`)); return true; }
+    catch (e) { return (e as NodeJS.ErrnoException).code !== 'ENOENT'; }
+  }
+  async acquireWriter(cwd: string, _retainUncertainDeadLease = true): Promise<() => Promise<void>> {
+    const dir = await Directory.open(join(this.root, 'locks')); const name = `${hash(cwd)}.json`, path = dir.entry(name);
+    const token = randomUUID(); let held = false;
+    const readLock = async () => {
+      const data = await dir.read(name, 4096);
+      if (!data) throw Object.assign(new Error('Writer lease is missing.'), { code: 'ENOENT' });
+      return JSON.parse(data.toString()) as { pid: number; token: string };
+    };
+    try {
+      // Never steal a live or malformed lease, and never replay work after a crash.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await dir.check();
+          const handle = await fs.open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600);
+          try { await handle.writeFile(JSON.stringify({ pid: process.pid, sessionId: this.sessionId, token }), 'utf8'); await handle.sync(); }
+          finally { await handle.close(); }
+          held = true; let released = false;
+          return async () => {
+            if (released) return;
+            const existing = await readLock();
+            if (existing.token !== token) throw new Error('Writer lease ownership changed; explicit review required.');
+            await dir.check(); await fs.unlink(path); await dir.handle.sync(); released = true; await dir.close();
+          };
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+          const existing = await readLock();
+          if (!Number.isSafeInteger(existing.pid) || existing.pid < 1) throw new Error('Malformed workspace writer lease; inspect storage before proceeding.');
+          let alive = true;
+          try { process.kill(existing.pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+          if (alive) throw new Error('A live background writer already owns this workspace. Finish/cancel it first.');
+          // The legacy boolean remains source-compatible, but can no longer authorize
+          // racing dead-PID cleanup or assume detached children have stopped.
+          throw new Error('Interrupted legacy writer lease requires explicit review; a dead parent PID does not prove child writers stopped.');
+        }
       }
-    }
-    throw new Error('Could not acquire the workspace writer lease.');
+      throw new Error('Could not acquire the workspace writer lease.');
+    } finally { if (!held) await dir.close(); }
   }
 }
-async function readLock(path: string): Promise<{ pid: number; token: string }> {
-  const handle = await fs.open(path, constants.O_RDONLY | noFollow);
-  try { return JSON.parse(await handle.readFile('utf8')) as { pid: number; token: string }; } finally { await handle.close(); }
+async function readStoredText(path: string, limit: number): Promise<string> {
+  const data = await readRegular(path, limit);
+  if (!data) throw Object.assign(new Error('Stored background file is missing.'), { code: 'ENOENT' });
+  return data.toString('utf8');
 }

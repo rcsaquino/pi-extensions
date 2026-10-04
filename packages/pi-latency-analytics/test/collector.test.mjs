@@ -30,8 +30,12 @@ test('input preparation, model lifecycle, normalized first output, usage, settle
   assert.equal(result.duration_ms, 72); assert.equal(result.phase_totals_ms.pre_agent, 10);
   assert.equal(result.phase_totals_ms.model, 60); assert.equal(result.phase_totals_ms.unattributed, 2);
   assert.equal(result.assistant_entry_id, 'entry-final');
-  assert.equal(result.model_requests[0].first_output_ms, 30);
-  assert.equal(result.model_requests[0].first_text_ms, 50);
+  assert.equal(result.model_requests[0].first_output_ms, null);
+  assert.equal(result.model_requests[0].first_text_ms, null);
+  assert.equal(result.model_requests[0].first_output_context_ms, 30);
+  assert.equal(result.model_requests[0].first_text_context_ms, 50);
+  assert.equal(result.model_requests[0].provider_hook_attribution, 'unknown_no_request_id');
+  assert.equal(h.records.some(r => r.op === 'span' && r.value.kind === 'provider_headers'), false);
   assert.equal(result.model_requests[0].usage.cacheRead, 10);
   assert.equal(result.complete, true); assert.equal(c.active, null);
   assert.ok(!JSON.stringify(h.records).includes('must-not-retain'));
@@ -126,9 +130,9 @@ test('UI wait wins over its enclosing tool, without double counting', () => {
   assert.equal(h.summary().phase_totals_ms.ui_wait, 20); assert.equal(h.summary().phase_totals_ms.tool, 5);
 });
 
-test('missing headers/reasoning end flags incomplete capture', () => {
+test('missing correlated headers/reasoning end flags incomplete capture', () => {
   const h = harness(), c = h.c;
-  c.agentStart(); c.messageStart(message()); c.providerHeaders();
+  c.agentStart(); c.messageStart(message()); c.providerHeaders(true);
   c.stream({ type: 'thinking_start', contentIndex: 0 }); h.advance(3); c.messageEnd(message('error')); c.finish('error');
   assert.equal(h.summary().complete, false);
 });

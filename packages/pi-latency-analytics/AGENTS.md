@@ -23,6 +23,7 @@ Tests and benchmark create private synthetic local stores. Never set their paths
 
 - `index.ts`: capability/event registration, metadata configuration, read-only `latency_query`, `/latency`, and idempotent writer lifecycle.
 - `lib/collector.mjs`: activity boundaries, monotonic spans/markers, normalized stream observation, usage, and uncertainty.
+- `lib/isolation.mjs`: independent linked worker collectors, validated v1 telemetry and dispatch-root host-tool routing.
 - `lib/client.mjs`: bounded queue, worker protocol, flushing/querying, health, and cleanup.
 - `lib/writer.mjs`: off-thread batching and storage protocol.
 - `lib/database.mjs`: SQLite schema/application guards, private storage, writes, recovery, queries, and overlap-safe summaries.
@@ -35,7 +36,8 @@ Tests and benchmark create private synthetic local stores. Never set their paths
 - Never inspect/store message bodies, thinking text/signatures, tool arguments/results/commands, authenticated URLs, credential/header values, API payloads, or raw exceptions. Keep metadata fields allowlisted and bounded.
 - Trace logical activities until `agent_settled`; `agent_end` is not necessarily final. Preserve retry/compaction/continuation boundaries, maintenance cases, session replacement, and ambiguity from multiple inputs.
 - Use a monotonic clock for elapsed intervals and wall-clock values only for correlation. Do not compare process-local monotonic readings across instances.
-- First normalized output is not first network byte or necessarily first text. Missing hooks remain missing. Provider attribution without request IDs and reasoning-stream intervals require explicit limits.
+- First normalized output is not first network byte or necessarily first text. Missing hooks remain missing. Never assign host provider hooks without request IDs to a model window; retain unknown attribution. Context-start timing and explicitly correlated worker-preparation timing are distinct.
+- Foreground and worker trace/model/tool windows stay separate. Capture queued workers' original dispatch links before a later foreground starts; close queue spans at resource admission and keep local model-admission wait distinct from provider windows. Finalized worker ancestry remains a bounded tombstone, not a new foreground activity. Route starts by actual nested parent ancestry, never a foreground provider-ID prefix alone; known sparse end events may close their recorded span. Request/aggregate usage must be counted once; result retrieval cannot duplicate it. Unknown UI ancestry stays unattributed during worker overlap. The event bus is trusted code, not an authenticated effect/telemetry boundary.
 - Exclusive phase totals are a partition, not summed overlapping work. Nested/parallel cumulative tool work may exceed elapsed time. Do not double-count model children or reasoning token usage.
 - Unknown gaps remain unattributed. Do not invent retry, queue, transport, subprocess, or background-model causes.
 - Never claim Telegram delivery/upload timing, per-reply correlation, device display/read receipts, or historical traces before activation.
@@ -49,6 +51,7 @@ Tests and benchmark create private synthetic local stores. Never set their paths
 - `collector.test.mjs`: boundaries, normalized sparse events, clocks, usage, parallel/nested tools, and content non-access.
 - `storage.test.mjs`: schema/permissions, recovery, symlinks, concurrent writers, batching, loss, and initialization failures.
 - `edge-cases.test.mjs`: attribution/uncertainty, lifecycle edge cases, and missing boundaries.
+- `isolation.test.mjs`: two concurrent linked workers plus foreground, clean span ownership, usage deduplication, cancellation/error/shutdown, late/invalid/private events and legacy schema-v1 querying.
 - `extension.test.mjs`: public registration, observational behavior, querying, and cleanup.
 - `sdk.test.mjs`: actual Pi loader/session with synthetic provider streams and tool activity.
 

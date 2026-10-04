@@ -71,21 +71,30 @@ export class AnalyticsDatabase {
     this.db = openDatabase(path);
     this.instanceId = instanceId;
     this.pid = pid;
-    this.db.prepare('INSERT INTO instances(instance_id,pid,started_wall) VALUES(?,?,?)').run(instanceId, pid, Date.now());
-    // Do not disturb another live process's trace. Dead-process ends remain unknown.
-    for (const instance of this.db.prepare('SELECT instance_id,pid FROM instances WHERE ended_wall IS NULL AND instance_id<>?').all(instanceId)) {
-      let dead = false;
-      try { process.kill(instance.pid, 0); } catch (error) { dead = error.code === 'ESRCH'; }
-      if (dead) {
-        this.db.prepare("UPDATE traces SET status='interrupted',complete=0 WHERE instance_id=? AND status='running'").run(instance.instance_id);
-        this.db.prepare('UPDATE instances SET ended_wall=? WHERE instance_id=?').run(Date.now(), instance.instance_id);
+    try {
+      // Atomic instance registration/recovery: a retried initialization cannot leave
+      // a duplicate partially registered instance or an open locking connection.
+      this.db.exec('BEGIN IMMEDIATE');
+      this.db.prepare('INSERT INTO instances(instance_id,pid,started_wall) VALUES(?,?,?)').run(instanceId, pid, Date.now());
+      // Do not disturb another live process's trace. Dead-process ends remain unknown.
+      for (const instance of this.db.prepare('SELECT instance_id,pid FROM instances WHERE ended_wall IS NULL AND instance_id<>?').all(instanceId)) {
+        let dead = false;
+        try { process.kill(instance.pid, 0); } catch (error) { dead = error.code === 'ESRCH'; }
+        if (dead) {
+          this.db.prepare("UPDATE traces SET status='interrupted',complete=0 WHERE instance_id=? AND status='running'").run(instance.instance_id);
+          this.db.prepare('UPDATE instances SET ended_wall=? WHERE instance_id=?').run(Date.now(), instance.instance_id);
+        }
       }
-    }
-    this.statements = {};
-    for (const [op, fields] of Object.entries(columns)) {
-      const table = { trace: 'traces', span: 'spans', event: 'events' }[op];
-      const key = fields[0];
-      this.statements[op] = this.db.prepare(`INSERT INTO ${table}(${fields.join(',')}) VALUES(${fields.map(() => '?').join(',')}) ON CONFLICT(${key}) DO UPDATE SET ${fields.slice(1).map(f => op === 'trace' && f === 'complete' ? 'complete=MIN(traces.complete,excluded.complete)' : `${f}=excluded.${f}`).join(',')}`);
+      this.statements = {};
+      for (const [op, fields] of Object.entries(columns)) {
+        const table = { trace: 'traces', span: 'spans', event: 'events' }[op];
+        const key = fields[0];
+        this.statements[op] = this.db.prepare(`INSERT INTO ${table}(${fields.join(',')}) VALUES(${fields.map(() => '?').join(',')}) ON CONFLICT(${key}) DO UPDATE SET ${fields.slice(1).map(f => op === 'trace' && f === 'complete' ? 'complete=MIN(traces.complete,excluded.complete)' : `${f}=excluded.${f}`).join(',')}`);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* BEGIN may have failed. */ }
+      this.db.close(); throw error;
     }
   }
 
@@ -120,7 +129,7 @@ export class AnalyticsDatabase {
     };
     const rows = action === 'trace'
       ? this.db.prepare('SELECT * FROM traces WHERE trace_id=? LIMIT 1').all(traceId)
-      : this.db.prepare(`SELECT * FROM traces WHERE status<>'running' AND (? IS NULL OR session_id=?) AND (? IS NULL OR trace_id<>?) ORDER BY ${action === 'slow' ? 'duration_ms DESC' : 'started_wall DESC'} LIMIT ?`).all(sessionId, sessionId, excludeTrace, excludeTrace, action === 'last' ? 1 : bounded);
+      : this.db.prepare(`SELECT * FROM traces WHERE status<>'running' AND (?=0 OR source IS NULL OR source<>'background-worker') AND (? IS NULL OR session_id=?) AND (? IS NULL OR trace_id<>?) ORDER BY ${action === 'slow' ? 'duration_ms DESC' : 'started_wall DESC'} LIMIT ?`).all(action === 'last' ? 1 : 0, sessionId, sessionId, excludeTrace, excludeTrace, action === 'last' ? 1 : bounded);
     return rows.map(trace => {
       const lost = this.db.prepare('SELECT dropped_records FROM instances WHERE instance_id=?').get(trace.instance_id).dropped_records;
       trace.recording_instance_dropped_records = lost;
@@ -128,6 +137,9 @@ export class AnalyticsDatabase {
       const count = this.db.prepare('SELECT COUNT(*) AS count FROM spans WHERE trace_id=?').get(trace.trace_id).count;
       const spans = this.db.prepare('SELECT * FROM spans WHERE trace_id=? ORDER BY start_ms,span_id LIMIT 5000').all(trace.trace_id).map(row => ({ ...row, meta: parse(row.meta) }));
       const result = summarize(trace, spans);
+      // Links use existing v1 event rows; no live schema migration is needed.
+      const link = this.db.prepare("SELECT meta FROM events WHERE trace_id=? AND name='worker_link' ORDER BY offset_ms LIMIT 1").get(trace.trace_id);
+      if (link) result.worker_link = parse(link.meta);
       result.span_count = count;
       result.summary_truncated = count > spans.length;
       if (result.summary_truncated) {
@@ -180,7 +192,8 @@ export function summarize(trace, spans) {
     tools.set(span.name, value);
   }
   return {
-    ...trace, complete: Boolean(trace.complete), ambiguous_inputs: Boolean(trace.ambiguous_inputs),
+    ...trace, trace_scope: trace.source === 'background-worker' ? 'worker' : 'foreground-or-legacy',
+    complete: Boolean(trace.complete), ambiguous_inputs: Boolean(trace.ambiguous_inputs),
     phase_totals_ms: duration === null ? null : totals,
     tool_call_count: spans.filter(s => s.kind === 'tool').length,
     tool_names_truncated: tools.size > 12,
@@ -193,7 +206,8 @@ export function summarize(trace, spans) {
     caveats: [
       'Pi observation only. Telegram receipt, transport, final-send acknowledgement, and phone display are unmeasured.',
       'Model spans measure context-to-response lifecycle, not server compute. First-output timing uses normalized content events, not first network byte.',
-      'Provider HTTP hooks have no request IDs; attribution is best-effort if background requests overlap.',
+      'Host provider HTTP hooks lack request IDs and remain unattributed. Explicit worker request IDs cover only instrumented worker calls; legacy records may contain best-effort attribution.',
+      'Foreground-or-legacy records predating trace isolation may mix background activity; they cannot be repaired retrospectively.',
       'Tool work_ms can overlap and must not be added to elapsed totals.',
       ...(trace.ambiguous_inputs ? ['Multiple inputs share this logical activity; per-message attribution is ambiguous.'] : []),
       ...(!trace.complete ? ['Some boundaries or records are missing. Do not treat the breakdown as fully observed.'] : []),

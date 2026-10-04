@@ -44,7 +44,7 @@ export class Collector {
     this.active = {
       trace_id: randomUUID(), instance_id: this.instanceId,
       session_id: id(this.session.session_id), anchor_entry_id: id(this.session.anchor_entry_id),
-      source: this.pending?.source || origin, started_wall: first.wall, started_mono: first.mono,
+      source: this.pending?.source || this.session.source || origin, started_wall: first.wall, started_mono: first.mono,
       agent_started_wall: null, ended_wall: null, duration_ms: null, status: 'running',
       input_count: this.pending?.count || 0, ambiguous_inputs: (this.pending?.count || 0) > 1,
       complete: true, assistant_entry_id: null,
@@ -106,11 +106,13 @@ export class Collector {
 
   beginModel(name) {
     this.start();
+    const at = this.clock();
     this.model = {
       span: this.open('model', name, null, {
         provider: id(this.session.provider), model: id(this.session.model),
         thinking_level: id(this.session.thinking_level),
-      }),
+      }, at),
+      contextAt: at.mono, firstOutputContextMs: null, firstTextContextMs: null,
       chunks: 0, first: false, firstText: false, firstReasoning: false,
       headers: null, requestAt: null, headerAttempts: 0, httpStatuses: [], firstOutputMs: null, firstTextMs: null,
     };
@@ -131,13 +133,13 @@ export class Collector {
     this.event('assistant_stream_started');
   }
 
-  providerRequest() {
-    if (!this.model) { this.event('unattributed_provider_request'); return; }
+  providerRequest(correlated = false) {
+    if (!correlated || !this.model) { this.event('unattributed_provider_request', { attribution: 'unknown_no_request_id' }); return; }
     if (this.model.requestAt === null) this.model.requestAt = this.clock().mono;
     this.event('provider_request_prepared');
   }
-  providerHeaders() {
-    if (!this.model) { this.event('unattributed_provider_headers'); return; }
+  providerHeaders(correlated = false) {
+    if (!correlated || !this.model) { this.event('unattributed_provider_headers', { attribution: 'unknown_no_request_id' }); return; }
     if (this.model.headers) {
       this.active.complete = false;
       this.close(this.model.headers, 'incomplete');
@@ -145,11 +147,11 @@ export class Collector {
     }
     this.model.headerAttempts++;
     this.model.headers = this.open('provider_headers', 'http_headers_wait', this.model.span, {
-      attempt: this.model.headerAttempts, attribution: 'main_model_window_best_effort',
+      attempt: this.model.headerAttempts, attribution: 'explicit_worker_request_id',
     });
   }
-  providerResponse(status) {
-    if (!this.model?.headers) { this.event('unattributed_provider_response', { status: numeric(status) }); return; }
+  providerResponse(status, correlated = false) {
+    if (!correlated || !this.model?.headers) { this.event('unattributed_provider_response', { status: numeric(status), attribution: 'unknown_no_request_id' }); return; }
     if (this.model.httpStatuses.length < 10) this.model.httpStatuses.push(numeric(status));
     this.close(this.model.headers, status >= 400 ? 'error' : 'completed', { http_status: numeric(status) });
     this.model.headers = null;
@@ -166,6 +168,7 @@ export class Collector {
         m.first = true;
         const at = this.clock();
         m.firstOutputMs = m.requestAt === null ? null : Math.max(0, at.mono - m.requestAt);
+        m.firstOutputContextMs = Math.max(0, at.mono - m.contextAt);
         this.event('first_normalized_output', { output_kind: type }, at);
       }
     }
@@ -173,6 +176,7 @@ export class Collector {
       m.firstText = true;
       const at = this.clock();
       m.firstTextMs = m.requestAt === null ? null : Math.max(0, at.mono - m.requestAt);
+      m.firstTextContextMs = Math.max(0, at.mono - m.contextAt);
       this.event('first_text_output', {}, at);
     }
     const index = numeric(event.contentIndex);
@@ -207,8 +211,9 @@ export class Collector {
       thinking_level: id(message.providerThinkingLevel) || id(this.session.thinking_level),
       stop_reason: id(message.stopReason), usage, chunks: m.chunks,
       first_output_ms: m.firstOutputMs, first_text_ms: m.firstTextMs,
+      first_output_context_ms: m.firstOutputContextMs, first_text_context_ms: m.firstTextContextMs,
       http_header_attempts: m.headerAttempts, http_statuses: m.httpStatuses,
-      provider_hook_attribution: 'main_model_window_best_effort',
+      provider_hook_attribution: this.session.source === 'background-worker' ? 'explicit_worker_request_id' : 'unknown_no_request_id',
     });
     this.model = null;
   }

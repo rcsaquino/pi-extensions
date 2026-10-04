@@ -11,7 +11,7 @@ import { scratch } from './helpers.ts';
 
 const task: Dispatch = { task: 'Implement and verify feature', title: 'Feature', eta_seconds: 300, eta_max_seconds: 480, estimate_reason: 'Implementation, several model/tool rounds and tests.' };
 const record = (overrides = {}): RecordData => ({ version: 1, id: 'bg-111111111111', title: 'Test', sessionId: 'test', cwd: '/workspace', provider: 'fake', model: 'main', thinking: 'high', status: 'running', access: 'write', startedAt: 1, etaSeconds: 300, etaMaxSeconds: 480, estimateReason: 'Testing', lastActivityAt: 1, toolCalls: 0, turns: 0, usage: emptyUsage(), usageReported: false, notification: 'read', overrunNotified: false, ...overrides });
-const tool = (name: string, exposure = 'direct'): ToolInfo => ({ name, description: '', parameters: {} as never, exposure: exposure as ToolInfo['exposure'], sourceInfo: {} as never });
+const tool = (name: string, exposure = 'direct'): ToolInfo => ({ name, description: '', parameters: {} as never, exposure: exposure as ToolInfo['exposure'], sourceInfo: { path: `builtin:${name}`, source: 'builtin' } as never });
 
 test('main policy requests a natural honest ETA acknowledgment without unsolicited task IDs', () => {
   assert.match(MAIN_POLICY, /Acknowledge the work naturally with an honest estimated duration, explicitly as an estimate/);
@@ -93,13 +93,12 @@ test('history preserves completed pairs and strips the unfinished dispatch plus 
 });
 test('writer lease blocks competing file and shell writes, but leaves conversation and reading free', () => {
   const writer = record();
-  for (const name of ['read', 'grep', 'find', 'ls']) assert.equal(guardTool(name, {}, '/workspace', writer, undefined), undefined);
+  for (const name of ['read', 'ls']) assert.equal(guardTool(name, { path: '/workspace/file' }, '/workspace', writer, undefined, tool(name)), undefined);
+  for (const name of ['grep', 'find']) assert.match(guardTool(name, {}, '/workspace', writer, undefined, tool(name))!, /unknown/);
   assert.match(guardTool('bash', { command: 'echo hi' }, '/workspace', writer, undefined)!, /writer lease/);
   assert.equal(guardTool('background_tasks', { action: 'cancel' }, '/workspace', writer, undefined), undefined);
-  assert.equal(guardTool('telegram_attach', { paths: ['/workspace/existing.pdf'] }, '/workspace', writer, undefined), undefined);
-  assert.equal(guardTool('memoria_search', { query: 'preferences' }, '/workspace', writer, undefined), undefined);
-  assert.equal(guardTool('web_enable', {}, '/workspace', writer, undefined), undefined);
-  assert.equal(guardTool('write', { path: '/elsewhere/file' }, '/workspace', writer, undefined), undefined);
+  for (const name of ['telegram_attach', 'memoria_search', 'web_enable', 'background_arbitrary']) assert.match(guardTool(name, {}, '/workspace', writer, undefined)!, /unknown/);
+  assert.equal(guardTool('write', { path: '/elsewhere/file' }, '/workspace', writer, undefined, tool('write')), undefined);
   assert.equal(guardTool('bash', {}, '/workspace', writer, writer), undefined);
 });
 test('workers cannot recursively delegate, hijack Telegram or manage other ETAs through nested codemode calls', () => {
@@ -118,11 +117,11 @@ test('workers cannot recursively delegate, hijack Telegram or manage other ETAs 
   assert.equal(workerToolAllowed(tool('foreground_ui', 'model-only')), false);
   assert.equal(workerToolAllowed(tool('secret', 'hidden')), false);
 });
-test('read-only jobs deny mutating and unclassified tools and allow declared read-only tools', () => {
+test('read-only jobs deny unclassified tools even with misleading annotations', () => {
   const own = record({ access: 'read' });
   assert.match(guardTool('bash', {}, '/workspace', undefined, own)!, /Read-only/);
   const info = { ...tool('search'), annotations: { readOnlyHint: true } };
-  assert.equal(guardTool('search', {}, '/workspace', undefined, own, info), undefined);
+  assert.match(guardTool('search', {}, '/workspace', undefined, own, info)!, /Read-only/);
 });
 test('path comparisons prevent sibling-prefix confusion and resolve symlink writes', async () => {
   const root = await scratch('bg-path-test-');
@@ -130,7 +129,7 @@ test('path comparisons prevent sibling-prefix confusion and resolve symlink writ
     await fs.mkdir(join(root, 'protected')); await fs.symlink(join(root, 'protected'), join(root, 'alias'));
     assert.equal(canonicalPath(join(root, 'alias', 'new-file')), join(root, 'protected', 'new-file'));
     const writer = record({ cwd: join(root, 'protected') });
-    assert.match(guardTool('write', { path: join(root, 'alias', 'new-file') }, root, writer, undefined)!, /writer lease/);
+    assert.match(guardTool('write', { path: join(root, 'alias', 'new-file') }, root, writer, undefined, tool('write'))!, /writer lease/);
     assert.equal(within('/workspace-other/file', '/workspace'), false);
     assert.equal(within('/workspace/file', '/workspace'), true);
   } finally { await fs.rm(root, { recursive: true, force: true }); }

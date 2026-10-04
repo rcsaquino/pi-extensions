@@ -2,13 +2,17 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { AnalyticsDatabase } from './database.mjs';
 
 let db;
-try {
-  db = new AnalyticsDatabase(workerData.path, workerData.instanceId, workerData.pid);
-  parentPort.postMessage({ type: 'ready' });
-} catch {
-  parentPort.postMessage({ type: 'failed', code: 'database_initialization_failed' });
-  parentPort.close();
+// WAL/schema startup can race another legitimate writer before busy_timeout
+// applies. Retry only SQLite's closed BUSY/LOCKED codes, off the agent thread.
+for (let attempt = 0; attempt < 5; attempt++) {
+  try { db = new AnalyticsDatabase(workerData.path, workerData.instanceId, workerData.pid); break; }
+  catch (error) {
+    if (![5, 6].includes(error?.errcode) || attempt === 4) break;
+    await new Promise(resolve => setTimeout(resolve, 20 * (attempt + 1)));
+  }
 }
+if (db) parentPort.postMessage({ type: 'ready' });
+else { parentPort.postMessage({ type: 'failed', code: 'database_initialization_failed' }); parentPort.close(); }
 
 // Queue retries here, off the agent thread; preserve write/query ordering.
 const queue = [];

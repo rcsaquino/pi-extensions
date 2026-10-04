@@ -4,6 +4,10 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { BackgroundManager } from './manager.ts';
 import { MAIN_POLICY, statusLine } from './policy.ts';
 import type { Dispatch } from './types.ts';
+import { registerInspection } from './inspect.ts';
+import { registerWeb } from './web.ts';
+
+const stageSchema = Type.Object({ inputs: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 128 }), outputs: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 128 }), immutable_refs: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { maxItems: 128 })) }, { additionalProperties: false });
 
 const dispatchSchema = Type.Object({
   task: Type.String({ minLength: 1, maxLength: 40000, description: 'Self-contained delegated task, paths, requirements, permissions and expected deliverables.' }),
@@ -15,11 +19,20 @@ const dispatchSchema = Type.Object({
   access: Type.Optional(StringEnum(['read', 'write'] as const, { description: 'Default write, including shell commands and unknown side effects. read denies shells and mutating tools.' })),
   context_mode: Type.Optional(StringEnum(['brief', 'selected', 'full'] as const, { description: 'Default brief: no conversation history. selected: only supplied context_text. full: projected conversation, only when the user explicitly asks to share it. Never choose full automatically.' })),
   context_text: Type.Optional(Type.String({ minLength: 1, maxLength: 20000, description: 'Only with context_mode selected: concise relevant facts/excerpts written by the main agent. No automatic message selection. Larger references should be file paths.' })),
+  execution: Type.Optional(StringEnum(['direct', 'staged'] as const, { description: 'Default direct compatibility mode retains the parent workspace lease. staged allows independent bounded regular-file writers through a permission-checked broker, no shells or unknown extensions. No automatic publication.' })),
+  stage: Type.Optional(stageSchema),
 });
 export default function backgroundTasks(pi: ExtensionAPI): void {
   let manager = new BackgroundManager(pi);
+  let foregroundRun = false, foregroundCompaction = false;
+  const foregroundAdmission = () => manager.admission?.setForeground(foregroundRun || foregroundCompaction);
+  registerInspection(pi); registerWeb(pi, undefined, (id, ctx) => manager.webScope(id, ctx));
+  pi.registerFlag('background-max-queued', { type: 'string', default: '32', description: 'Bounded waiting tasks (1-128). Queue wait is separate from execution ETA.' });
+  pi.registerTool({ name: 'background_start_check', label: 'Background start validation', exposure: 'codemode', description: 'Admission-only owner validation. Re-enters parent permission hooks with the captured access/staged file contract after queue wait; does not grant new authorization.', parameters: Type.Object({ id: Type.String(), execution: StringEnum(['direct', 'staged'] as const), access: StringEnum(['read', 'write'] as const), provider: Type.String(), model: Type.String(), thinking: StringEnum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const), stage: Type.Optional(stageSchema) }, { additionalProperties: false }), execute: async (_id, args) => { manager.validateStart(args.id, args); return { content: [{ type: 'text', text: 'Start validation accepted.' }], details: undefined }; } });
+  pi.registerTool({ name: 'background_stage_file', label: 'Staged file broker', exposure: 'codemode', description: 'Owning staged-worker file broker. path is a declared logical parent-relative input/output or explicit immutable reference, never a live-parent tool cwd. read uses immutable snapshot; write/edit affect only the private staged output. Subject to ALL parent validation/permission/redaction hooks. Policies must authorize this broker operation and declared paths explicitly, not assume a builtin-name approval.', annotations: { destructiveHint: true, readOnlyHint: false, openWorldHint: false }, parameters: Type.Object({ id: Type.String(), operation: StringEnum(['read', 'write', 'edit'] as const), path: Type.String(), content: Type.Optional(Type.String()), edits: Type.Optional(Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() }, { additionalProperties: false }))), oldText: Type.Optional(Type.String()), newText: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })) }, { additionalProperties: false }), execute: async (id, args, signal) => { const text = await manager.stageFile(id, args, signal); return { content: [{ type: 'text', text }], details: { staged: true } }; } });
+  pi.registerTool({ name: 'background_publish', label: 'Publish reviewed staged outputs', description: 'MAIN CHAT ONLY. After reviewing authorization and the completed task manifest, explicitly publish only its declared changed regular files using expected_manifest_hash. Validates immutable bases/parent identities and output hashes; locks conflicting resources, prepares backups and rolls back ordinary failures. Never auto-merges stale bases or publishes unrelated files. This is not blanket authorization to change library/patient/config files.', parameters: Type.Object({ id: Type.String(), expected_manifest_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }) }, { additionalProperties: false }), execute: async (_id, args, signal) => { const record = await manager.publish(args.id, args.expected_manifest_hash, signal); return { content: [{ type: 'text', text: statusLine(record) }], details: record }; } });
   pi.registerFlag('background-dir', { type: 'string', description: 'Private runtime storage. Default: <cwd>/temp_files/pi-background-tasks.' });
-  pi.registerFlag('background-max-workers', { type: 'string', default: '2', description: 'Maximum concurrent workers (1-8). Only one writer per workspace.' });
+  pi.registerFlag('background-max-workers', { type: 'string', default: '2', description: 'Maximum concurrent workers (1-8). Direct writers serialize; staged writers use private file contracts.' });
   pi.registerFlag('background-timeout-minutes', { type: 'string', default: '240', description: 'Worker safety timeout in minutes; default 240.' });
 
   pi.registerTool({
@@ -97,20 +110,24 @@ export default function backgroundTasks(pi: ExtensionAPI): void {
     },
   });
   pi.on('session_start', async (_event, ctx) => {
-    if (manager.closed) manager = new BackgroundManager(pi);
+    if (manager.closed) { manager = new BackgroundManager(pi); foregroundRun = false; foregroundCompaction = false; }
     await manager.init(ctx);
   });
   pi.on('before_agent_start', (event, ctx) => {
     // Structured prompt update, not an opaque replacement. Never modifies the original user message.
     const text = `${MAIN_POLICY}\nAutomatic routing is currently ${manager.auto ? 'on' : 'off'}.`;
     event.systemPromptOptions.sections.background_policy = text;
-    manager.ctx = ctx;
+    manager.ctx = ctx; foregroundRun = true; foregroundAdmission();
     // Opaque forced prompts bypass structured sections, so include this section explicitly.
     if (event.systemPromptOptions.forceSystemPrompt !== undefined) {
       return { systemPrompt: `${event.systemPrompt}\n\n<background_policy>\n${text}\n</background_policy>` };
     }
   });
-  pi.on('tool_call', (event, ctx) => manager.guard(event, ctx));
-  pi.on('agent_settled', () => { manager.scheduleNotifications(); });
+  pi.on('tool_call', (event, ctx) => manager.guardAndAcquire(event, ctx));
+  pi.on('tool_execution_end', event => manager.toolEnded(event.toolCallId));
+  pi.on('session_before_compact', () => { foregroundCompaction = true; foregroundAdmission(); });
+  pi.on('session_compact', () => { foregroundCompaction = false; foregroundAdmission(); });
+  pi.on('session_compact_failed', () => { foregroundCompaction = false; foregroundAdmission(); });
+  pi.on('agent_settled', () => { foregroundRun = false; foregroundAdmission(); manager.scheduleNotifications(); manager.scheduleQueue(); });
   pi.on('session_shutdown', () => manager.shutdown());
 }

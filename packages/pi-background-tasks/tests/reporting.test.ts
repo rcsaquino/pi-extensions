@@ -35,7 +35,7 @@ async function fixture(t: TestContext, options: Options = {}) {
     getSettings: () => options.scenario === 'compaction-stream-error' ? { compaction: { reserveTokens: 1, keepRecentTokens: 1 } } : {},
     getAllTools: () => {
       metadataReads++;
-      if (options.scenario === 'preparation-error' && metadataReads > 1) throw new Error(SECRET);
+      if (options.scenario === 'preparation-error' && metadataReads > 2) throw new Error(SECRET);
       return [{ name: 'read', exposure: 'direct', annotations: { readOnlyHint: true } }];
     },
     events: { emit: () => {} }, appendEntry: () => {},
@@ -50,6 +50,7 @@ async function fixture(t: TestContext, options: Options = {}) {
     getSystemPrompt: () => 'Inert inherited instructions.',
     tools: [{ name: 'read', label: 'Fake read', description: 'Only returns synthetic content.', parameters: Type.Object({}) }],
     executeTool: async (_name: string, _args: unknown, execution: { signal?: AbortSignal }) => {
+      if (_name === 'background_start_check') return { isError: false, result: { content: [{ type: 'text', text: 'Synthetic start approved.' }], details: undefined } };
       tools++; toolStarted();
       if (options.scenario === 'abortable-tool') await new Promise<void>((_resolve, reject) => {
         execution.signal?.addEventListener('abort', () => reject(new Error(SECRET)), { once: true });
@@ -59,7 +60,7 @@ async function fixture(t: TestContext, options: Options = {}) {
       return { isError: false, result: { content: [{ type: 'text', text: SECRET }], details: { secret: SECRET },
         ...(options.scenario === 'terminating-tool' || options.scenario === 'mixed-tools' && tools === 1 ? { terminate: true } : {}) } };
     },
-    modelRegistry: { streamSimple: (_m: Model<Api>, _c: TranscriptContext, callOptions: SimpleStreamOptions) => {
+    modelRegistry: { find: (): Model<Api> | undefined => ctx.model, streamSimple: (_m: Model<Api>, _c: TranscriptContext, callOptions: SimpleStreamOptions) => {
       requests++; started();
       if (options.scenario === 'provider-throw') throw new Error(SECRET);
       const stream = createAssistantMessageEventStream();
@@ -101,10 +102,11 @@ async function fixture(t: TestContext, options: Options = {}) {
   await manager.dispatch({ title: 'Synthetic task', task: 'Only perform inert synthetic work.', eta_seconds: 30,
     estimate_reason: 'Offline regression.', mode: 'manual', access: 'write' }, ctx, 'fixture-dispatch');
   const job = [...manager.jobs.values()][0]!;
-  if (options.scenario === 'compaction-stream-error') job.agent!.state.messages = [...job.agent!.state.messages,
+  if (options.scenario === 'compaction-stream-error') job.contextSnapshot = [...job.contextSnapshot!,
     { role: 'user', content: 'Old context '.repeat(4000), timestamp: 1 },
     { role: 'assistant', content: [{ type: 'text', text: 'Old reply.' }], api: model.api, provider: model.provider,
       model: model.id, usage: emptyUsage(), timestamp: 1, stopReason: 'stop' }];
+  await (manager as unknown as { pumpQueue(): Promise<void> }).pumpQueue();
   t.after(async () => { releaseTool(); await manager.shutdown(); await job.done; await fs.rm(root, { recursive: true, force: true }); });
   const flush = () => (manager as unknown as { flushNotifications(): Promise<void> }).flushNotifications();
   return { root, manager, job, notices, warnings, requestStarted, toolRunning, releaseTool, flush,
@@ -201,9 +203,11 @@ test('stuck-tool shutdown retains writer lease until the cooperating tool actual
   assert.equal(f.job.record.status, 'interrupted'); assert.ok(f.job.release);
   const before = await f.manager.store!.output(f.job.record.id);
   assert.match(before, /Status: interrupted/); assert.match(before, /outcome: not recorded/);
-  assert.equal((await fs.readdir(join(f.manager.store!.root, 'locks'))).length, 1);
+  assert.equal((await fs.readdir(join(f.manager.store!.root, 'locks'))).filter(name => /^[a-f0-9]{24}\.json$/.test(name)).length, 1);
+  assert.equal(f.manager.locks!.conflicts([{ path: f.root, mode: 'write' }]), true);
   f.releaseTool(); await f.job.done;
-  assert.equal(f.job.record.status, 'interrupted'); assert.equal((await fs.readdir(join(f.manager.store!.root, 'locks'))).length, 0);
+  assert.equal(f.job.record.status, 'interrupted'); assert.equal((await fs.readdir(join(f.manager.store!.root, 'locks'))).filter(name => /^[a-f0-9]{24}\.json$/.test(name)).length, 0);
+  assert.equal(f.manager.locks!.conflicts([{ path: f.root, mode: 'write' }]), false);
   assert.equal(f.counts().tools, 1); assert.equal(f.counts().requests, 1); assert.equal(f.notices.length, 0);
 });
 test('lease cleanup failure cannot remain successful and does not leak the cleanup error', async t => {

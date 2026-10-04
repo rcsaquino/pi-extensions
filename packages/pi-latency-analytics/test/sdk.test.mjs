@@ -66,7 +66,10 @@ test('loads and observes an actual Pi SDK session with a synthetic stream and ze
     const details = JSON.parse((await tool.execute('offline-details',{action:'trace',trace_id:traces[0].trace_id},undefined)).content[0].text);
     const child = details[0].spans.find(span=>span.kind==='tool' && span.name==='fixture_child');
     assert.ok(child.parent_span_id,'actual SDK nested-tool relationship is recorded');
-    assert.ok(traces[0].model_requests[0].first_output_ms !== null);
+    assert.equal(traces[0].model_requests[0].first_output_ms, null);
+    assert.ok(traces[0].model_requests[0].first_output_context_ms !== null);
+    assert.equal(traces[0].model_requests[0].provider_hook_attribution, 'unknown_no_request_id');
+    assert.ok(details[0].events.some(event=>event.name==='unattributed_provider_headers'));
     assert.equal(traces[0].assistant_entry_id,session.sessionManager.getLeafId());
     assert.equal(errors.length,0); assert.equal(fetchCalls,0); assert.equal(streamCalls,2);
     await session.extensionRunner.emit({type:'session_shutdown',reason:'quit'});

@@ -20,17 +20,20 @@ test('context starts model timing before HTTP headers and assistant message_star
   mono=100; c.providerResponse(200); mono=120; c.messageStart({role:'assistant'});
   c.stream({type:'text_delta',contentIndex:0}); c.messageEnd({role:'assistant',stopReason:'stop'}); c.finish();
   const model=records.filter(r=>r.op==='span' && r.value.kind==='model').at(-1).value;
-  assert.equal(model.duration_ms,120); assert.equal(model.meta.first_output_ms,100);
-  assert.equal(model.meta.http_header_attempts,2); assert.deepEqual(model.meta.http_statuses,[503,200]);
+  assert.equal(model.duration_ms,120); assert.equal(model.meta.first_output_ms,null);
+  assert.equal(model.meta.first_output_context_ms,120);
+  assert.equal(model.meta.http_header_attempts,0); assert.deepEqual(model.meta.http_statuses,[]);
+  assert.equal(model.meta.provider_hook_attribution,'unknown_no_request_id');
   assert.equal(records.filter(r=>r.op==='span' && r.value.kind==='model' && r.value.status==='completed').length,1);
 });
 
-test('overlapping untagged HTTP boundaries flag ambiguity instead of claiming clean attribution', () => {
+test('overlapping untagged HTTP boundaries remain unknown and never guessed into a model window', () => {
   const records=[], c=new Collector(r=>records.push(r));
   c.agentStart(); c.context(); c.providerHeaders(); c.providerHeaders(); c.providerResponse(200);
   c.messageEnd({role:'assistant',stopReason:'stop'}); c.finish();
-  assert.equal(records.filter(r=>r.op==='trace').at(-1).value.complete,false);
-  assert.ok(records.some(r=>r.op==='event' && r.value.name==='ambiguous_provider_attempt'));
+  assert.equal(records.filter(r=>r.op==='span' && r.value.kind==='provider_headers').length,0);
+  assert.equal(records.filter(r=>r.op==='event' && r.value.name==='unattributed_provider_headers').length,2);
+  assert.ok(records.filter(r=>r.op==='event' && r.value.name.startsWith('unattributed_provider')).every(r=>r.value.meta.attribution==='unknown_no_request_id'));
 });
 
 test('an unrelated existing SQLite database is not modified', t => {

@@ -3,13 +3,14 @@ import type { RecordData, TerminalCategory, TerminalDiagnostics, WorkerPhase } f
 const reasons = ['stop', 'length', 'toolUse', 'error', 'aborted', 'deferred', 'pending', 'missing', 'unknown'] as const;
 const categories = ['provider_or_stream_error', 'request_preparation_error', 'compaction_error', 'output_limit',
   'deferred_response', 'unfinished_tool_turn', 'empty_report', 'missing_report', 'unsupported_terminal',
-  'cancelled', 'runtime_limit', 'turn_limit', 'shutdown', 'interrupted', 'lease_cleanup_error', 'unknown', 'complete'] as const;
+  'cancelled', 'runtime_limit', 'turn_limit', 'shutdown', 'interrupted', 'lease_cleanup_error', 'admission_error', 'stage_validation_error', 'queue_cancelled', 'unknown', 'complete'] as const;
 const phases = ['preparing', 'compacting', 'requesting', 'tool', 'finalizing', 'unknown'] as const;
 const outcomes = ['completed', 'error', 'aborted'] as const;
 // A closed vocabulary, not provider-supplied or dynamically named tool identities.
 const toolNames = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'memoria_add', 'memoria_edit',
   'memoria_delete', 'memoria_search', 'memoria_sessions', 'web_enable', 'web_search', 'source_check',
-  'fetch_content', 'get_search_content', 'auto_learn_status', 'latency_query', 'background_update_eta']);
+  'fetch_content', 'get_search_content', 'auto_learn_status', 'latency_query', 'background_update_eta',
+  'background_start_check', 'background_stage_file', 'background_publish', 'background_fs_inspect', 'background_web_search', 'background_web_result']);
 export function safeToolName(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   return typeof value === 'string' && toolNames.has(value) ? value : 'other';
@@ -72,6 +73,9 @@ const descriptions: Record<TerminalCategory, string> = {
   shutdown: 'Pi stopped or reloaded while the worker was running.',
   interrupted: 'The previous process ended before settlement was recorded. The exact terminal reason is unavailable.',
   lease_cleanup_error: 'Writer lease cleanup failed. Inspect runtime storage before starting another writer.',
+  admission_error: 'Background admission, captured profile or permission revalidation failed. No worker model request was started; review partial snapshot/state before retrying.',
+  stage_validation_error: 'Staged output validation failed. No publication was attempted.',
+  queue_cancelled: 'Queued task cancelled before worker effects started.',
   unknown: 'The exact failure reason is unavailable; no raw error details were retained.',
 };
 export function safeReason(category: TerminalCategory): string { return descriptions[category]; }
@@ -85,6 +89,7 @@ const legacyErrors = new Set([
   'Task result could not be saved. Review workspace effects before retrying.',
   'Pi stopped or reloaded before this task settled. Effects may be partial. It was NOT replayed.',
   'Runtime stopped before cancellation settled. Tool effects may be partial. No task replay was attempted.',
+  'Pi stopped or reloaded while this task was queued. It was NOT replayed; no worker execution was resumed.',
   ...Object.values(descriptions),
 ]);
 export function safeStoredError(value: unknown): string | undefined {
@@ -96,15 +101,17 @@ export function buildSettlementReport(record: RecordData, visibleFinal = '', sto
   const d = safeDiagnostics(record.terminalDiagnostics);
   if (!storageFailed && record.status === 'completed' && d.category === 'complete' && d.stopReason === 'stop' &&
       !d.hadToolCalls && !d.leaseCleanupFailed && d.visibleTextCharacters === visibleFinal.length && visibleFinal.trim()) return { source: 'worker', text: visibleFinal };
-  const runtime = safeCounter(record.finishedAt) >= safeCounter(record.startedAt)
+  const runtime = record.queuedAt !== undefined && record.queueWaitMs === undefined ? 0 : safeCounter(record.finishedAt) >= safeCounter(record.startedAt)
     ? Math.floor((safeCounter(record.finishedAt) - safeCounter(record.startedAt)) / 1000) : 0;
+  const queueWait = record.queueWaitMs ?? (record.queuedAt !== undefined ? Math.max(0, safeCounter(record.finishedAt) - record.queuedAt) : undefined);
   // Title and optional partial prose are visible user/assistant material, not diagnostic payloads.
   const title = typeof record.title === 'string' ? record.title.replace(/[\r\n]/g, ' ').slice(0, 200) : 'Background task';
   const status = ['completed', 'failed', 'cancelled', 'interrupted'].includes(record.status) ? record.status : 'interrupted';
   const text = [`# Background task report: ${title}`, `Status: ${status}`, 'Report source: deterministic fallback', '',
     `Reason: ${safeReason(d.category)}`, `Terminal stop: ${d.stopReason}; last phase: ${d.lastPhase}${d.failurePhase ? `; failure phase: ${d.failurePhase}` : ''}.`,
     `Last recorded tool: ${safeToolName(record.lastTool) ?? 'not recorded'}; outcome: ${d.lastToolOutcome ?? 'not recorded'}.`,
-    `Runtime: ${runtime}s; tool calls: ${safeCounter(record.toolCalls)}; assistant turns: ${safeCounter(record.turns)}.`, '',
+    `Runtime: ${runtime}s; tool calls: ${safeCounter(record.toolCalls)}; assistant turns: ${safeCounter(record.turns)}.`,
+    ...(queueWait !== undefined ? [`Queue wait (separate from execution): ${Math.floor(safeCounter(queueWait) / 1000)}s.`] : []), '',
     'Effects may have occurred. This fallback does NOT verify the work, tool effects, artifacts, or tests. A successful tool return alone does not prove task completion.',
     'No automatic replay was performed. Review workspace state and existing artifacts/checkpoints before retrying any writes.',
     ...(d.leaseCleanupFailed ? ['Writer lease cleanup failed; lease ownership may still be reserved.'] : []),

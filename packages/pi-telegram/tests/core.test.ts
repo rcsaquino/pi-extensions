@@ -190,11 +190,43 @@ test("API errors never expose Telegram description, including secrets", async ()
   await assert.rejects(api.call("getUpdates", {}, signal), error => error instanceof ApiError && error.code === 409 && !error.message.includes(config.token));
 });
 
-test("ambiguous outgoing network failures are not retried", async () => {
+test("ambiguous outgoing network failures are precise, unknown, secret-free and not retried", async () => {
   let count = 0;
-  const api = new TelegramApi(config, async () => { count++; throw new Error("network down"); });
-  await assert.rejects(api.sendText(123, "hello", signal));
+  const api = new TelegramApi(config, async () => { count++; throw new Error(`network down ${config.token} https://private.example/path`); });
+  await assert.rejects(api.sendText(123, "hello", signal), error => {
+    assert.match((error as Error).message, /TG_TRANSPORT_FAILED/);
+    assert.match((error as Error).message, /Delivery outcome unknown/);
+    assert.ok(!(error as Error).message.includes(config.token));
+    assert.ok(!(error as Error).message.includes("https:"));
+    assert.ok(!(error as Error).message.includes("deadline elapsed"));
+    return true;
+  });
   assert.equal(count, 1);
+});
+
+test("outgoing deadline, cancellation and unreadable acknowledgements do not invent delivery outcomes", async () => {
+  const abortedFetch: Fetch = async (_url, init) => new Promise((_done, reject) => {
+    init!.signal!.addEventListener("abort", () => reject(new Error("Synthetic lost acknowledgement")), { once: true });
+  });
+  const api = new TelegramApi(config, abortedFetch);
+  await assert.rejects(api.call("sendDocument", new FormData(), signal, 10), /TG_TRANSPORT_TIMEOUT.*Delivery outcome unknown/);
+  const controller = new AbortController();
+  const sent = api.call("sendDocument", new FormData(), controller.signal, 1000);
+  controller.abort();
+  await assert.rejects(sent, /TG_TRANSPORT_CANCELLED.*Delivery outcome unknown/);
+  let attempts = 0;
+  const malformed = new TelegramApi(config, async () => { attempts++; return new Response("Invalid acknowledgement"); });
+  await assert.rejects(malformed.call("sendDocument", new FormData(), signal), /TG_TRANSPORT_RESPONSE.*Delivery outcome unknown/);
+  assert.equal(attempts, 1);
+});
+
+test("an explicit 429 retry revalidates delivery authority rather than replaying revoked uploads", async () => {
+  let calls = 0, checks = 0;
+  const api = new TelegramApi(config, async () => { calls++; return Response.json({ ok: false, error_code: 429, parameters: { retry_after: 0.001 } }); });
+  await assert.rejects(api.sendMedia(123, "document", Buffer.from("Synthetic"), "artifact.txt", signal, () => {
+    if (++checks > 1) throw new SafeError("Synthetic authority revoked");
+  }), /authority revoked/);
+  assert.equal(calls, 1); assert.equal(checks, 2);
 });
 
 test("filename sanitization cannot escape the download directory", () => {

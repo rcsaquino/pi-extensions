@@ -1,7 +1,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { TelegramBridge } from "./src/bridge.ts";
-import { loadConfig, safeError, SafeError } from "./src/config.ts";
+import { DeliveryRefusal, loadConfig, safeError, SafeError } from "./src/config.ts";
 
 export default function telegram(pi: ExtensionAPI): void {
   let bridge: TelegramBridge | undefined;
@@ -51,6 +51,7 @@ export default function telegram(pi: ExtensionAPI): void {
     );
   });
   pi.on("input", event => bridge?.input(event));
+  pi.on("agent_start", () => bridge?.agentStart());
   pi.on("message_start", event => bridge?.userStart(event.message));
   pi.on("message_end", event => bridge?.assistantEnd(event.message));
   pi.on("agent_before_settle", event => { bridge?.boundary(event.outcome); });
@@ -70,11 +71,12 @@ export default function telegram(pi: ExtensionAPI): void {
     }),
     async execute(_id, params, signal) {
       try {
-        if (!bridge) throw new SafeError("Telegram is disconnected.");
+        if (!bridge) throw new DeliveryRefusal("TG_BRIDGE_STOPPED", { running: false, connected: false, context: "none", started: false, settling: false, cancelled: false, owned: false });
         await bridge.send(params, signal);
-        return { content: [{ type: "text", text: "Delivered to Telegram. Voice replies are complete; no chat is needed." }], details: { sent: true },
-          ...(params.speech || params.kind === "voice" ? { terminate: true } : {}) };
-      } catch (error) { throw new SafeError(safeError(error)); }
+        const voice = Boolean(params.speech) || params.kind === "voice";
+        return { content: [{ type: "text", text: voice ? "Delivered to Telegram. Voice replies are complete; no chat is needed." : "Delivered to Telegram." }], details: { sent: true },
+          ...(voice ? { terminate: true } : {}) };
+      } catch (error) { if (error instanceof SafeError) throw error; throw new SafeError(safeError(error)); }
     },
   });
 }

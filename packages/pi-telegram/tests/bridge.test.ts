@@ -9,7 +9,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { TelegramBridge } from "../src/bridge.ts";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { type Fetch, type TgMessage, type TgUpdate } from "../src/api.ts";
-import { stamp, type Config } from "../src/config.ts";
+import { DeliveryRefusal, stamp, type Config } from "../src/config.ts";
 
 const workspace = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
 await mkdir(workspace, { recursive: true });
@@ -464,7 +464,8 @@ test("all former Telegram slash commands are ordinary Pi input, not transport co
 
 test("outgoing file and explicit speech tools are routed only to the active request", async t => {
   const h = await fixture(t);
-  await assert.rejects(h.bridge.send({ speech: "No active user" }), /active request/);
+  await until(() => h.bridge.status === "connected");
+  await assert.rejects(h.bridge.send({ speech: "No active user" }), /TG_NO_CONTEXT/);
   h.server.feed(message());
   await until(() => h.submissions.length === 1);
   await writeFile(resolve(h.dir, "report.txt"), "report");
@@ -573,7 +574,7 @@ test("transient network loss retains ownership and reconnects without a competin
     return fetch(url, init);
   };
   const first = await fixture(t, { server, lockDir });
-  await until(() => first.bridge.status.includes("Network"));
+  await until(() => first.bridge.status.includes("TG_TRANSPORT_FAILED"));
   assert.equal(first.bridge.ownsConnection, true);
   await first.bridge.start();
   const second = await fixture(t, { lockDir, start: false });
@@ -738,7 +739,7 @@ test("local or generic inputs repeating the exact Telegram prompt cannot capture
   assert.equal(route, undefined);
   await h.finish("Local private final must never be sent.");
   assert.equal(h.server.texts().length, 0);
-  await assert.rejects(h.bridge.send({ speech: "[warm] private" }), /requires an active/);
+  await assert.rejects(h.bridge.send({ speech: "[warm] private" }), /TG_NO_CONTEXT/);
 });
 
 test("task reports retain a dispatch-captured owner after settlement; unrelated finals and forged markers stay private", async t => {
@@ -786,7 +787,7 @@ test("task-linked report allows captionless artifacts and voice-only replies, ne
   const h = await fixture(t);
   h.server.feed(message(1, "Please delegate and deliver this artifact")); await until(() => h.submissions.length === 1);
   const route = captureRoute(h)!; await h.finish("Accepted.");
-  await assert.rejects(h.bridge.send({ speech: "Unowned send" }), /requires an active/);
+  await assert.rejects(h.bridge.send({ speech: "Unowned send" }), /TG_NO_CONTEXT/);
   route("artifact", "Fetch the requested artifact."); await until(() => h.reports.length === 1);
   assert.equal(captureRoute(h), undefined, "a status turn does not grant fresh dispatch ownership");
   const path = resolve(h.dir, "report.txt"); await writeFile(path, "Synthetic report");
@@ -805,7 +806,7 @@ test("navigation, shutdown and an intervening local user revoke task report deli
   const route = captureRoute(h)!; await h.finish("Accepted.");
   route("first", "Completion."); await until(() => h.reports.length === 1);
   h.bridge.userStart({ role: "user", content: "Local TUI steering, not a Telegram request" });
-  await assert.rejects(h.bridge.send({ speech: "Must not send" }), /requires an active/);
+  await assert.rejects(h.bridge.send({ speech: "Must not send" }), /TG_CONTEXT_CANCELLED/);
   await h.finish("Local user's final must stay local."); assert.equal(h.server.texts().length, 1);
   route("second", "Later status."); h.bridge.invalidate();
   assert.equal(route("third", "Stale status."), false);
@@ -832,4 +833,104 @@ test("concurrent settlements and ambiguous report sends never replay a successfu
   await h.finish("Ambiguous final.");
   await h.bridge.settled(); route("failure", "Replay."); await delay(150);
   assert.equal(attempts, 1); assert.equal(h.reports.length, 2);
+});
+
+test("every delivery guard returns a closed safe local reason before any upload", async t => {
+  const refused = async (h: Awaited<ReturnType<typeof fixture>>, code: string, signal?: AbortSignal) => {
+    const before = h.server.calls.filter(c => c.method.startsWith("send") && c.method !== "sendChatAction").length;
+    await assert.rejects(h.bridge.send({ path: "nonexistent-private-file" }, signal), error => {
+      assert.ok(error instanceof DeliveryRefusal);
+      assert.equal(error.code, code);
+      assert.match(error.message, /refused locally/);
+      assert.match(error.message, /No upload initiated by this refusal/);
+      assert.ok(error.message.length < 450);
+      for (const privateValue of [config.token, config.groqKey!, config.elevenKey!, h.dir, "123", "456", "nonexistent-private-file"]) assert.ok(!error.message.includes(privateValue));
+      assert.deepEqual(Object.keys(error.state).sort(), ["cancelled", "connected", "context", "owned", "running", "settling", "started"]);
+      return true;
+    });
+    assert.equal(h.server.calls.filter(c => c.method.startsWith("send") && c.method !== "sendChatAction").length, before);
+  };
+  await t.test("stopped", async t => { const h = await fixture(t, { start: false }); await refused(h, "TG_BRIDGE_STOPPED"); });
+  await t.test("disconnected versus absent context", async t => {
+    const h = await fixture(t); await until(() => h.bridge.status === "connected");
+    await refused(h, "TG_NO_CONTEXT");
+    // Adversarial invariant fault, not positive ownership fabrication.
+    (h.bridge as unknown as { connected: boolean }).connected = false;
+    await refused(h, "TG_BRIDGE_DISCONNECTED");
+  });
+  await t.test("submitted but not consumed", async t => {
+    const h = await fixture(t, { consume: false }); h.server.feed(message()); await until(() => h.submissions.length === 1);
+    await refused(h, "TG_CONTEXT_NOT_STARTED");
+  });
+  await t.test("interruption cancels context", async t => {
+    const h = await fixture(t); h.server.feed(message()); await until(() => h.submissions.length === 1);
+    h.bridge.input({ type: "input", source: "interactive", text: "Unrelated local input" });
+    await refused(h, "TG_CONTEXT_CANCELLED");
+  });
+  await t.test("settlement closes upload window", async t => {
+    const h = await fixture(t); h.server.feed(message()); await until(() => h.submissions.length === 1);
+    let sending = false, release: (() => void) | undefined;
+    h.bridge.api.sendText = async () => { sending = true; await new Promise<void>(done => { release = done; }); };
+    const done = h.finish(); await until(() => sending);
+    await refused(h, "TG_CONTEXT_SETTLING"); release!(); await done;
+    await refused(h, "TG_NO_CONTEXT");
+  });
+  await t.test("wrong foreground owner", async t => {
+    const h = await fixture(t); h.server.feed(message()); await until(() => h.submissions.length === 1);
+    (h.bridge as unknown as { foregroundOwner?: unknown }).foregroundOwner = undefined;
+    await refused(h, "TG_CONTEXT_NOT_OWNER");
+  });
+  await t.test("captured session and allowlist revalidated", async t => {
+    const h = await fixture(t); h.server.feed(message()); await until(() => h.submissions.length === 1);
+    const state = h.bridge as unknown as { active: { sessionId: string } };
+    state.active.sessionId = "different"; await refused(h, "TG_SESSION_CHANGED");
+    state.active.sessionId = "fixture";
+    h.bridge.config.allowed = new Set(); await refused(h, "TG_RECIPIENT_NOT_ALLOWED");
+  });
+  await t.test("tool-call cancellation", async t => {
+    const h = await fixture(t); h.server.feed(message()); await until(() => h.submissions.length === 1);
+    const controller = new AbortController(); controller.abort(); await refused(h, "TG_CALL_CANCELLED", controller.signal);
+  });
+});
+
+test("a serial attachment wait revalidates its captured context and never sends to the next user", async t => {
+  const h = await fixture(t); h.server.feed(message()); await until(() => h.submissions.length === 1);
+  await writeFile(resolve(h.dir, "one.txt"), "Synthetic one"); await writeFile(resolve(h.dir, "two.txt"), "Synthetic two");
+  const sendGroup = h.bridge.api.sendGroup.bind(h.bridge.api);
+  let reached = false, release: (() => void) | undefined;
+  h.bridge.api.sendGroup = async (...args) => {
+    await sendGroup(...args); reached = true;
+    await new Promise<void>(done => { release = done; });
+  };
+  const first = h.bridge.send({ path: "one.txt" }); await until(() => reached);
+  const second = h.bridge.send({ path: "two.txt" });
+  // Simulate a late caller holding the old turn while the actual settled owner is removed.
+  await h.finish("");
+  h.server.feed(message(2, "Next user's request", 456)); await until(() => h.submissions.length === 2);
+  const rejected = assert.rejects(second, error => error instanceof DeliveryRefusal && error.code === "TG_CONTEXT_REPLACED");
+  release!(); await first; await rejected;
+  const uploads = h.server.calls.filter(c => c.method === "sendDocument");
+  assert.equal(uploads.length, 1); assert.equal(uploads[0].args.get("chat_id"), "123");
+  await h.finish("");
+});
+
+test("an ambiguous attachment attempt does not consume or reassign report ownership and only an explicit valid retry uploads again", async t => {
+  const server = new Server(); const fetch = server.fetch;
+  let attempts = 0;
+  server.fetch = async (url, init) => {
+    if (String(url).endsWith("/sendDocument") && ++attempts === 1) throw new Error("Synthetic accepted-but-unacknowledged upload");
+    return fetch(url, init);
+  };
+  const h = await fixture(t, { server }); h.server.feed(message()); await until(() => h.submissions.length === 1);
+  const route = captureRoute(h)!; await h.finish("Accepted.");
+  route("attachment", "Retrieve the saved report."); await until(() => h.reports.length === 1);
+  await writeFile(resolve(h.dir, "report.txt"), "Synthetic report");
+  await assert.rejects(h.bridge.send({ path: "report.txt" }), /TG_TRANSPORT_FAILED.*Delivery outcome unknown/);
+  assert.equal(attempts, 1); assert.equal(h.bridge.status, "connected");
+  await delay(150); assert.equal(attempts, 1); assert.equal(h.reports.length, 1);
+  await h.bridge.send({ path: "report.txt" });
+  assert.equal(attempts, 2);
+  const uploaded = h.server.calls.find(c => c.method === "sendDocument")!;
+  assert.equal(uploaded.args.get("chat_id"), "123"); assert.equal(uploaded.args.get("caption"), null);
+  await h.finish("");
 });

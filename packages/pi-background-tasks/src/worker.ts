@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Agent } from '@earendil-works/pi-agent-core';
 import type { AgentMessage, AgentTool, StreamFn } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemMessage } from '@earendil-works/pi-ai';
@@ -8,27 +9,35 @@ import type { Job, NormalizedDispatch, Profile } from './types.ts';
 import { addUsage } from './types.ts';
 import { contextMessages, isReadOnlyTool, workerInstructions, workerToolAllowed } from './policy.ts';
 import { observeFailure, safeToolName } from './report.ts';
+import { telemetry, telemetryUsage } from './telemetry.ts';
+import type { EffectRegistry } from './effects.ts';
+import type { Admission } from './admission.ts';
 
-export interface WorkerHooks { changed(): void; checkAlive(): void }
+export interface WorkerHooks { changed(): void; checkAlive(): void; effects?: EffectRegistry; admission?: Admission }
 export function createWorker(pi: ExtensionAPI, job: Job, profile: Profile, dispatch: NormalizedDispatch, hooks: WorkerHooks): Agent {
   const ctx = job.ctx!;
   const progress = job.progress = { lastPhase: 'preparing', pendingTools: new Set<string>(), abortedTools: new Set<string>() } as NonNullable<Job['progress']>;
   const settings = structuredClone(pi.getSettings());
-  const snapshot = contextMessages(dispatch, () => buildSessionContext(ctx.sessionManager.getBranch()).messages);
+  const snapshot = job.contextSnapshot ?? contextMessages(dispatch, () => buildSessionContext(ctx.sessionManager.getBranch()).messages);
   // Execute through the ORIGINAL host tool pipeline, not directly through an unguarded execute function.
   // This also preserves extension/MCP tools and their live runtime without starting another Telegram poller.
   const tools = (): AgentTool[] => {
     const metadata = new Map(pi.getAllTools().map(t => [t.name, t]));
     return ctx.tools.filter(tool => {
       const info = metadata.get(tool.name);
+      if (job.stage) return info && ((['read', 'write', 'edit'].includes(tool.name) && info.sourceInfo?.path === `builtin:${tool.name}`) || ['background_update_eta', 'background_web_search', 'background_web_result'].includes(tool.name));
       return info && workerToolAllowed(info) && (job.record.access === 'write' ||
-        isReadOnlyTool(tool.name, info) || tool.name === 'background_update_eta');
+        isReadOnlyTool(tool.name, info, hooks.effects) || tool.name === 'background_update_eta');
     }).map(tool => ({ ...tool,
       execute: async (_callId, args, signal, onUpdate) => {
         hooks.checkAlive();
         const combined = signal ? AbortSignal.any([signal, job.controller!.signal]) : job.controller!.signal;
+        const invocationId = randomUUID(); // Provider tool IDs can be reused across turns.
         try {
-          const outcome = await ctx.executeTool(tool.name, args, { signal: combined, onUpdate });
+          const stageFile = job.stage && ['read', 'write', 'edit'].includes(tool.name);
+          const outcome = await ctx.executeTool(stageFile ? 'background_stage_file' : tool.name,
+            stageFile ? { ...(args as Record<string, unknown>), id: job.record.id, operation: tool.name } : args, { signal: combined, onUpdate });
+          if (outcome.result.usage) telemetry(pi, job, 'tool-usage', { callId: invocationId, usage: telemetryUsage(outcome.result.usage) });
           return { ...outcome.result, isError: outcome.isError };
         } catch (e) {
           if (combined.aborted) progress.abortedTools.add(_callId);
@@ -41,30 +50,64 @@ export function createWorker(pi: ExtensionAPI, job: Job, profile: Profile, dispa
     const compacting = progress.lastPhase === 'compacting';
     if (!compacting) progress.lastPhase = 'requesting';
     const failed = () => observeFailure(progress, compacting ? 'compaction_error' : 'provider_or_stream_error');
+    const requestId = randomUUID();
+    const admissionAt = Date.now();
+    const releaseModel = await hooks.admission?.acquire('model', job.controller!.signal);
+    telemetry(pi, job, 'model-admitted', { requestId, waitMs: Date.now() - admissionAt });
+    let ended = false;
+    telemetry(pi, job, 'model-start', { requestId, provider: model.provider, model: model.id,
+      thinking: profile.thinking, purpose: compacting ? 'compaction' : 'agent' });
+    const end = (message?: AssistantMessage) => {
+      if (ended) return; ended = true; releaseModel?.();
+      telemetry(pi, job, 'model-end', { requestId, stopReason: message?.stopReason ?? 'error',
+        provider: model.provider, model: model.id, usage: telemetryUsage(message?.usage) });
+    };
     try {
       const stream = await ctx.modelRegistry.streamSimple(model, context, {
         ...options,
+        onPayload: async (payload, requestModel) => {
+          telemetry(pi, job, 'model-request', { requestId });
+          return options?.onPayload?.(payload, requestModel);
+        },
+        transformHeaders: async headers => {
+          telemetry(pi, job, 'model-headers', { requestId }); return headers;
+        },
+        onResponse: async (response, requestModel) => {
+          telemetry(pi, job, 'model-response', { requestId, status: response.status });
+          await options?.onResponse?.(response, requestModel);
+        },
         thinkingBudgets: options?.thinkingBudgets ?? settings.thinkingBudgets,
         timeoutMs: settings.retry?.provider?.timeoutMs ?? (settings.httpIdleTimeoutMs === 0 ? 2147483647 : settings.httpIdleTimeoutMs ?? 300_000),
         websocketConnectTimeoutMs: settings.websocketConnectTimeoutMs ?? 15_000,
         maxRetries: settings.retry?.provider?.maxRetries ?? 0,
         maxRetryDelayMs: settings.retry?.provider?.maxRetryDelayMs ?? 60_000,
       });
-      // Observe only the fixed terminal reason, never errorMessage/diagnostics/payloads.
-      void stream.result().then(message => { if (message.stopReason === 'error') failed(); }, failed);
+      // result() remains observed for providers that terminate without an iterable
+      // terminal event. The idempotent end prevents duplicate usage accounting.
+      void stream.result().then(message => { if (message.stopReason === 'error') failed(); if (compacting) end(message); }, () => { failed(); end(); });
       return new Proxy(stream, {
         get(target, key) {
           if (key === Symbol.asyncIterator) return async function* () {
-            try { for await (const event of target) yield event; }
-            catch (e) { failed(); throw e; }
+            try {
+              for await (const event of target) {
+                if (['text_delta', 'thinking_start', 'thinking_delta', 'thinking_end', 'toolcall_delta'].includes(event.type)) {
+                  telemetry(pi, job, 'model-stream', { requestId, eventType: event.type,
+                    ...('contentIndex' in event ? { contentIndex: event.contentIndex } : {}) });
+                }
+                if (event.type === 'done') end(event.message);
+                if (event.type === 'error') end(event.error);
+                yield event;
+              }
+              end(await target.result());
+            } catch (e) { failed(); end(); throw e; }
           };
           const value = Reflect.get(target, key, target);
           return typeof value === 'function' ? value.bind(target) : value;
         },
       });
-    } catch (e) { failed(); throw e; }
+    } catch (e) { failed(); end(); throw e; }
   };
-  const system = `${ctx.getSystemPrompt()}\n\n${workerInstructions(job.record)}`;
+  const system = `${ctx.getSystemPrompt()}\n\n${workerInstructions(job.record)}${job.stage ? `\n${job.stage.describe()}` : ''}`;
   let lastSaved = 0;
   let agent: Agent;
   agent = new Agent({

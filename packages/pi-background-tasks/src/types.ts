@@ -1,14 +1,17 @@
 import type { Agent, ThinkingLevel } from '@earendil-works/pi-agent-core';
-import type { Model, Usage } from '@earendil-works/pi-ai';
+import type { Model, Provider, Usage } from '@earendil-works/pi-ai';
 import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { Stage, StageSpec, OutputManifest } from './staging.ts';
+import type { ResourceLease } from './resources.ts';
 
-export type Status = 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+export type Status = 'queued' | 'starting' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type ContextMode = 'brief' | 'selected' | 'full';
 export type WorkerPhase = 'preparing' | 'compacting' | 'requesting' | 'tool' | 'finalizing' | 'unknown';
 export type TerminalCategory = 'provider_or_stream_error' | 'request_preparation_error' | 'compaction_error'
   | 'output_limit' | 'deferred_response' | 'unfinished_tool_turn' | 'empty_report' | 'missing_report'
   | 'unsupported_terminal' | 'cancelled' | 'runtime_limit' | 'turn_limit' | 'shutdown' | 'interrupted'
-  | 'lease_cleanup_error' | 'unknown' | 'complete';
+  | 'lease_cleanup_error' | 'admission_error' | 'stage_validation_error' | 'queue_cancelled' | 'unknown' | 'complete';
 export interface TerminalDiagnostics {
   stopReason: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted' | 'deferred' | 'pending' | 'missing' | 'unknown';
   category: TerminalCategory;
@@ -29,6 +32,8 @@ export interface Dispatch {
   access?: 'read' | 'write';
   context_mode?: ContextMode;
   context_text?: string;
+  execution?: 'direct' | 'staged';
+  stage?: StageSpec;
 }
 export interface NormalizedDispatch extends Dispatch {
   eta_max_seconds: number;
@@ -50,6 +55,12 @@ export interface RecordData {
   /** Absent on legacy 0.1.0 tasks, which copied projected history by default. */
   contextMode?: ContextMode;
   startedAt: number;
+  queuedAt?: number;
+  queueWaitMs?: number;
+  waitingReason?: 'capacity' | 'resources' | 'admission';
+  execution?: 'direct' | 'staged';
+  manifest?: OutputManifest;
+  publication?: 'ready' | 'published' | 'review-required';
   finishedAt?: number;
   etaSeconds: number;
   etaMaxSeconds: number;
@@ -74,8 +85,14 @@ export interface Job {
   agent?: Agent;
   controller?: AbortController;
   done?: Promise<void>;
+  finish?: () => void;
   settling?: boolean;
   release?: () => Promise<void>;
+  resourceLease?: ResourceLease;
+  stage?: Stage;
+  starting?: boolean;
+  pending?: { dispatch: NormalizedDispatch; profile: Profile };
+  contextSnapshot?: AgentMessage[];
   /** Ephemeral observation, never a transcript or raw error. */
   progress?: {
     lastPhase: WorkerPhase;
@@ -96,8 +113,10 @@ export interface Job {
 export interface Profile {
   model: Model<any>;
   thinking: ThinkingLevel;
+  /** In-process provider implementation identity only, never serialized. Auth remains request-time. */
+  providerRuntime?: Provider;
 }
-export const isActive = (status: Status): boolean => status === 'running' || status === 'cancelling';
+export const isActive = (status: Status): boolean => status === 'queued' || status === 'starting' || status === 'running' || status === 'cancelling';
 export function emptyUsage(): Usage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };

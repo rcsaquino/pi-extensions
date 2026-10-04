@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { Type } from '@earendil-works/pi-ai';
 import { defineTool, getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { Collector } from './lib/collector.mjs';
+import { IsolatedCollector } from './lib/isolation.mjs';
 import { WriterClient } from './lib/client.mjs';
 import { formatReport } from './lib/report.mjs';
 
@@ -13,7 +13,9 @@ export default function latencyAnalytics(pi: ExtensionAPI) {
   let writer: WriterClient | undefined;
   let outcome = 'completed';
   let captureErrors = 0;
-  let collector = new Collector((record: unknown) => writer?.enqueue(record));
+  let collector = new IsolatedCollector((record: unknown) => writer?.enqueue(record));
+  // Metadata-only cooperative protocol. No extension/tool annotations authorize it.
+  pi.events?.on('background-tasks:telemetry:v1', event => { observe(() => collector.workerEvent(event)); });
 
   function configure(ctx: ExtensionContext) {
     collector.configure({
@@ -46,7 +48,7 @@ export default function latencyAnalytics(pi: ExtensionAPI) {
   pi.on('session_start', (_event, ctx) => {
     observe(() => {
       if (!writer) {
-        collector = new Collector((record: unknown) => writer?.enqueue(record));
+        collector = new IsolatedCollector((record: unknown) => writer?.enqueue(record));
         const dataDir = resolve(process.env.PI_LATENCY_DIR || join(getAgentDir(), 'analytics'));
         writer = new WriterClient(join(dataDir, 'analytics.sqlite'), collector.instanceId);
       }
@@ -75,7 +77,7 @@ export default function latencyAnalytics(pi: ExtensionAPI) {
   pi.on('session_compact', () => { observe(() => collector.compactEnd()); });
   pi.on('session_compact_failed', () => { observe(() => collector.compactEnd(true)); });
   pi.on('session_shutdown', async () => {
-    observe(() => collector.finish('interrupted'));
+    observe(() => collector.shutdown());
     const closing = writer;
     writer = undefined;
     try { await closing?.close(); } catch { /* Fail open; status/DB preserve coverage limitations. */ }

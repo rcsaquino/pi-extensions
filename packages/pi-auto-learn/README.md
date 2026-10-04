@@ -58,6 +58,12 @@ The mutable `learning-policy/SKILL.md` and its references can improve through th
 
 There is no second extension-loaded Pi session, recursive worker toolset, foreground continuation, or automatic per-skill notification stream.
 
+With `pi-background-tasks`, tool evidence follows its trusted v1 task/root protocol and actual host start/parent/end pairs. Worker reads/errors never enter an unrelated foreground observation, while ordinary foreground orchestrators' nested tools remain eligible. Tool-ID prefixes confer no ownership; unpaired, cancelled, late, ambiguous and replaced-session events fail closed.
+
+Useful worker diagnostics are preserved separately in `auto_learn_status`'s `taskEvidence`: owning task/session/root, originating consumed user entry, managed skill IDs, closed tool-failure labels and terminal status. Only an originally successful admitted human activity enrolls these diagnostics; guests and notification-only reports do not. They are process-local and bounded (128 task entries, 8,192 call/ambiguity records). Status shows the latest ten enrolled tasks with retained-count/truncation indicators; older details are not individually queryable. Diagnostics are cleared by navigation, shutdown, exclusion or clear-evidence, and privacy-filtered for display. Limits can omit evidence, never assign it to another chat.
+
+Worker diagnostics do **not** automatically feed proposals or foreground skill-use/disuse counters: there is no independent worker human-admission, current-branch transcript or completed physical-profile attestation. They remain available for inspection and an explicit human discussion of the task's failure. No worker transcript, payload, task brief or cross-session history is copied.
+
 ## Directories
 
 Defaults are relative to Pi's agent directory, normally `~/.pi/agent`:

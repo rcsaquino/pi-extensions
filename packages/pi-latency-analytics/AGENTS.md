@@ -27,6 +27,7 @@ Tests and benchmark create private synthetic local stores. Never set their paths
 - `lib/client.mjs`: bounded queue, worker protocol, flushing/querying, health, and cleanup.
 - `lib/writer.mjs`: off-thread batching and storage protocol.
 - `lib/database.mjs`: SQLite schema/application guards, private storage, writes, recovery, queries, and overlap-safe summaries.
+- `lib/database-path.mjs`: pre-mutation directory/file/SQLite-companion alias guards, private stable ownership snapshots and descriptor-based file permissions.
 - `lib/report.mjs`: deterministic local report formatting.
 - `scripts/benchmark.mjs`: synthetic observer microbenchmark with a real writer.
 

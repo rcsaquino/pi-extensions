@@ -543,7 +543,7 @@ export class TelegramBridge {
         await this.api.speak(this.chat(request), params.speech, combined, beforeUpload);
         request.spoke = request.delivered = true;
       } else {
-        const files = await Promise.all((params.paths || [params.path!]).map(path => outboundFile(this.ctx.cwd, path, params.kind, this.config.dataDir)));
+        const files = await Promise.all((params.paths || [params.path!]).map(path => outboundFile(this.ctx.cwd, path, params.kind, this.config.dataDir, combined)));
         beforeUpload();
         await this.api.sendGroup(this.chat(request), files, combined, beforeUpload);
         request.delivered = true;

@@ -22,6 +22,7 @@ Only install dependencies when needed. The root host-link helper preserves worki
 - `src/index.ts`: Pi lifecycle, commands/tool, scheduling, streaming, and prompt metadata.
 - `model-profile.ts`: selected/dispatched model and thinking inheritance.
 - `observations.ts`, `privacy.ts`: bounded visible evidence, eligibility, filtering, and safe displays.
+- `tool-evidence.ts`: paired host-tool activity/task ancestry, late/cancelled boundaries and bounded originally admitted task diagnostics, separate from automatic foreground evidence.
 - `learner.ts`: admission, budget reservation, proposal, and fresh critique.
 - `validation.ts`, `skill-library.ts`: protocol/schema, inventory, names, dependencies, and retirement rules.
 - `safe-writer.ts`, `filesystem.ts`: optimistic tree checks, snapshots, staged text changes, retirement, restore, and rollback.

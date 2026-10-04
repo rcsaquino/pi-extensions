@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { databasePath } from "./database-path.ts";
+import { APPLICATION_ID, INITIAL_SCHEMA, VERSION_TWO, attestSchema } from "./database-schema.ts";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { expandQuery, loadAliases, type AliasConfiguration } from "./aliases.ts";
 import { ExpectedError, isSqliteError, storeUnavailable } from "./errors.ts";
@@ -52,55 +53,35 @@ export class MemoryDatabase {
   private closed = false;
 
   constructor(readonly path: string, private readonly aliasesPath?: string) {
-    try { mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); }
-    catch (error) { throw storeUnavailable("open", path, error); }
-    try { this.db = new DatabaseSync(path); }
-    catch (error) { throw storeUnavailable("open", path, error); }
+    let location: ReturnType<typeof databasePath>;
     try {
-      chmodSync(path, 0o600);
-      this.db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
+      location = databasePath(path);
+      // A rejected existing database never receives a writable connection, chmod,
+      // journal-mode change or migration. Version zero alone is not ownership.
+      const existing = location.check();
+      if (existing) {
+        location.inspect(snapshot => {
+          const inspection = new DatabaseSync(snapshot);
+          try { inspection.exec("PRAGMA busy_timeout=5000; BEGIN"); attestSchema(inspection); }
+          finally { inspection.close(); }
+        });
+      }
+      location.check();
+      this.db = new DatabaseSync(location.path);
+    } catch (error) { throw storeUnavailable("open", path, error); }
+    try {
+      this.db.exec("PRAGMA busy_timeout=5000;");
       this.db.function("memoria_fold", { deterministic: true }, (value) => String(value).toLowerCase());
       this.transaction(() => {
-        const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version);
-        if (version > 2) throw new Error(`Database schema ${version} is newer than this pi-memoria version.`);
-        if (version === 0) {
-          this.db.exec(`
-            CREATE TABLE memories (
-              rowid INTEGER PRIMARY KEY,
-              id TEXT NOT NULL UNIQUE,
-              content TEXT NOT NULL,
-              tags TEXT NOT NULL DEFAULT '[]',
-              tag_text TEXT NOT NULL DEFAULT '',
-              source TEXT NOT NULL DEFAULT '',
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              revision INTEGER NOT NULL DEFAULT 1
-            ) STRICT;
-            CREATE VIRTUAL TABLE memories_fts USING fts5(
-              content, tag_text, source, content='memories', content_rowid='rowid',
-              tokenize='porter unicode61 remove_diacritics 2', prefix='2 3'
-            );
-            CREATE TRIGGER memories_insert AFTER INSERT ON memories BEGIN
-              INSERT INTO memories_fts(rowid, content, tag_text, source) VALUES(new.rowid, new.content, new.tag_text, new.source);
-            END;
-            CREATE TRIGGER memories_delete AFTER DELETE ON memories BEGIN
-              INSERT INTO memories_fts(memories_fts, rowid, content, tag_text, source)
-                VALUES('delete', old.rowid, old.content, old.tag_text, old.source);
-            END;
-            CREATE TRIGGER memories_update AFTER UPDATE ON memories BEGIN
-              INSERT INTO memories_fts(memories_fts, rowid, content, tag_text, source)
-                VALUES('delete', old.rowid, old.content, old.tag_text, old.source);
-              INSERT INTO memories_fts(rowid, content, tag_text, source) VALUES(new.rowid, new.content, new.tag_text, new.source);
-            END;
-            CREATE TABLE session_roots (path TEXT PRIMARY KEY) STRICT;
-            PRAGMA user_version=1;
-          `);
-        }
-        if (version < 2) {
-          // Keep existing duplicates and archive evidence intact; serialize new adds below.
-          this.db.exec("CREATE INDEX memories_content ON memories(content); PRAGMA user_version=2;");
-        }
+        // Re-attest under the writer transaction for concurrent initialization.
+        const version = attestSchema(this.db);
+        location.check();
+        if (version === 0) this.db.exec(INITIAL_SCHEMA);
+        if (version < 2) this.db.exec(VERSION_TWO);
+        this.db.exec(`PRAGMA application_id=${APPLICATION_ID};`);
       });
+      location.privateMode();
+      this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
     } catch (error) {
       this.closed = true;
       try { this.db.close(); } catch { /* keep the original failure */ }

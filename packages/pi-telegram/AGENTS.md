@@ -8,6 +8,7 @@ Read this with [the monorepo instructions](https://github.com/rcsaquino/pi-exten
 - `src/bridge.ts`: lifecycle, polling, FIFO reply ownership, steering, final delivery, and `telegram_send`.
 - `src/config.ts`: known-field environment loading, allowlist, safe errors, redaction, and input timestamps.
 - `src/api.ts`: Telegram requests, downloads/uploads, and audio upload identification.
+- `src/attachment.ts`: Linux/procfs descriptor-anchored no-follow attachment reads, actual byte bounds, cancellation and identity checks.
 - `src/connection-lease.ts`: local kernel-backed bot ownership.
 - `src/format.ts`: Markdown to native entities and safe text splitting.
 - `src/voice.ts`: Groq transcription, exact ElevenLabs voice/model, audio tags, chunking, and Opus assembly.

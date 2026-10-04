@@ -146,6 +146,10 @@ The optional `synonyms.json` next to `memoria.sqlite` maps terms for `any`/`all`
 └── backups/
 ```
 
+Database startup recognizes truly empty stores and the exact shipped memoria v1/v2 schemas, including legacy stores without an application identifier. Current stores receive the `MEMO` application identifier without a schema-version bump. Foreign, future, customized or unsupported schemas are refused before chmod, journal-mode changes or migration. Supported v1 migration preserves facts, archives, duplicates and FTS indexes.
+
+Database/companion files must be regular single-link files, and existing directory components cannot be symlinks. Unsafe `-wal`, `-shm`, `-journal` aliases and orphan companions are refused. Ownership inspection uses a private mode-0700 temporary snapshot of the database/WAL/journal, because even SQLite READONLY can alter original SHM read marks. Snapshot files use 0600, copying uses a fixed-size buffer with bounded change retries, and cleanup runs on success/failure. Startup inspection is linear in stored bytes and needs temporary disk capacity; normal queries do not copy the store. Concurrent supported startup still re-attests under its migration transaction. These are focused startup checks, not an OS lease against uncoordinated path/schema mutations by another process.
+
 The default session root is `<agent-dir>/sessions`; roots Pi uses are remembered across projects. Changing `PI_MEMORIA_DIR` selects a different store without migrating the old one, project `cwd` is never used to choose it, and no data is sent over the network.
 
 </details>

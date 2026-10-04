@@ -17,6 +17,7 @@ A transport, not a second agent. It uses the active Pi model and conversation, f
 - Node.js **22.6+**, as declared by this package; the maintained offline suite uses Node 26.10.0 and Pi 1.0.0.
 - A Node-based Pi host using the `@earendil-works` namespace.
 - On Linux, util-linux-compatible **`flock --no-fork`** for exclusive bot ownership.
+- **Linux with procfs** for secure outgoing file attachments. Other platforms fail closed for file reads; there is no insecure pathname fallback.
 - **ffmpeg** only for assembling long generated speech, and for the corresponding offline tests.
 - A Telegram bot token and explicit private-user allowlist. Optional Groq and ElevenLabs credentials enable speech features.
 
@@ -99,7 +100,7 @@ telegram_send({ paths: ["artifacts/a.txt", "artifacts/b.txt"], kind: "document" 
 telegram_send({ speech: "[warm, composed voice] Here is the spoken answer. [pause]" })
 ```
 
-Provide exactly one of `path`, `paths`, or `speech`. Files and resolved symlink targets must stay inside the Pi working directory or this transport's downloads directory. Secret paths and files containing configured credentials are rejected. These checks do not sandbox other tools.
+Provide exactly one of `path`, `paths`, or `speech`. Files and resolved symlink targets must stay inside the Pi working directory or this transport's downloads directory. Secret paths and files containing configured credentials are rejected. Canonical targets are opened through descriptor-anchored, no-follow directory components, and bytes are read from the validated regular-file descriptor. The actual read is capped even if the file grows, cancellation closes descriptors, and changed files/directories are refused. This preserves legitimate in-root symlink targets while preventing ancestor-symlink swaps from redirecting the read. These checks do not sandbox other tools or exclude every uncoordinated same-user filesystem mutation.
 
 - One file is selected as photo, video, voice, or document by supported type/size; use `kind: "document"` to retain original image bytes.
 - Two to ten compatible files use one captionless Telegram album. Photos/videos may mix; documents group only with documents. Voice notes cannot be grouped.

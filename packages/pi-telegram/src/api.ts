@@ -1,4 +1,5 @@
-import { readFile, realpath, stat } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
+import { readAttachment } from "./attachment.ts";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type Config, SafeError, TransportFailure, redact } from "./config.ts";
@@ -249,7 +250,8 @@ export function audioUpload(data: Buffer, filename: string): { filename: string;
   return { filename: `${safeFilename(basename(filename, extname(filename)))}.${extension}`, mime: mimes[extension] };
 }
 
-export async function outboundFile(cwd: string, path: string, kind?: MediaKind, downloads?: string): Promise<OutgoingFile> {
+export async function outboundFile(cwd: string, path: string, kind?: MediaKind, downloads?: string, signal?: AbortSignal): Promise<OutgoingFile> {
+  signal?.throwIfAborted();
   const root = await realpath(cwd);
   const resolved = await realpath(resolve(root, path));
   const roots = [root];
@@ -260,9 +262,7 @@ export async function outboundFile(cwd: string, path: string, kind?: MediaKind, 
   if (rel.split(/[\\/]/).some(part => /^(\.env(?:\..*)?|\.ssh|\.gnupg|auth\.json|credentials(?:\..*)?|secrets?(?:\..*)?)$/i.test(part))) {
     throw new SafeError("Refusing to send a credential or secret file.");
   }
-  const info = await stat(resolved);
-  if (!info.isFile() || info.size > UPLOAD_LIMIT) throw new SafeError("Outgoing file must be a regular file of at most 50 MB.");
-  const data = await readFile(resolved);
+  const data = await readAttachment(resolved, UPLOAD_LIMIT, signal);
   const extension = extname(resolved).toLowerCase();
   kind ??= [".jpg", ".jpeg", ".png"].includes(extension) && data.length <= 10 * 1024 * 1024 ? "photo"
     : extension === ".mp4" ? "video" : [".ogg", ".opus"].includes(extension) ? "voice" : "document";

@@ -1,6 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmodSync, lstatSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { databasePath } from './database-path.mjs';
 
 export const SCHEMA_VERSION = 1;
 export const APPLICATION_ID = 0x504c4154; // PLAT
@@ -12,23 +11,32 @@ const columns = {
   event: ['event_id','trace_id','name','wall_ms','offset_ms','meta'],
 };
 
+function attestDatabase(db) {
+  const objects = db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get().count;
+  const version = db.prepare('PRAGMA user_version').get().user_version;
+  const application = db.prepare('PRAGMA application_id').get().application_id;
+  if (application !== APPLICATION_ID && (application !== 0 || objects)) throw new Error('unrecognized_database');
+  if (version > SCHEMA_VERSION) throw new Error('newer_schema');
+  if (version < 0 || (version === 0 && objects)) throw new Error('unsupported_schema');
+}
 export function openDatabase(path) {
-  const dir = dirname(path);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (lstatSync(dir).isSymbolicLink()) throw new Error('unsafe_directory');
-  try { if (lstatSync(path).isSymbolicLink()) throw new Error('unsafe_database'); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-  const db = new DatabaseSync(path);
+  const location = databasePath(path);
+  const existing = location.check();
+  if (existing) {
+    location.inspect(snapshot => {
+      const inspection = new DatabaseSync(snapshot);
+      try { inspection.exec('PRAGMA busy_timeout=500; BEGIN'); attestDatabase(inspection); }
+      finally { inspection.close(); }
+    });
+  }
+  location.check();
+  const db = new DatabaseSync(location.path);
   try {
     db.exec('PRAGMA busy_timeout=500');
     db.exec('BEGIN');
-    const tables = db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get().count;
-    const version = db.prepare('PRAGMA user_version').get().user_version;
-    const application = db.prepare('PRAGMA application_id').get().application_id;
+    attestDatabase(db);
     db.exec('COMMIT');
-    if (application !== APPLICATION_ID && (application !== 0 || tables)) throw new Error('unrecognized_database');
-    if (version > SCHEMA_VERSION) throw new Error('newer_schema');
-    chmodSync(path, 0o600);
+    location.privateMode();
     db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;');
     db.exec(`
     BEGIN IMMEDIATE;

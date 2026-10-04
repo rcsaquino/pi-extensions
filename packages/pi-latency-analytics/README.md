@@ -116,7 +116,9 @@ Allowlisted metadata includes generated IDs, PID, timing, tool names, model/prov
 > [!NOTE]
 > Local metadata is not anonymous. Session IDs and names can still identify activity. Do not publish the database with source code.
 
-Directories use `0700`, the database `0600`. Final-directory/database symlinks are refused, but same-user code remains outside an OS security boundary.
+Directories use `0700`, the database `0600`. Startup refuses symlinks throughout the existing directory chain, nonregular/hardlinked databases and aliased SQLite `-wal`, `-shm`, `-journal` companions, before opening or chmodding them. Orphan companions are not silently adopted. Rejected foreign/future databases retain bytes, modes and journal settings.
+
+Existing-store identity is inspected using a private mode-0700 temporary snapshot with mode-0600 files, because SQLite READONLY can still write original SHM read marks. Fixed-buffer copying, bounded change retries and unconditional cleanup keep this inspection private. It adds startup I/O/temporary disk capacity proportional to stored bytes; analytics startup remains off-thread. These focused startup checks do not exclude every uncoordinated same-user path/schema race or provide an OS security boundary.
 
 Handlers enqueue bounded records without awaiting SQL. A worker batches at a 25 ms schedule or 64 records, uses WAL, and handles brief lock contention off the agent thread. SQLite BUSY/LOCKED during concurrent initialization gets at most five off-thread attempts; instance registration/recovery is transactional and failed connections are closed. The buffer ceiling is 4,096 retained buffered/in-flight records. Loss increments health counters and conservatively marks traces potentially incomplete; recorder failure never blocks/retries ordinary agent work. An explicitly requested query performs a bounded flush.
 

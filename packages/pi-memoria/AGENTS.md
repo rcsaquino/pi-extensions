@@ -28,6 +28,7 @@ From this package directory; from the monorepo root, use `npm --prefix packages/
 - `index.ts`: Pi lifecycle hooks, tool schemas, guidance, and bounded tool results.
 - `src/config.ts`: global paths and session-root configuration.
 - `src/database.ts`: SQLite WAL, transactional FTS5 triggers, CRUD, retrieval, alias-expanded keyword queries, exact tag predicates, session-root registry.
+- `src/database-path.ts`, `src/database-schema.ts`: pre-mutation path/companion alias guards, private snapshot attestation, exact supported-schema signatures and legacy/current initialization.
 - `src/hot-memory.ts`: authoritative bullet file, stable IDs, priorities, duplicate-safe adds/edits, single-line validation, locking, atomic writes, cap enforcement.
 - `src/aliases.ts`: optional global `synonyms.json` loading/validation and bounded one-hop query expansion.
 - `src/errors.ts`: stable expected-error codes and SQLite failure classification.

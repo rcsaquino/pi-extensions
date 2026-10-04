@@ -11,6 +11,7 @@ import { Learner } from './learner.ts';
 import { BusyError } from './lock.ts';
 import { capture } from './observations.ts';
 import { InputAdmission, messageText } from './input-admission.ts';
+import { ToolEvidence } from './tool-evidence.ts';
 import { resolveProfile, selectionKey } from './model-profile.ts';
 import { displaySafe } from './privacy.ts';
 import { readFileSafe, targetPath, within } from './filesystem.ts';
@@ -50,8 +51,10 @@ export default function autoLearn(pi: ExtensionAPI): void {
   const admission = new InputAdmission(pi);
   let boundaryCompleted = false;
   let activityEpoch = 0;
-  let used = new Set<string>();
-  let failures = new Set<string>();
+  const toolEvidence = new ToolEvidence();
+  pi.events.on('background-tasks:telemetry:v1', data => {
+    if (context && !stopped) toolEvidence.workerEvent(data, context.sessionManager.getSessionId());
+  });
   let dispatched: { selectedKey: string; message: AssistantMessage } | undefined;
   let external: Skill[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -138,7 +141,7 @@ export default function autoLearn(pi: ExtensionAPI): void {
   };
 
   pi.on('session_start', async (_event, ctx) => {
-    stopped = false; active = false;
+    stopped = false; active = false; toolEvidence.clear();
     try {
       await initialize(ctx);
       integrity = setInterval(() => {
@@ -165,14 +168,14 @@ export default function autoLearn(pi: ExtensionAPI): void {
     context = ctx; stopWork(); active = true; retryCount = 0;
     activityEpoch++; admitted = false; boundaryCompleted = false;
     admission.input(event, session(ctx));
-    used = new Set(); failures = new Set();
+    toolEvidence.begin(session(ctx));
     void enqueue(async () => { if (store) await store.activity(session(ctx), true); });
   });
   pi.on('message_start', (event, ctx) => {
     admission.consume(event.message.role, 'content' in event.message ? event.message.content : undefined, session(ctx));
-    if (event.message.role === 'custom') { activityEpoch++; admitted = false; stopWork(); }
+    if (event.message.role === 'custom') { activityEpoch++; admitted = false; toolEvidence.invalidate(); stopWork(); }
   });
-  pi.on('agent_start', (_event, ctx) => { activityEpoch++; context = ctx; active = true; boundaryCompleted = false; stopWork(); void enqueue(async () => store?.activity(session(ctx), true)); });
+  pi.on('agent_start', (_event, ctx) => { activityEpoch++; context = ctx; active = true; boundaryCompleted = false; toolEvidence.ensure(session(ctx)); stopWork(); void enqueue(async () => store?.activity(session(ctx), true)); });
   pi.on('before_agent_start', async (event, ctx) => {
     context = ctx; stopWork();
     if (!writer || !learner) return;
@@ -202,26 +205,17 @@ export default function autoLearn(pi: ExtensionAPI): void {
     context = ctx;
     if (event.message.role === 'assistant' && !['pending', 'aborted', 'error', 'deferred'].includes(event.message.stopReason)) dispatched = { selectedKey: selectionKey(ctx, pi), message: event.message };
   });
-  pi.on('tool_execution_end', event => {
-    if (event.isError) failures.add(`${event.toolName}: failed`);
-    // Tool arguments are not exposed by tool_execution_end; track reads at start below.
+  pi.on('tool_execution_start', (event, ctx) => {
+    const p = event.toolName === 'read' && typeof event.args?.path === 'string' ? resolve(ctx.cwd, event.args.path) : undefined;
+    const record = p && writer ? learner?.records.find(r => p === join(writer!.root, r.id, 'SKILL.md')) : undefined;
+    toolEvidence.start(event, session(ctx), record?.id, ctx.signal);
   });
-  const reads = new Map<string, string>();
-  pi.on('tool_execution_start', event => {
-    if (!writer || event.toolName !== 'read' || typeof event.args?.path !== 'string') return;
-    const p = resolve(context?.cwd ?? process.cwd(), event.args.path);
-    const record = learner?.records.find(r => p === join(writer!.root, r.id, 'SKILL.md'));
-    if (record) reads.set(event.toolCallId, record.id);
-  });
-  pi.on('tool_execution_end', event => {
-    const id = reads.get(event.toolCallId);
-    if (id && !event.isError) used.add(id);
-    reads.delete(event.toolCallId);
-  });
+  pi.on('tool_execution_end', (event, ctx) => { toolEvidence.end(event, session(ctx)); });
   pi.on('agent_before_settle', event => { boundaryCompleted = event.outcome === 'completed'; });
   pi.on('agent_settled', (_event, ctx) => {
     context = ctx; active = false;
-    const usedIds = [...used]; const failureIds = [...failures];
+    const owner = toolEvidence.finish();
+    const usedIds = [...owner?.used ?? []]; const failureIds = [...owner?.failures ?? []];
     const branch = ctx.sessionManager.getBranch();
     const latestUser = [...branch].reverse().find(e => e.type === 'message' && e.message.role === 'user');
     const eligible = admission.snapshot(session(ctx), latestUser?.type === 'message' ? messageText('content' in latestUser.message ? latestUser.message.content : undefined) : '');
@@ -235,19 +229,24 @@ export default function autoLearn(pi: ExtensionAPI): void {
       const latestAssistant = [...branch].reverse().find(e => e.type === 'message' && e.message.role === 'assistant');
       const config = await store.config();
       const allowed = completed && eligible(config.admitGuests);
+      // Preserve worker diagnostics under their ORIGINAL admitted human activity,
+      // not the unrelated chat that happens to settle while their tools run.
+      const state = await store.read();
+      toolEvidence.admit(owner, completed && eligible(false) && config.enabled && !disabled() && !state.paused && !state.excluded.includes(session(ctx)), latestUser?.id);
       if (epoch === activityEpoch) admitted = allowed && !active;
       if (allowed && !disabled() && latestUser && latestAssistant?.type === 'message' && latestAssistant.message.role === 'assistant' && latestAssistant.message.stopReason === 'stop' && config.enabled) await learner.observe(session(ctx), latestUser.id, evidence, usedIds);
       if (epoch === activityEpoch) await schedule();
     });
   });
-  const invalidate = () => { activityEpoch++; stopWork(); dispatched = undefined; admitted = false; admission.clear(); };
+  const invalidate = () => { activityEpoch++; stopWork(); dispatched = undefined; admitted = false; admission.clear(); toolEvidence.invalidate(); };
+  const navigate = () => { invalidate(); toolEvidence.clear(); };
   pi.on('model_select', invalidate);
   pi.on('thinking_level_select', invalidate);
-  pi.on('session_before_switch', invalidate);
-  pi.on('session_before_fork', invalidate);
-  pi.on('session_before_tree', invalidate);
+  pi.on('session_before_switch', navigate);
+  pi.on('session_before_fork', navigate);
+  pi.on('session_before_tree', navigate);
   pi.on('session_shutdown', async (_event, ctx) => {
-    stopped = true; active = false; stopWork(); admission.clear(); admitted = false;
+    stopped = true; active = false; stopWork(); admission.clear(); admitted = false; toolEvidence.clear();
     if (integrity) clearInterval(integrity); if (heartbeat) clearInterval(heartbeat);
     await pending;
     await backgroundTask?.catch(() => undefined);
@@ -260,10 +259,11 @@ export default function autoLearn(pi: ExtensionAPI): void {
     const s = await store.read();
     const budget = s.budget.filter(b => Date.now() - b.timestamp < 3_600_000);
     const currentProfile = context ? resolveProfile(context, pi, dispatched) : undefined;
+    const tasks = context ? toolEvidence.diagnostics(session(context)) : [];
     if (action === 'list') return learner.records.map(r => ({ id: r.id, name: r.name, valid: r.valid, issue: r.issue, hash: r.hash, pinned: s.pins.includes(r.id), stats: s.skills[r.id] }));
     if (action === 'history') return s.history.filter(r => !skill || r.skillId === skill).slice(-20);
     if (action === 'retired') return s.history.filter(r => r.operation === 'delete' && r.status === 'committed').slice(-30);
-    return { status: disabled() ? 'Disabled by flag' : s.paused ? 'Paused' : 'Enabled', root: writer.root, stateDirectory: store.root, managedSkills: learner.records.length, pendingEvidence: s.evidence.length, running: learner.running, selectedProfile: currentProfile ? { selected: currentProfile.selected, selectedLevel: currentProfile.selectedLevel, dispatched: `${currentProfile.model.provider}/${currentProfile.model.id}`, thinking: currentProfile.level } : undefined, lastResult: learner.lastResult, lastError: s.lastError, hourlyTokens: budget.reduce((n, b) => n + b.tokens, 0), uncertainReservedTokens: budget.reduce((n, b) => n + b.reserved, 0), estimatedCost: budget.reduce((n, b) => n + b.cost, 0) };
+    return { status: disabled() ? 'Disabled by flag' : s.paused ? 'Paused' : 'Enabled', root: writer.root, stateDirectory: store.root, managedSkills: learner.records.length, pendingEvidence: s.evidence.length, taskEvidence: tasks.slice(-10), taskEvidenceCount: tasks.length, taskEvidenceTruncated: tasks.length > 10, running: learner.running, selectedProfile: currentProfile ? { selected: currentProfile.selected, selectedLevel: currentProfile.selectedLevel, dispatched: `${currentProfile.model.provider}/${currentProfile.model.id}`, thinking: currentProfile.level } : undefined, lastResult: learner.lastResult, lastError: s.lastError, hourlyTokens: budget.reduce((n, b) => n + b.tokens, 0), uncertainReservedTokens: budget.reduce((n, b) => n + b.reserved, 0), estimatedCost: budget.reduce((n, b) => n + b.cost, 0) };
   };
   pi.registerTool({
     name: 'auto_learn_status', label: 'Auto-learn status', description: 'Read-only inspection of auto-learn state, managed skills, history, or retirement archives. Does not trigger learning or mutate skills.',
@@ -289,8 +289,8 @@ export default function autoLearn(pi: ExtensionAPI): void {
         if (!target) throw new Error('Name the unwanted workflow');
         await store!.change(s => { s.suppressed = [...new Set([...s.suppressed, args.slice(args.indexOf(' ') + 1).trim()])]; }); result = 'Workflow suppressed';
       } else if (action === 'exclude-session') {
-        stopWork(); await store!.change(s => { s.excluded = [...new Set([...s.excluded, session(ctx)])]; s.evidence = s.evidence.filter(e => e.sessionId !== session(ctx)); }); result = 'Session excluded; queued evidence removed';
-      } else if (action === 'clear-evidence') { stopWork(); await store!.change(s => { s.evidence = []; }); result = 'Evidence cleared'; }
+        stopWork(); toolEvidence.clear(); await store!.change(s => { s.excluded = [...new Set([...s.excluded, session(ctx)])]; s.evidence = s.evidence.filter(e => e.sessionId !== session(ctx)); }); result = 'Session excluded; queued evidence removed';
+      } else if (action === 'clear-evidence') { stopWork(); toolEvidence.clear(); await store!.change(s => { s.evidence = []; }); result = 'Evidence cleared'; }
       else if (action === 'restore') { stopWork(); if (!target) throw new Error('Name a retirement ID'); result = await writer!.restore(target, session(ctx)); await learner!.sync(); }
       else if (action === 'rollback') { stopWork(); if (!target) throw new Error('Name a skill directory'); result = await writer!.rollback(target, revision, session(ctx)); await learner!.sync(); }
       else if (action === 'purge') {

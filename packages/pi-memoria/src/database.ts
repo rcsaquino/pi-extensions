@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { databasePath } from "./database-path.ts";
 import { APPLICATION_ID, INITIAL_SCHEMA, VERSION_TWO, attestSchema } from "./database-schema.ts";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import { ExpectedError, isSqliteError, storeUnavailable } from "./errors.ts";
+import { ExpectedError, isSqliteError, sqliteInfo, storeUnavailable } from "./errors.ts";
 import { chunk, excerpt, integer, MEMORY_LIMIT, nonempty, tags as validateTags } from "./text.ts";
 
 export interface Memory {
@@ -77,7 +77,21 @@ export class MemoryDatabase {
         this.db.exec(`PRAGMA application_id=${APPLICATION_ID};`);
       });
       location.privateMode();
-      this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
+      // A competing cold opener can take the writer lock between our schema
+      // transaction and WAL selection. SQLite may return BUSY here immediately,
+      // without invoking busy_timeout. Retry only that exact driver condition;
+      // recheck paths before each attempt and keep the same five-second bound.
+      const deadline = performance.now() + 5_000;
+      for (;;) {
+        location.check();
+        try { this.db.exec("PRAGMA journal_mode=WAL;"); break; }
+        catch (error) {
+          const info = sqliteInfo(error), remaining = deadline - performance.now();
+          if (info.code !== "ERR_SQLITE_ERROR" || info.errcode !== 5 || remaining <= 0) throw error;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(10, remaining));
+        }
+      }
+      this.db.exec("PRAGMA synchronous=FULL;");
     } catch (error) {
       this.closed = true;
       try { this.db.close(); } catch { /* keep the original failure */ }

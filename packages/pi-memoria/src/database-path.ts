@@ -18,9 +18,15 @@ export function databasePath(input: string) {
   };
   const entry = (name: string) => {
     try {
-      const info = lstatSync(name);
-      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error("Unsafe database or SQLite companion alias.");
-      return info;
+      for (let attempt = 0; ; attempt++) {
+        const info = lstatSync(name);
+        if (!info.isFile() || info.isSymbolicLink()) throw new Error("Unsafe database or SQLite companion alias.");
+        if (info.nlink === 1) return info;
+        // Linux can stat a companion while SQLite's last connection unlinks it.
+        // Never accept the unlinked inode: resolve the name again and apply every
+        // guard to its current entry. Main-file unlink/replacement stays fatal.
+        if (name === path || info.nlink !== 0 || attempt >= 31) throw new Error("Unsafe database or SQLite companion alias.");
+      }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return undefined; }
   };
   const check = () => {
@@ -45,11 +51,18 @@ export function databasePath(input: string) {
           for (const suffix of ["", "-wal", "-journal"]) {
             const name = path + suffix, info = entry(name);
             if (!info) { missing.push(name); continue; }
-            const source = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+            let source: number;
+            try { source = openSync(name, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+            catch (error) {
+              if (suffix && (error as NodeJS.ErrnoException).code === "ENOENT") { changed = true; continue; }
+              throw error;
+            }
             let target: number | undefined;
             try {
               const held = fstatSync(source);
-              if (!held.isFile() || held.nlink !== 1 || held.ino !== info.ino || held.dev !== info.dev) throw new Error("Unsafe database inspection identity.");
+              if (!held.isFile() || held.ino !== info.ino || held.dev !== info.dev) throw new Error("Unsafe database inspection identity.");
+              if (suffix && held.nlink === 0) { entry(name); changed = true; continue; }
+              if (held.nlink !== 1) throw new Error("Unsafe database inspection identity.");
               target = openSync(snapshot + suffix, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
               const buffer = Buffer.allocUnsafe(64 * 1024);
               let offset = 0;

@@ -67,6 +67,27 @@ test("concurrent processes adding the same fact produce one durable memory", asy
   assert.equal(db.search("apples").results[0]?.id, results[0]?.id);
 });
 
+test("concurrent cold opens and last-close WAL lifecycles preserve one durable duplicate fact", async (t) => {
+  const root = await temporary(t), execute = promisify(execFile);
+  for (let round = 0; round < 4; round++) {
+    const directory = join(root, String(round));
+    const writers = await Promise.allSettled([0, 1, 2, 3].map(label => execute(process.execPath, [
+      "--import", "tsx", "test/fixtures/duplicate-writer.ts", directory, String(label),
+    ])));
+    const results = writers.flatMap(writer => {
+      if (writer.status === "rejected") throw writer.reason;
+      return JSON.parse(writer.value.stdout) as { id: string; created: boolean }[];
+    });
+    assert.equal(new Set(results.map(result => result.id)).size, 1);
+    assert.equal(results.filter(result => result.created).length, 1);
+    const reopened = new MemoryDatabase(join(directory, "memoria.sqlite"));
+    try {
+      assert.equal(reopened.search().results.length, 1);
+      assert.equal(reopened.search("apples").results[0]?.id, results[0]?.id);
+    } finally { reopened.close(); }
+  }
+});
+
 test("upgrading a version 1 database preserves existing duplicates, archives, and search indexes", async (t) => {
   const path = join(await temporary(t), "memoria.sqlite");
   let db = new MemoryDatabase(path);

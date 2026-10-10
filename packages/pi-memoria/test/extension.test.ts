@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
+import type { TObject } from "typebox";
 import { DefaultResourceLoader, ExtensionRunner, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, type BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
 import { ExpectedError } from "../src/errors.ts";
 import { toolError } from "../src/results.ts";
@@ -365,10 +366,8 @@ test("compact responses render changes once while details retain the full result
   assert.match(removed.text, /budget: \d+\/5000/u);
 });
 
-test("clipped SQLite search keeps continuation and warnings and spills the complete payload", async (t) => {
+test("clipped SQLite search keeps continuation and spills the complete payload", async (t) => {
   const h = await harness(t);
-  await mkdir(h.memoryDir, { recursive: true });
-  await writeFile(join(h.memoryDir, "synonyms.json"), "{\"k8s\": ");
   await h.dispatch("session_start");
   for (let i = 0; i < 50; i++) {
     await h.call("memoria_add", { content: `bulk row ${String(i).padStart(2, "0")} ${"x".repeat(900)}`, tags: ["bulk", `UNIQUEMARKER${i}`] });
@@ -377,7 +376,6 @@ test("clipped SQLite search keeps continuation and warnings and spills the compl
   assert.ok(Buffer.byteLength(page.text) <= 32_000, `clipped text must fit the budget (${Buffer.byteLength(page.text)})`);
   assert.equal(page.details.results.length, 49);
   assert.match(page.text, /next_offset=49/u);
-  assert.match(page.text, /warning: synonyms\.json is not valid JSON/u);
   assert.match(page.text, /Response clipped/u);
   const path = /at (\/\S+\/result\.json)/u.exec(page.text)?.[1];
   assert.ok(path, "the clipped response must point to a real spill file");
@@ -435,24 +433,63 @@ test("oversized error details stay within the byte budget and spill a readable f
   assert.match(await readFile(path!, "utf8"), /eeee/u);
 });
 
-test("registered search expands aliases and combines exact tags with pagination", async (t) => {
+test("registered search exposes ordinary query options and combines exact tags with pagination", async (t) => {
   const h = await harness(t);
-  await mkdir(h.memoryDir, { recursive: true });
-  await writeFile(join(h.memoryDir, "synonyms.json"), JSON.stringify({ k8s: ["kubernetes"], prefs: [] }));
+  const search = h.extension.tools.get("memoria_search")!.definition;
+  assert.deepEqual(Object.keys((search.parameters as TObject).properties).sort(), ["query", "id", "mode", "limit", "offset", "text_offset", "tags"].sort());
   await h.dispatch("session_start");
   const cluster = await h.call("memoria_add", { content: "The Kubernetes cluster runs in fra1.", tags: ["infrastructure"] });
   const literal = await h.call("memoria_add", { content: "k8s runbook", tags: ["infrastructure", "ops"] });
-  const disabled = await h.call("memoria_search", { query: "k8s", expand_aliases: false });
-  assert.deepEqual(disabled.details.results.map((row: { id: string }) => row.id), [literal.details.memory.id]);
-  const expanded = await h.call("memoria_search", { query: "k8s" });
-  assert.deepEqual(expanded.details.results.map((row: { id: string }) => row.id).sort(), [cluster.details.memory.id, literal.details.memory.id].sort());
-  assert.match(expanded.text, /aliases used in query: k8s -> kubernetes/u);
+  const page = await h.call("memoria_search", { query: "k8s" });
+  assert.deepEqual(page.details.results.map((row: { id: string }) => row.id), [literal.details.memory.id]);
+  assert.deepEqual(Object.keys(page.details).sort(), ["mode", "query", "tags", "results", "next_offset", "elapsed_ms", "hint"].sort());
   const combined = await h.call("memoria_search", { query: "k8s", tags: ["ops"] });
   assert.deepEqual(combined.details.results.map((row: { id: string }) => row.id), [literal.details.memory.id]);
   assert.match(combined.text, /required tags \(exact, case-sensitive\): ops/u);
-  assert.equal((await h.call("memoria_search", { query: "prefs" })).details.results.length, 0, "the user file disables the built-in prefs mapping");
   await assert.rejects(h.call("memoria_search", { id: cluster.details.memory.id, tags: ["ops"] }), /not to reading/u);
-  await assert.rejects(h.call("memoria_search", { id: cluster.details.memory.id, expand_aliases: false }), /not to reading/u);
+  const expected = [literal.details.memory.id];
+  for (let i = 0; i < 4; i++) {
+    const row = await h.call("memoria_add", { content: `k8s runbook ${i}`, tags: ["ops"] });
+    expected.push(row.details.memory.id);
+  }
+  const seen: string[] = [];
+  let offset: number | null = 0;
+  while (offset !== null) {
+    const result = await h.call("memoria_search", { query: "k8s", tags: ["ops"], limit: 2, offset });
+    seen.push(...result.details.results.map((row: { id: string }) => row.id));
+    offset = result.details.next_offset;
+  }
+  assert.deepEqual(seen.sort(), expected.sort());
+});
+
+test("retired terminology configuration is ignored and shorthand survives as ordinary saved memory", async (t) => {
+  const h = await harness(t);
+  await mkdir(h.memoryDir, { recursive: true });
+  // Historical configuration only: no loader or search behavior may depend on it.
+  const retiredPath = join(h.memoryDir, "synonyms.json");
+  const retiredContents = '{"k8s": ["kubernetes"], "piem": ["monorepo"]}';
+  await writeFile(retiredPath, retiredContents);
+  await h.dispatch("session_start");
+  await h.call("memoria_add", { content: "Kubernetes cluster configuration.", tags: ["projects"] });
+  await h.call("memoria_add", { content: "The pi-extensions monorepo has four packages.", tags: ["projects"] });
+  const shorthand = await h.call("memoria_add", { content: "The user's shorthand piem refers to the pi-extensions monorepo.", tags: ["projects", "terminology"] });
+  assert.equal((await h.call("memoria_search", { query: "k8s" })).details.results.length, 0);
+  const page = await h.call("memoria_search", { query: "piem" });
+  assert.deepEqual(page.details.results.map((row: { id: string }) => row.id), [shorthand.details.memory.id]);
+  assert.doesNotMatch(page.text, /warning:/u);
+  await writeFile(retiredPath, "{not valid JSON");
+  await h.dispatch("session_shutdown");
+  await h.dispatch("session_start");
+  const reopened = await h.call("memoria_search", { query: "piem", tags: ["terminology"] });
+  assert.deepEqual(reopened.details.results.map((row: { id: string }) => row.id), [shorthand.details.memory.id]);
+  assert.deepEqual((await h.call("memoria_search", { id: shorthand.details.memory.id })).details, {
+    ...shorthand.details.memory, next_text_offset: null, total_characters: shorthand.details.memory.content.length,
+  });
+  assert.doesNotMatch(reopened.text, /warning:/u);
+  assert.equal(await readFile(retiredPath, "utf8"), "{not valid JSON", "retired files are neither managed nor modified");
+  const prompt = h.prompt();
+  await h.dispatch("before_agent_start", prompt);
+  assert.match(h.section(prompt), /Save personal shorthand as ordinary SQLite facts/u);
 });
 
 test("full records remain reconstructable through text offsets after clipping", async (t) => {

@@ -41,9 +41,6 @@ export interface SearchDetails {
   mode: SearchMode | "browse";
   query: string;
   tags: string[];
-  alias_expansion_enabled: boolean;
-  expansions: Array<{ term: string; aliases: string[] }>;
-  warnings: string[];
   results: SearchRow[];
   next_offset: number | null;
   elapsed_ms: number;
@@ -202,12 +199,6 @@ export function renderSearch(details: SearchDetails): string {
     `memoria_search:${details.query ? ` query=${JSON.stringify(details.query)}` : ""} ${details.results.length} result(s); mode=${details.mode}; next_offset=${details.next_offset ?? "null"}`,
   ];
   if (details.tags.length) lines.push(`required tags (exact, case-sensitive): ${details.tags.join(", ")}`);
-  if (details.alias_expansion_enabled) {
-    lines.push(details.expansions.length
-      ? `aliases used in query: ${details.expansions.map((value) => `${value.term} -> ${value.aliases.join(", ")}`).join("; ")}`
-      : "alias expansion enabled; no configured alternatives applied to this query");
-  }
-  for (const warning of details.warnings) lines.push(`warning: ${warning}`);
   for (const row of details.results) {
     lines.push(
       `[${row.id}] revision=${row.revision}; tags=[${row.tags.join(", ")}]`,

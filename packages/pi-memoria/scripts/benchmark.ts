@@ -38,11 +38,9 @@ try {
   }
   const hot = new HotMemoryStore(join(directory, "MEMORY.md"), () => {});
   await hot.add("Start every sentence with beep_boop.");
-  await database.add({ content: "The Kubernetes cluster runs in fra1.", tags: ["infrastructure"] });
   const sessions = new SessionSearch(() => [sessionsRoot]);
   const results = [];
   results.push(await measure("SQLite FTS5 selective lookup", () => database.search("marker9876"), 200));
-  results.push(await measure("SQLite FTS5 alias-expanded lookup (k8s -> kubernetes)", () => database.search("k8s"), 200));
   results.push(await measure("SQLite FTS5 exact-tag filtered lookup", () => database.search("marker", "any", 20, 0, { tags: ["topic42"] }), 200));
   results.push(await measure("SQLite literal full scan", () => database.search("marker9876", "literal"), 30));
   results.push(await measure("Hot file refresh with lock", () => hot.load(), 100));

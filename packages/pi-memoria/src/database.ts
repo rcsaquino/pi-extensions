@@ -3,7 +3,6 @@ import { dirname, resolve } from "node:path";
 import { databasePath } from "./database-path.ts";
 import { APPLICATION_ID, INITIAL_SCHEMA, VERSION_TWO, attestSchema } from "./database-schema.ts";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import { expandQuery, loadAliases, type AliasConfiguration } from "./aliases.ts";
 import { ExpectedError, isSqliteError, storeUnavailable } from "./errors.ts";
 import { chunk, excerpt, integer, MEMORY_LIMIT, nonempty, tags as validateTags } from "./text.ts";
 
@@ -20,8 +19,6 @@ export interface Memory {
 export interface MemoryInput { content: string; tags?: string[]; source?: string }
 export type SearchMode = "any" | "all" | "phrase" | "literal";
 export interface MemorySearchOptions {
-  /** Expand configured terminology alternatives for any/all keyword modes. Defaults to true. */
-  expandAliases?: boolean;
   /** Require exact, case-sensitive membership for every supplied tag. */
   tags?: string[];
 }
@@ -49,10 +46,9 @@ function memory(row: Row): Memory {
 export class MemoryDatabase {
   private db: DatabaseSync;
   private statements = new Map<string, StatementSync>();
-  private aliases?: AliasConfiguration;
   private closed = false;
 
-  constructor(readonly path: string, private readonly aliasesPath?: string) {
+  constructor(readonly path: string) {
     let location: ReturnType<typeof databasePath>;
     try {
       location = databasePath(path);
@@ -201,11 +197,6 @@ export class MemoryDatabase {
     const start = performance.now();
     const trimmed = query.trim();
     const terms = [...new Set(trimmed.match(/[\p{L}\p{N}\p{M}_]+/gu) ?? [])];
-    const keyword = mode === "any" || mode === "all";
-    const aliasExpansionEnabled = keyword && terms.length > 0 && (options.expandAliases ?? true);
-    const alias = aliasExpansionEnabled ? this.aliasConfiguration() : undefined;
-    const expansion = alias ? expandQuery(terms, alias.aliases) : { expansions: [] as Array<{ term: string; aliases: string[] }> };
-    const warnings = alias ? [alias.warning, expansion.warning].filter((value): value is string => value !== undefined) : [];
     const tagClauses = requestedTags.map(() => "EXISTS (SELECT 1 FROM json_each(m.tags) AS requested_tag WHERE requested_tag.value = ? COLLATE BINARY)");
     const tagWhere = tagClauses.join(" AND ");
 
@@ -224,11 +215,7 @@ export class MemoryDatabase {
     } else {
       const fts = mode === "phrase"
         ? `"${terms.join(" ")}"`
-        : terms.map((term) => {
-          const alternatives = expansion.expansions.find((value) => value.term === term)?.aliases ?? [];
-          const tokens = [term, ...alternatives].map((token) => `"${token}"*`);
-          return tokens.length > 1 ? `(${tokens.join(" OR ")})` : tokens[0]!;
-        }).join(mode === "all" ? " AND " : " OR ");
+        : terms.map((term) => `"${term}"*`).join(mode === "all" ? " AND " : " OR ");
       rows = this.statement(`SELECT m.* FROM memories_fts JOIN memories m ON m.rowid=memories_fts.rowid
         WHERE memories_fts MATCH ?${tagWhere ? ` AND ${tagWhere}` : ""} ORDER BY bm25(memories_fts),m.id LIMIT ? OFFSET ?`)
         .all(fts, ...requestedTags, limit + 1, offset);
@@ -245,9 +232,6 @@ export class MemoryDatabase {
       mode: usedMode,
       query: trimmed,
       tags: requestedTags,
-      alias_expansion_enabled: aliasExpansionEnabled,
-      expansions: expansion.expansions,
-      warnings,
       results: rows.slice(0, limit).map((row) => {
         const item = memory(row);
         return { ...item, content: excerpt(item.content, terms[0] ?? trimmed), content_characters: item.content.length, content_clipped: item.content.length > 600 };
@@ -256,11 +240,6 @@ export class MemoryDatabase {
       elapsed_ms: Number((performance.now() - start).toFixed(3)),
       hint: "Use an m_ id to read a complete SQLite memory; hot h_ entries are in the injected MEMORY.md. Try mode=literal for exact substrings, shorter/alternate terms, or query='' to browse SQLite. For historical claims or uncertain/empty recall, use memoria_sessions; an empty keyword result does not prove absence.",
     };
-  }
-
-  private aliasConfiguration(): AliasConfiguration {
-    this.aliases ??= loadAliases(this.aliasesPath);
-    return this.aliases;
   }
 
   rememberRoots(paths: string[]): void {

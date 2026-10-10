@@ -29,7 +29,6 @@ export function configuration(agentDir: string, env: NodeJS.ProcessEnv = process
     ripgrepPath: managedRipgrepPath(agentDir),
     hotPath: join(directory, "MEMORY.md"),
     databasePath: join(directory, "memoria.sqlite"),
-    aliasesPath: join(directory, "synonyms.json"),
     sessionRoots: [join(agentDir, "sessions"), ...additionalRoots],
   };
 }

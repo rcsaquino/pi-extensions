@@ -27,10 +27,9 @@ From this package directory; from the monorepo root, use `npm --prefix packages/
 
 - `index.ts`: Pi lifecycle hooks, tool schemas, guidance, and bounded tool results.
 - `src/config.ts`: global paths and session-root configuration.
-- `src/database.ts`: SQLite WAL, transactional FTS5 triggers, CRUD, retrieval, alias-expanded keyword queries, exact tag predicates, session-root registry.
+- `src/database.ts`: SQLite WAL, transactional FTS5 triggers, CRUD, prefix/stemmed keyword queries, exact tag predicates, session-root registry.
 - `src/database-path.ts`, `src/database-schema.ts`: pre-mutation path/companion alias guards, private snapshot attestation, exact supported-schema signatures and legacy/current initialization.
 - `src/hot-memory.ts`: authoritative bullet file, stable IDs, priorities, duplicate-safe adds/edits, single-line validation, locking, atomic writes, cap enforcement.
-- `src/aliases.ts`: optional global `synonyms.json` loading/validation and bounded one-hop query expansion.
 - `src/errors.ts`: stable expected-error codes and SQLite failure classification.
 - `src/results.ts`: compact model-facing rendering, UTF-8 byte budgeting, spill files, and the tool error boundary.
 - `src/sessions.ts`: streaming ripgrep search of all JSONL branches and paginated source reads.
@@ -41,7 +40,7 @@ From this package directory; from the monorepo root, use `npm --prefix packages/
 
 - Never create project-scoped memory or derive the memory directory from `cwd`.
 - The entire generated `MEMORY.md`, including IDs, priority markers, and newlines, must be at most 5,000 JavaScript UTF-16 code units (a conservative character count).
-- Hot memory is for context-free startup requirements. Retrievable preferences belong in SQLite.
+- Hot memory is for context-free startup requirements. Retrievable preferences and personal shorthand belong in SQLite. Save shorthand and its meaning together as an ordinary fact; do not introduce a terminology registry or query rewriting.
 - Archive evicted hot entries in SQLite **before** replacing the hot file. Explicit deletion does not archive.
 - Serialize the entire hot-file read/modify/write with Pi's file mutation queue and a cross-process lock. Use atomic replacement; never truncate the live file in place.
 - Use parameterized SQL and FTS triggers in the same transaction as the source change. Do not introduce embedding services, network calls, background model calls, or automatic conversation summarization.
@@ -62,10 +61,10 @@ Add meaningful regression tests for cap boundaries, races, durable retrieval, pa
 
 ## Releasing
 
-Follow the [monorepo release process](https://github.com/rcsaquino/pi-extensions/blob/main/RELEASING.md) only after explicit approval. Version 0.3.3 is the patch after the public 0.3.2 release; it is not published by editing this file.
+Follow the [monorepo release process](https://github.com/rcsaquino/pi-extensions/blob/main/RELEASING.md) only after explicit approval. Version 0.4.0 is a pre-1.0 minor release for removing dedicated terminology expansion and its public search options/result fields. Stored memories need no schema migration; editing this file does not publish the package.
 
 - Verify this package and the root suite, inspect `npm pack --dry-run --ignore-scripts --workspaces=false`, and check the chosen version is not already on npm.
-- Use package-specific tags such as `pi-memoria-v0.3.3`, not a shared root `v0.3.3` tag. Commit, push, tag, release creation, and npm publication remain separately authorized actions; pushing a `pi-memoria-v<version>` tag is the publication authorization for the workflow.
+- Use package-specific tags such as `pi-memoria-v0.4.0`, not a shared root `v0.4.0` tag. Commit, push, tag, release creation, and npm publication remain separately authorized actions; pushing a `pi-memoria-v<version>` tag is the publication authorization for the workflow.
 - `.github/workflows/publish-pi-memoria.yml` publishes this package on a `pi-memoria-v<version>` tag after the full suite verifies, using npm trusted publishing (OIDC) with automatic provenance. Creating a GitHub release does not itself publish npm packages.
 - The old trusted-publisher configuration targeting the standalone `rcsaquino/pi-memoria` repository does not apply. The npm trusted publisher must target `rcsaquino/pi-extensions` with workflow filename `publish-pi-memoria.yml` and allow `npm publish`; verify it on npm before the first tagged release and never claim it is configured until then.
 - Manual publication needs the account's current npm authorization and any required interactive 2FA. A dry run cannot verify those permissions. Never include credentials in commands, documentation, logs, or model context.

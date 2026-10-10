@@ -76,7 +76,7 @@ Duplicate adds reuse the existing bullet and consume no capacity. When space is 
 
 ## Recall
 
-Keyword search cannot infer every synonym, and session search has no recency or project filter. For "remember when" questions, search sessions and cite the original entries; follow `next_offset`/`next_text_offset`, and check `warnings` and `exhausted`. A partial or failed search is never proof of absence.
+Keyword search uses the supplied terms with prefix matching and English stemming, not automatic terminology rewriting. Save personal shorthand as an ordinary fact containing both forms, for example `The user's shorthand piem refers to the pi-extensions monorepo.` Searching `piem` then retrieves that fact; use its meaning for a follow-up search when needed. Session search has no recency or project filter. For "remember when" questions, search sessions and cite the original entries; follow `next_offset`/`next_text_offset`, and check `warnings` and `exhausted`. A partial or failed search is never proof of absence.
 
 ## Tools
 
@@ -105,7 +105,7 @@ Tool replies are compact; oversized results spill to a private `pi-memoria-resul
 **Search memories:**
 
 ```json
-{"query":"k8s deploy","mode":"all","tags":["infrastructure"]}
+{"query":"kubernetes deploy","mode":"all","tags":["infrastructure"]}
 ```
 
 **Search sessions:**
@@ -122,13 +122,13 @@ Tool replies are compact; oversized results spill to a private `pi-memoria-resul
 
 - **Add:** `store` is `long_term` (default) or `hot`; SQLite accepts `tags` and `source`. Identical content is reused with `created: false`; edits are the only way to change a fact. SQLite limits: 20,000 characters, 30 tags, 2,000-character source.
 - **Edit/delete:** pass an `id` (`m_` for SQLite, `h_` for hot) and only the fields to change. `expected_revision` or hot `expected_content` catches concurrent writes. Deletion never archives hot bullets or erases sessions.
-- **Search:** `memoria_search` searches SQLite only; hot `h_` entries are injected from `MEMORY.md` and cannot be searched or read by this tool. `mode` is `any` (default), `all`, `phrase`, or `literal`; a miss falls back to a literal scan and reports the mode used. `tags` match exactly and case-sensitively. `expand_aliases` adds `synonyms.json` terms for `any`/`all`. Read an SQLite memory with its `m_` ID; long content paginates via `text_offset`.
+- **Search:** `memoria_search` searches SQLite only; hot `h_` entries are injected from `MEMORY.md` and cannot be searched or read by this tool. `mode` is `any` (default), `all`, `phrase`, or `literal`; a miss falls back to a literal scan and reports the mode used. `tags` match exactly and case-sensitively. Read an SQLite memory with its `m_` ID; long content paginates via `text_offset`.
 - **Sessions:** decoded JSON is searched, including hidden, ignored, and inactive-branch files. Results carry path/line citations. `exhausted: true` means every accessible root was scanned without errors; warnings mean partial results, never absence.
 
 ## Configuration
 
 <details>
-<summary><strong>Environment variables, aliases, and storage layout</strong></summary>
+<summary><strong>Environment variables and storage layout</strong></summary>
 
 | Variable | Effect |
 |---|---|
@@ -136,13 +136,10 @@ Tool replies are compact; oversized results spill to a private `pi-memoria-resul
 | `PI_MEMORIA_DIR` | Override the single global memory directory |
 | `PI_MEMORIA_SESSION_DIRS` | JSON array of additional absolute session roots |
 
-The optional `synonyms.json` next to `memoria.sqlite` maps terms for `any`/`all` searches. Built-ins are `k8s`→`kubernetes`, `db`→`database`, `repo`→`repository`, and `prefs`→`preferences`. Mappings are directional and one-hop; a malformed file is ignored whole with a warning.
-
 ```text
 ~/.pi/agent/memoria/
 ├── MEMORY.md
 ├── memoria.sqlite
-├── synonyms.json
 └── backups/
 ```
 
@@ -166,7 +163,6 @@ The default session root is `<agent-dir>/sessions`; roots Pi uses are remembered
 | Operation | Median | p95 |
 |---|---:|---:|
 | Selective SQLite FTS5 lookup | 0.093 ms | 0.119 ms |
-| Alias-expanded FTS5 lookup (`k8s` → `kubernetes`) | 0.123 ms | 0.158 ms |
 | Exact-tag filtered FTS5 lookup (10,000 matching rows) | 6.308 ms | 7.365 ms |
 | Literal SQLite full scan | 4.709 ms | 5.094 ms |
 | Hot-file refresh with locking | 0.148 ms | 0.249 ms |

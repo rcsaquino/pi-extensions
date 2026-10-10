@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -187,32 +186,27 @@ test("unknown future schema fails without overwriting data", async (t) => {
   check.close();
 });
 
-test("alias expansion uses the existing FTS index without hiding literal matches or pagination", async (t) => {
-  const directory = await temporary(t);
-  const db = new MemoryDatabase(join(directory, "memoria.sqlite"));
+test("keyword search uses supplied terms while retaining prefix matching, modes, and pagination", async (t) => {
+  const db = new MemoryDatabase(join(await temporary(t), "memoria.sqlite"));
   t.after(() => db.close());
-  const aliasOnly = db.add({ content: "The Kubernetes cluster runs in fra1." }).memory;
+  const cluster = db.add({ content: "The Kubernetes cluster runs in fra1." }).memory;
   const literal = db.add({ content: "k8s notes are stored here." }).memory;
   const both = db.add({ content: "kubernetes and k8s together" }).memory;
-  const expanded = db.search("k8s");
-  assert.deepEqual(expanded.results.map((row) => row.id).sort(), [aliasOnly.id, literal.id, both.id].sort());
-  assert.equal(expanded.alias_expansion_enabled, true);
-  assert.deepEqual(expanded.expansions, [{ term: "k8s", aliases: ["kubernetes"] }]);
-  const unexpanded = db.search("k8s", "any", 20, 0, { expandAliases: false });
-  assert.deepEqual(unexpanded.results.map((row) => row.id).sort(), [literal.id, both.id].sort());
-  assert.equal(unexpanded.alias_expansion_enabled, false);
-  assert.deepEqual(unexpanded.expansions, []);
+  const repository = db.add({ content: "database repository preferences" }).memory;
+  const page = db.search("k8s");
+  assert.deepEqual(Object.keys(page).sort(), ["mode", "query", "tags", "results", "next_offset", "elapsed_ms", "hint"].sort());
+  assert.deepEqual(page.results.map((row) => row.id).sort(), [literal.id, both.id].sort());
   assert.deepEqual(db.search("k8s", "literal").results.map((row) => row.id).sort(), [literal.id, both.id].sort());
-  const phrase = db.search("k8s", "phrase");
-  assert.equal(phrase.alias_expansion_enabled, false);
-  assert.deepEqual(phrase.results.map((row) => row.id).sort(), [literal.id, both.id].sort());
-  assert.equal(db.search("", "any").alias_expansion_enabled, false);
-  // `all` requires every original concept but accepts an alias for an individual concept.
-  assert.deepEqual(db.search("k8s cluster", "all").results.map((row) => row.id), [aliasOnly.id]);
-  assert.equal(db.search("k8s missing", "all").results.length, 0);
-  // A row matching both an original term and an alias appears once across pages.
+  assert.deepEqual(db.search("k8s", "phrase").results.map((row) => row.id).sort(), [literal.id, both.id].sort());
+  assert.equal(db.search("k8s cluster", "all").results.length, 0);
+  assert.deepEqual(db.search("kubernetes cluster", "all").results.map((row) => row.id), [cluster.id]);
+  assert.equal(db.search("db").results.length, 0);
+  assert.deepEqual(db.search("prefs").results.map((row) => row.id), [repository.id], "English stemming plus prefix matching can still match preferences");
+  assert.equal(db.search("prefs", "phrase").results.length, 0, "phrase mode does not add prefix matching");
+  assert.deepEqual(db.search("repo").results.map((row) => row.id), [repository.id], "ordinary prefix matching remains enabled");
+  assert.equal(db.search("", "any").mode, "browse");
   for (let i = 0; i < 10; i++) db.add({ content: `kubernetes pagination item ${i}`, tags: ["page"] });
-  for (let i = 0; i < 10; i++) db.add({ content: `k8s pagination item ${i}`, tags: ["page"] });
+  const expected = Array.from({ length: 10 }, (_, i) => db.add({ content: `k8s pagination item ${i}`, tags: ["page"] }).memory.id);
   const seen: string[] = [];
   let offset: number | null = 0;
   while (offset !== null) {
@@ -220,33 +214,22 @@ test("alias expansion uses the existing FTS index without hiding literal matches
     seen.push(...page.results.map((row) => row.id));
     offset = page.next_offset;
   }
-  assert.equal(seen.length, 20);
-  assert.equal(new Set(seen).size, 20);
+  assert.deepEqual(seen.sort(), expected.sort());
 });
 
-test("a user synonyms file overrides, disables, and reloads per database instance", async (t) => {
-  const directory = await temporary(t);
-  const path = join(directory, "synonyms.json");
-  const databasePath = join(directory, "memoria.sqlite");
-  await writeFile(path, JSON.stringify({ k8s: ["pods"], prefs: [] }));
-  const first = new MemoryDatabase(databasePath, path);
-  const pods = first.add({ content: "pods are running" }).memory;
-  const cluster = first.add({ content: "kubernetes cluster" }).memory;
-  assert.deepEqual(first.search("k8s").results.map((row) => row.id), [pods.id]);
-  assert.equal(first.search("prefs").results.length, 0, "an empty array disables the built-in alternatives");
-  await writeFile(path, JSON.stringify({ k8s: ["kubernetes"] }));
-  assert.deepEqual(first.search("k8s").results.map((row) => row.id), [pods.id], "the instance keeps its cached configuration");
-  first.close();
-  const second = new MemoryDatabase(databasePath, path);
-  t.after(() => second.close());
-  assert.deepEqual(second.search("k8s").results.map((row) => row.id), [cluster.id], "recreating the database reloads the file");
-  await writeFile(path, "{not json");
-  second.close();
-  const third = new MemoryDatabase(databasePath, path);
-  t.after(() => third.close());
-  const fallback = third.search("k8s");
-  assert.deepEqual(fallback.results.map((row) => row.id), [cluster.id]);
-  assert.ok(fallback.warnings.some((warning) => warning.includes("not valid JSON")));
+test("personal shorthand persists and is retrieved as ordinary memory content without rewriting queries", async (t) => {
+  const path = join(await temporary(t), "memoria.sqlite");
+  let db = new MemoryDatabase(path);
+  t.after(() => db.close());
+  const shorthand = db.add({ content: "The user's shorthand piem refers to the pi-extensions monorepo.", tags: ["projects", "terminology"], source: "synthetic-session#entry" }).memory;
+  const project = db.add({ content: "The pi-extensions monorepo contains independent extension packages.", tags: ["projects"] }).memory;
+  db.close();
+  db = new MemoryDatabase(path);
+  assert.deepEqual(db.get(shorthand.id), shorthand, "content, metadata, timestamps, and revision are unchanged on reopen");
+  assert.deepEqual(db.search("piem").results.map((row) => row.id), [shorthand.id]);
+  assert.deepEqual(db.search("piem monorepo", "all", 20, 0, { tags: ["terminology"] }).results.map((row) => row.id), [shorthand.id]);
+  assert.deepEqual(db.search("pi-extensions", "phrase").results.map((row) => row.id).sort(), [shorthand.id, project.id].sort());
+  assert.equal(db.search().results.length, 2);
 });
 
 test("exact tag filters apply in every SQL branch before pagination and fallback", async (t) => {

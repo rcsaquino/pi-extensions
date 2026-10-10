@@ -12,16 +12,37 @@ import { scratch } from './helpers.ts';
 
 async function fixture(t: TestContext) {
   const root = await scratch('bg-manager-test-');
-  const notices: string[] = [], entries: unknown[] = [];
+  const notices: string[] = [], entries: unknown[] = [], storageErrors: string[] = [];
   const pi = { getFlag: () => undefined, getAllTools: () => [], getSettings: () => ({}), events: { emit: () => {} },
     appendEntry: (_kind: string, data: unknown) => entries.push(data),
     sendMessage: (message: { content: string }, options: { deliverAs: string; triggerTurn: boolean }) => { assert.equal(options.deliverAs, 'followUp'); assert.equal(options.triggerTurn, true); notices.push(message.content); },
   } as unknown as ExtensionAPI;
-  const ctx = { cwd: root, mode: 'rpc', hasUI: false, isIdle: () => true, hasPendingMessages: () => false, sessionManager: { getSessionId: () => 'fixture', getBranch: () => [] }, ui: { notify: () => {} } } as unknown as ExtensionContext;
-  const manager = new BackgroundManager(pi); await manager.init(ctx);
-  t.after(async () => { await manager.shutdown(); await fs.rm(root, { recursive: true, force: true }); });
+  const ctx = { cwd: root, mode: 'rpc', hasUI: false, isIdle: () => true, hasPendingMessages: () => false, sessionManager: { getSessionId: () => 'fixture', getBranch: () => [] }, ui: { notify: (message: string, kind: string) => { if (kind === 'error') storageErrors.push(message); } } } as unknown as ExtensionContext;
+  const manager = new BackgroundManager(pi);
+  const internal = manager as unknown as { flushNotifications(): Promise<void>; notificationScheduled: boolean };
+  const flushNotifications = internal.flushNotifications.bind(manager), flushes: Promise<void>[] = [];
+  internal.flushNotifications = () => {
+    const work = flushNotifications(); flushes.push(work);
+    // Observe scheduled rejections now, but propagate every failure through drain below.
+    void work.catch(() => {}); return work;
+  };
+  const drain = async () => {
+    do {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      for (const outcome of await Promise.allSettled(flushes)) if (outcome.status === 'rejected') throw outcome.reason;
+    } while (internal.notificationScheduled);
+  };
+  await manager.init(ctx); await drain();
+  t.after(async () => {
+    try { await drain(); }
+    finally {
+      try { await manager.shutdown(); await drain(); }
+      finally { await fs.rm(root, { recursive: true, force: true }); }
+    }
+  });
   const record: RecordData = { version: 1, id: 'bg-123456abcdef', title: 'Fixture', sessionId: 'fixture', cwd: root, provider: 'fake', model: 'main', thinking: 'high', status: 'running', access: 'write', startedAt: Date.now(), etaSeconds: 30, etaMaxSeconds: 60, estimateReason: 'Original estimate', lastActivityAt: Date.now(), toolCalls: 0, turns: 0, usage: emptyUsage(), usageReported: false, notification: 'read', overrunNotified: false };
-  return { root, manager, notices, entries, record, ctx };
+  return { root, manager, notices, entries, storageErrors, record, ctx,
+    flush: async () => { manager.scheduleNotifications(); await drain(); } };
 }
 
 test('ETA revision is remaining duration plus elapsed time, not a reset deadline', async t => {
@@ -62,12 +83,11 @@ test('result pagination reports usage only once and accounts nothing during sett
 test('completion notification waits for durable output and is queued only once', async t => {
   const f = await fixture(t); f.record.status = 'completed'; f.record.notification = 'pending';
   const job = { record: f.record, settling: true }; f.manager.jobs.set(f.record.id, job);
-  const flush = () => (f.manager as unknown as { flushNotifications(): Promise<void> }).flushNotifications();
-  f.manager.scheduleNotifications(); await flush(); assert.equal(f.notices.length, 0);
+  await f.flush(); assert.equal(f.notices.length, 0);
   await f.manager.store!.write(f.record, 'Verified output'); job.settling = false;
-  f.manager.scheduleNotifications(); await flush();
+  await f.flush();
   assert.equal(f.notices.length, 1); assert.equal(f.record.notification, 'queued');
-  f.manager.scheduleNotifications(); await flush(); assert.equal(f.notices.length, 1);
+  await f.flush(); assert.equal(f.notices.length, 1);
 });
 test('automatic-routing switch is persistent, and finished/unknown tasks cannot be revised', async t => {
   const f = await fixture(t); f.manager.setAuto(false); assert.equal(f.manager.auto, false); assert.deepEqual(f.entries.at(-1), { enabled: false });
@@ -84,13 +104,51 @@ test('completion persists its reservation before routing, retries only failed st
   } });
   const write = f.manager.store!.write.bind(f.manager.store);
   f.manager.store!.write = async () => { throw new Error('Synthetic storage unavailable'); };
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20));
+  await f.flush();
   assert.equal(calls, 0); assert.equal(f.record.notification, 'pending');
+  assert.equal(f.storageErrors.length, 1, 'the synthetic write failure is observed');
   f.manager.store!.write = write;
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20));
+  await f.flush();
   assert.equal(calls, 1); assert.equal(storedBeforeRoute, true); assert.equal(f.record.notification, 'queued');
   assert.equal(f.notices.length, 0, 'revoked transport ownership cannot fall back to ambient main chat');
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(calls, 1);
+  await f.flush(); assert.equal(calls, 1);
+  assert.equal(f.storageErrors.length, 1, 'retry and duplicate flushing have no storage errors');
+});
+
+test('completion withholds routing until a delayed durable reservation finishes and routes exactly once', async t => {
+  const f = await fixture(t); f.record.status = 'completed'; f.record.notification = 'pending';
+  const write = f.manager.store!.write.bind(f.manager.store);
+  await write(f.record, 'Verified delayed-write output');
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let calls = 0, writes = 0, durableSaveFinished = false;
+  f.manager.store!.write = async (...args) => {
+    writes++; entered(); await gate; await write(...args);
+    const saved = JSON.parse(await fs.readFile(f.manager.store!.path(f.record.id, 'json'), 'utf8'));
+    durableSaveFinished = saved.notification === 'queued';
+  };
+  f.manager.jobs.set(f.record.id, { record: f.record, noticeRouter: () => {
+    assert.equal(durableSaveFinished, true, 'routing follows the real durable save, not the in-memory reservation');
+    calls++; return true;
+  } });
+  const flushing = f.flush();
+  try {
+    await started;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(calls, 0); assert.equal(writes, 1); assert.equal(durableSaveFinished, false);
+    assert.equal(f.record.notification, 'queued');
+    const saved = JSON.parse(await fs.readFile(f.manager.store!.path(f.record.id, 'json'), 'utf8'));
+    assert.equal(saved.notification, 'pending', 'the held reservation has not been persisted');
+    release(); await flushing;
+    assert.equal(calls, 1); assert.equal(durableSaveFinished, true); assert.equal(f.record.notification, 'queued');
+    await f.flush(); await f.flush();
+    assert.equal(calls, 1); assert.equal(writes, 1); assert.equal(f.notices.length, 0);
+    assert.deepEqual(f.storageErrors, []);
+  } finally {
+    release();
+    try { await flushing; } finally { f.manager.store!.write = write; }
+  }
 });
 
 test('unowned TUI/RPC notices wait for idle and pending messages before starting a separate report turn', async t => {
@@ -98,11 +156,11 @@ test('unowned TUI/RPC notices wait for idle and pending messages before starting
   f.manager.jobs.set(f.record.id, { record: f.record });
   let idle = false, pending = false;
   f.ctx.isIdle = () => idle; f.ctx.hasPendingMessages = () => pending;
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(f.notices.length, 0);
+  await f.flush(); assert.equal(f.notices.length, 0);
   idle = true; pending = true;
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(f.notices.length, 0);
+  await f.flush(); assert.equal(f.notices.length, 0);
   pending = false;
-  f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(f.notices.length, 1);
+  await f.flush(); assert.equal(f.notices.length, 1);
 });
 
 test('foreground reads remain live through publication, without shared resource acquisition', async t => {

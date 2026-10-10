@@ -1,6 +1,6 @@
 {
   "name": "pi-memoria",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Global working memory, SQLite FTS5 recall, and complete Pi session search",
   "type": "module",
   "license": "MIT",

@@ -27,13 +27,13 @@ Each package owns its manifest, entry point, runtime dependencies, tests, README
 For all packages and the complete test suite:
 
 - **Node.js 26.10.x or newer within the 26.x line**: required by the current idle-compaction manifest. Other packages have lower minimums.
-- A Node-based **Pi** installation using the `@earendil-works` packages. The combined suite has been exercised with Pi 1.0.0; see each package's declared peer range and compatibility notes.
+- A Node-based **Pi** installation using the `@earendil-works` packages. The combined suite has been exercised with Pi 1.0.0 and 1.1.0; see each package's declared peer range and compatibility notes.
 - **npm** for development tooling.
 - **ripgrep (`rg`)** for memoria session search and its tests.
 - On Linux, util-linux-compatible **`flock --no-fork`** for Telegram ownership. **ffmpeg** is needed for long speech assembly and the corresponding offline tests.
 
 > [!NOTE]
-> Package peer ranges are not uniform. Some manifests retain 0.x development baselines even though this checkout passes offline checks on Pi 1.0.0. Read the package requirements before installing; a successful combined test run is not proof of every matching runtime or platform.
+> Package peer ranges are not uniform. Some manifests retain 0.x development baselines even though this checkout passes offline checks on Pi 1.1.0. Read the package requirements before installing; a successful combined test run is not proof of every matching runtime or platform.
 
 ## Installation
 

@@ -165,6 +165,28 @@ test("Pi loads the package, executes all five tools, injects fresh global memory
   assert.equal((await h.call("memoria_search", {})).details.results.length, 0);
 });
 
+for (const unavailable of [false, true]) {
+  test(`Pi loader uses managed-only rg with ${unavailable ? "unavailable" : "available"} SQLite`, { skip: process.platform === "win32" }, async (t) => {
+    const h = await harness(t);
+    if (unavailable) await mkdir(join(h.memoryDir, "memoria.sqlite"), { recursive: true });
+    await h.dispatch("session_start");
+    const bin = join(h.agentDir, "bin");
+    await mkdir(bin);
+    const entry = { type: "message", id: "managed-only", message: { role: "user", content: "fruit preference" } };
+    const event = { type: "match", data: { path: { text: h.sessionFile }, line_number: 1, lines: { text: JSON.stringify(entry) + "\n" } } };
+    await writeFile(join(bin, "rg"), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(JSON.stringify(event) + "\n")});\n`, { mode: 0o700 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      const page = await h.call("memoria_sessions", { query: "fruit preference" });
+      assert.equal(page.details.results[0].entry_id, "managed-only");
+      assert.equal(page.details.exhausted, !unavailable);
+      assert.equal(page.details.warnings.some((warning: string) => warning.includes("SQLite unavailable")), unavailable);
+      await assert.rejects(stat(join(h.memoryDir, "bin")), { code: "ENOENT" });
+    } finally { if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; }
+  });
+}
+
 test("structured and forced prompts separate instructions from fresh hot memory and preserve the addendum", async (t) => {
   const h = await harness(t);
   await h.dispatch("session_start");

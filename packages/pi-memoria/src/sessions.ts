@@ -98,8 +98,30 @@ function rgText(value: unknown): string {
   throw new Error("ripgrep returned an invalid text record.");
 }
 
+/** Try at most two binaries, only falling back when spawning reports ENOENT. */
+async function startRipgrep(executables: string[], args: string[], signal?: AbortSignal) {
+  for (const [index, executable] of executables.entries()) {
+    signal?.throwIfAborted();
+    const child = spawn(executable, args, { shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    try {
+      await new Promise<void>((done, fail) => {
+        child.once("spawn", done);
+        child.once("error", fail);
+      });
+      return { child, executable };
+    } catch (error) {
+      signal?.throwIfAborted();
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && index + 1 < executables.length) continue;
+      throw new Error(`Cannot run ripgrep (${executable}): ${(error as Error).message}. Install rg and ensure it is on PATH, or provision Pi's managed binary. Checked: ${executables.join(", ")}. Session search is incomplete.`);
+    }
+  }
+  throw new Error("No ripgrep executable configured.");
+}
+
 export class SessionSearch {
-  constructor(private roots: () => string[], private executable = "rg") {}
+  // An explicit executable remains authoritative. Otherwise prefer Pi's managed
+  // binary when supplied, then inherited PATH. Resolve anew on every search.
+  constructor(private roots: () => string[], private executable?: string, private managedExecutable?: string) {}
 
   async search(input: SessionQuery, signal?: AbortSignal) {
     signal?.throwIfAborted();
@@ -137,7 +159,9 @@ export class SessionSearch {
       const patterns = query && terms.length ? [...new Set([...rawTerms, ...terms.map((term) => JSON.stringify(term).slice(1, -1)), "\\u", "\\/"])] : [""];
       for (const pattern of patterns) args.push("-e", pattern);
       args.push("--", ...coverage.roots);
-      const child = spawn(this.executable, args, { shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      const executables = this.executable !== undefined ? [this.executable]
+        : this.managedExecutable ? [this.managedExecutable, "rg"] : ["rg"];
+      const { child, executable } = await startRipgrep(executables, args, signal);
       let spawnError: Error | undefined;
       let stderr = "";
       child.stderr.setEncoding("utf8");
@@ -201,7 +225,7 @@ export class SessionSearch {
         signal?.removeEventListener("abort", abort);
       }
       signal?.throwIfAborted();
-      if (spawnError) throw new Error(`Cannot run ripgrep (${this.executable}): ${spawnError.message}. Install rg and ensure it is on PATH.`);
+      if (spawnError) throw new Error(`Cannot run ripgrep (${executable}): ${spawnError.message}. Session search is incomplete.`);
       const code = await completion;
       if (stderr.trim()) coverage.warnings.push(`ripgrep: ${stderr.trim()}`);
       if (!hasMore && !timedOut && code !== 0 && code !== 1) coverage.warnings.push(`ripgrep stopped with exit code ${code}; search is incomplete.`);

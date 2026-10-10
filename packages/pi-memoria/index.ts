@@ -286,10 +286,10 @@ export default function memoria(pi: ExtensionAPI) {
         let warning: string | undefined;
         try {
           const db = database(current);
-          sessions = new SessionSearch(() => db.roots());
+          sessions = new SessionSearch(() => db.roots(), undefined, current.config.ripgrepPath);
         } catch (error) {
           const sessionFile = ctx.sessionManager.getSessionFile();
-          sessions = new SessionSearch(() => [...current.config.sessionRoots, ctx.sessionManager.getSessionDir(), ...(sessionFile ? [dirname(sessionFile)] : [])]);
+          sessions = new SessionSearch(() => [...current.config.sessionRoots, ctx.sessionManager.getSessionDir(), ...(sessionFile ? [dirname(sessionFile)] : [])], undefined, current.config.ripgrepPath);
           warning = `SQLite unavailable: ${(error as Error).message}. Searching default/configured/current roots only; previously remembered custom roots may be missing.`;
         }
         if (params.action === "read") {

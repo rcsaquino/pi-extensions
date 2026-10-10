@@ -19,7 +19,7 @@ pi-memoria gives Pi one memory shared across every project: instructions that mu
 
 - **Node.js 22.19+** (uses `node:sqlite`; earlier baselines 22.19/24.20, maintained suite 26.10.0).
 - A Node-based **Pi** host. The pinned development baseline is 1.0.0, the maintained Pi host. Standalone/Bun builds are not validated with `node:sqlite`.
-- **ripgrep (`rg`) on PATH** for session search.
+- **ripgrep (`rg`)**, either on PATH or in Pi's managed `<agent-dir>/bin/` directory, for session search.
 
 ## Installation
 
@@ -27,7 +27,7 @@ pi-memoria gives Pi one memory shared across every project: instructions that mu
 pi install npm:pi-memoria
 ```
 
-This installs the current public npm release. This checkout contains version **0.3.2**, the patch after the public 0.3.1 release.
+This installs the current public npm release. The source version is recorded in `package.json`; unpublished checkout changes require a local install.
 
 Activate with `/reload` in an idle session when intended, or a separately approved restart. To uninstall, run `pi remove npm:pi-memoria`; stored memory remains until you delete its directory.
 
@@ -132,7 +132,7 @@ Tool replies are compact; oversized results spill to a private `pi-memoria-resul
 
 | Variable | Effect |
 |---|---|
-| `PI_CODING_AGENT_DIR` | Pi's agent directory; memoria defaults to its `memoria/` child |
+| `PI_CODING_AGENT_DIR` | Pi's agent directory; memoria defaults to its `memoria/` child and looks for managed ripgrep in its `bin/` child |
 | `PI_MEMORIA_DIR` | Override the single global memory directory |
 | `PI_MEMORIA_SESSION_DIRS` | JSON array of additional absolute session roots |
 
@@ -149,6 +149,10 @@ The optional `synonyms.json` next to `memoria.sqlite` maps terms for `any`/`all`
 Database startup recognizes truly empty stores and the exact shipped memoria v1/v2 schemas, including legacy stores without an application identifier. Current stores receive the `MEMO` application identifier without a schema-version bump. Foreign, future, customized or unsupported schemas are refused before chmod, journal-mode changes or migration. Supported v1 migration preserves facts, archives, duplicates and FTS indexes.
 
 Database/companion files must be regular single-link files, and existing directory components cannot be symlinks. Unsafe `-wal`, `-shm`, `-journal` aliases and orphan companions are refused. Ownership inspection uses a private mode-0700 temporary snapshot of the database/WAL/journal, because even SQLite READONLY can alter original SHM read marks. Snapshot files use 0600, copying uses a fixed-size buffer with bounded change retries, and cleanup runs on success/failure. Startup inspection is linear in stored bytes and needs temporary disk capacity; normal queries do not copy the store. Concurrent supported startup still re-attests under its migration transaction. These are focused startup checks, not an OS lease against uncoordinated path/schema mutations by another process.
+
+Session search prefers Pi's managed `<agent-dir>/bin/rg` (`rg.exe` on Windows), then inherited PATH if the managed executable is missing (ENOENT). Permission errors or other operational failures are reported, not hidden by fallback. Resolution is retried on each search so a binary provisioned after extension loading is recognized. `PI_CODING_AGENT_DIR` uses the same absolute/tilde normalization as the memory configuration; `PI_MEMORIA_DIR` does not move the managed-bin location. Explicit executable overrides for custom callers/tests remain authoritative.
+
+Memoria never downloads binaries or changes PATH. Normal interactive Pi startup can provision missing ripgrep on supported platforms. On an offline first start, after a failed download, or where Pi cannot provision it (such as Android/Termux), install system ripgrep or provision the managed binary separately. Android/Termux users can use `pkg install ripgrep`. Reading an original entry with `action=read` does not require ripgrep.
 
 The default session root is `<agent-dir>/sessions`; roots Pi uses are remembered across projects. Changing `PI_MEMORIA_DIR` selects a different store without migrating the old one, project `cwd` is never used to choose it, and no data is sent over the network.
 

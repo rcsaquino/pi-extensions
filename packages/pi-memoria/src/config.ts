@@ -1,10 +1,16 @@
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 
 export function absolutePath(value: string, name: string): string {
   const expanded = value === "~" ? homedir() : value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
   if (!expanded || !isAbsolute(expanded)) throw new Error(`${name} must be an absolute path (or start with ~/).`);
   return resolve(expanded);
+}
+
+/** Pi's managed binary belongs to the agent directory, not the memory store. */
+export function managedRipgrepPath(agentDir: string, platform: NodeJS.Platform = process.platform): string {
+  const paths = platform === "win32" ? win32 : posix;
+  return paths.join(agentDir, "bin", platform === "win32" ? "rg.exe" : "rg");
 }
 
 export function configuration(agentDir: string, env: NodeJS.ProcessEnv = process.env) {
@@ -20,6 +26,7 @@ export function configuration(agentDir: string, env: NodeJS.ProcessEnv = process
   }
   return {
     directory,
+    ripgrepPath: managedRipgrepPath(agentDir),
     hotPath: join(directory, "MEMORY.md"),
     databasePath: join(directory, "memoria.sqlite"),
     aliasesPath: join(directory, "synonyms.json"),

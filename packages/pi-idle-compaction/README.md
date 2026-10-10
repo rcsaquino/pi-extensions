@@ -14,7 +14,7 @@ A standalone extension using Node built-ins and the public Pi API. No runtime np
 
 - **Node.js `>=26.10.0 <27`**, as declared by this package.
 - Pi coding-agent peer **`^0.99.2 || ^1.0.0`**.
-- Maintained offline baseline: Linux x64, Node 26.10.0, Pi 1.0.0. Other platforms and future APIs require their own checks.
+- Maintained offline baseline: Linux x64, Node 26.10.0, Pi 1.1.0. Other platforms and future APIs require their own checks.
 
 Production does not need a package-local `node_modules` directory. Development tests need only this package's tools and the Pi host.
 
@@ -88,7 +88,7 @@ Runtime modules:
 - `controller.mjs`: timers, thresholds, history invalidation, and lease lifetime.
 - `background.mjs`: bounded provider snapshots and optional RPC admission, without foreign runtime files.
 
-Tests use fake timers/compaction, private local fixtures, and the actual Pi loader. A test-only preload forbids network operations. The isolated loader check requires no runtime `node_modules` or subagent package.
+Tests use fake timers/compaction, private local fixtures, and the actual Pi loader. A test-only preload forbids network operations. The isolated loader check requires no runtime `node_modules` or subagent package. Its host-version gate follows the declared stable peer branches (0.99.x from 0.99.2, or 1.x), not a pinned validation minor; actual public loading, registration, commands, and cleanup must still pass. A matching version alone does not establish compatibility.
 
 Read [AGENTS.md](AGENTS.md) for race/recovery regression requirements. Passing tests does not prove a paid compaction, a real 60-minute idle soak, or activation in a running host.
 

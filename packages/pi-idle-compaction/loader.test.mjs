@@ -9,6 +9,24 @@ process.env.JITI_TRY_NATIVE = 'false';
 const root = dirname(fileURLToPath(import.meta.url));
 const runtimeRoot = process.env.IDLE_COMPACTION_TEST_RUNTIME_DIR || root;
 
+// Test-only gate for the declared peer ranges, not a pin to the validation baseline.
+const hostPeerRange = '^0.99.2 || ^1.0.0';
+function isDeclaredHostVersion(version) {
+  const parts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  if (!parts) return false; // Prereleases are not included by the declared ranges.
+  return parts[1] === '1' || (parts[1] === '0' && parts[2] === '99' && Number(parts[3]) >= 2);
+}
+
+test('loader host gate covers the declared stable peer ranges', async () => {
+  const manifest = JSON.parse(await readFile(join(runtimeRoot, 'package.json'), 'utf8'));
+  assert.equal(manifest.peerDependencies['@earendil-works/pi-coding-agent'], hostPeerRange,
+    'update the test-only gate when declared host support changes');
+  for (const version of ['0.99.2', '0.99.3', '0.99.12', '1.0.0', '1.0.9', '1.1.0', '1.12.0', '1.1.0+build.1'])
+    assert.equal(isDeclaredHostVersion(version), true, `declared host ${version}`);
+  for (const version of ['0.98.9', '0.99.1', '0.100.0', '2.0.0', '1.1.0-rc.1', '1.01.0', '1.1', 'invalid'])
+    assert.equal(isDeclaredHostVersion(version), false, `undeclared host ${version}`);
+});
+
 test('current Pi loads an isolated standalone copy with NO node_modules or subagent package', async () => {
   const sandbox = await mkdtemp(join(root, '.loader-test-'));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -18,7 +36,7 @@ test('current Pi loads an isolated standalone copy with NO node_modules or subag
   globalThis.fetch = async () => { networkCalls++; throw Error('Network forbidden in loader acceptance'); };
   try {
     const { DefaultResourceLoader, SettingsManager, VERSION } = await import('@earendil-works/pi-coding-agent');
-    assert.match(VERSION, /^1\.0\./, 'test against the current declared host branch');
+    assert.ok(isDeclaredHostVersion(VERSION), `Pi ${VERSION} must satisfy the declared stable host ranges ${hostPeerRange}`);
     const agentDir = join(sandbox, 'agent'), cwd = join(sandbox, 'cwd');
     const installDir = join(agentDir, 'extensions', 'pi-idle-compaction');
     await mkdir(installDir, { recursive: true }); await mkdir(cwd);

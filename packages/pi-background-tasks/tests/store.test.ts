@@ -61,12 +61,12 @@ test('atomic writes replace a result symlink without following it', async t => {
   assert.equal(await fs.readFile(target, 'utf8'), 'unchanged');
   assert.equal(await store.output(data().id), 'replacement');
 });
-test('one writer across sessions sharing a workspace, release is idempotent', async t => {
+test('independent session persistence has no workspace/resource lease API or lock directory', async t => {
   const { store } = await fixture(t); const second = new Store(store.root, 'another'); await second.init();
-  const release = await store.acquireWriter('/workspace');
-  await assert.rejects(second.acquireWriter('/workspace'), /live background writer/);
-  const releaseOther = await second.acquireWriter('/other-workspace'); await releaseOther();
-  await release(); await release(); const release2 = await second.acquireWriter('/workspace'); await release2();
+  assert.equal('acquireWriter' in store, false); assert.equal('hasWriterEvidence' in store, false);
+  await Promise.all([store.write(data(), 'first'), second.write({ ...data(), sessionId: 'another' }, 'second')]);
+  assert.equal(await store.output(data().id), 'first'); assert.equal(await second.output(data().id), 'second');
+  await assert.rejects(fs.stat(join(store.root, 'locks')), { code: 'ENOENT' });
 });
 test('foreign metadata and malformed metadata fail closed', async t => {
   const { store } = await fixture(t); await store.write({ ...data(), sessionId: 'different' });

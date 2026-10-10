@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BackgroundManager } from '../src/manager.ts';
 import { emptyUsage } from '../src/types.ts';
-import type { RecordData, NormalizedDispatch, Profile } from '../src/types.ts';
+import type { RecordData, Job } from '../src/types.ts';
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import { scratch } from './helpers.ts';
 
@@ -46,7 +46,7 @@ test('cancellation is cooperative and idempotent, and late nested calls are bloc
   f.manager.jobs.set(f.record.id, { record: f.record, controller, rootCallId: 'dispatch' });
   assert.equal((await f.manager.cancel(f.record.id)).status, 'cancelling'); assert.equal(controller.signal.aborted, true);
   assert.equal((await f.manager.cancel(f.record.id)).status, 'cancelling');
-  const event = { type: 'tool_call', toolCallId: 'dispatch/1', toolName: 'write', input: { path: 'file' } } as ToolCallEvent;
+  const event = { type: 'tool_call', toolCallId: 'dispatch/1', parentToolCallId: 'dispatch', toolName: 'write', input: { path: 'file' } } as ToolCallEvent;
   assert.equal(f.manager.guard(event, f.ctx)?.block, true);
 });
 test('result pagination reports usage only once and accounts nothing during settlement', async t => {
@@ -105,31 +105,51 @@ test('unowned TUI/RPC notices wait for idle and pending messages before starting
   f.manager.scheduleNotifications(); await new Promise(r => setTimeout(r, 20)); assert.equal(f.notices.length, 1);
 });
 
-test('foreground live reads hold shared resources through tool completion; unrelated safe web never waits on publication', async t => {
+test('foreground reads remain live through publication, without shared resource acquisition', async t => {
   const f = await fixture(t); const source = fileURLToPath(new URL('../src/index.ts', import.meta.url));
   f.manager.pi.getAllTools = (() => ['read', 'write', 'background_web_search'].map(name => ({ name, exposure: 'direct', sourceInfo: { path: name === 'background_web_search' ? source : `builtin:${name}` } }))) as ExtensionAPI['getAllTools'];
   const path = join(f.root, 'file.txt'); await fs.writeFile(path, 'base'); const stage = new Stage('bg-aaaaaaaaaaaa', f.root, join(f.root, 'stage'), { inputs: [], outputs: ['file.txt'] }); await stage.snapshot(); t.after(() => stage.close()); await stage.file('write', 'file.txt', 'published'); const manifest = await stage.seal();
   const event = { type: 'tool_call', toolCallId: 'foreground-read', toolName: 'read', input: { path } } as ToolCallEvent;
-  assert.equal(await f.manager.guardAndAcquire(event, f.ctx), undefined);
-  await assert.rejects(stage.publish(f.manager.locks!, manifest.hash), /resources are busy/); assert.equal(await fs.readFile(path, 'utf8'), 'base');
-  await f.manager.toolEnded(event.toolCallId);
-  const held = await f.manager.locks!.acquire([{ path, mode: 'write' }], true); assert.ok(held);
-  assert.equal((await f.manager.guardAndAcquire({ ...event, toolCallId: 'blocked-read' }, f.ctx))?.block, true);
-  const start = performance.now(); assert.equal(await f.manager.guardAndAcquire({ type: 'tool_call', toolCallId: 'web', toolName: 'background_web_search', input: { query: 'synthetic fixture' } } as ToolCallEvent, f.ctx), undefined); assert.ok(performance.now() - start < 100);
-  await held(); await stage.publish(f.manager.locks!, manifest.hash); assert.equal(await fs.readFile(path, 'utf8'), 'published');
+  assert.equal(await f.manager.guardAndAdmit(event, f.ctx), undefined);
+  await stage.publish(manifest.hash); assert.equal(await fs.readFile(path, 'utf8'), 'published');
+  await f.manager.toolEnded(event.toolCallId); await f.manager.toolEnded(event.toolCallId);
+  assert.equal('locks' in f.manager, false);
 });
 
-test('an aged conflicting task prevents younger compatible stages from perpetually refilling capacity, without preempting live work', async t => {
-  const f = await fixture(t); const privateRoot = join(f.root, 'live-stage'); const held = await f.manager.locks!.acquire([{ path: privateRoot, mode: 'write' }]); assert.ok(held);
-  const live = { ...f.record, id: 'bg-aaaaaaaaaaaa', execution: 'staged' as const }; f.manager.jobs.set(live.id, { record: live, release: held });
-  const started: string[] = []; const ctx = { ...f.ctx, modelRegistry: { find: () => ({}) }, executeTool: async (_name: string, args: { id: string }) => { started.push(args.id); return { isError: false, result: { content: [{ type: 'text', text: 'Synthetic approval' }], details: undefined } }; } };
-  const profile = { model: {}, thinking: 'off' } as Profile;
-  const dispatch = { task: 'Synthetic scheduler fixture', title: 'Fixture', eta_seconds: 300, eta_max_seconds: 300, estimate_reason: 'Fixture', mode: 'manual', access: 'write', context_mode: 'brief', execution: 'direct' } as NormalizedDispatch;
+test('active multi-file publication admits foreground readers/writers; readers see partial state and a detected concurrent edit is preserved', async t => {
+  const f = await fixture(t); await fs.writeFile(join(f.root, 'a.txt'), 'base a'); await fs.writeFile(join(f.root, 'b.txt'), 'base b');
+  const stage = new Stage('bg-aaaaaaaaaaaa', f.root, join(f.root, 'stage'), { inputs: [], outputs: ['a.txt', 'b.txt'] }); await stage.snapshot(); t.after(() => stage.close());
+  await stage.file('write', 'a.txt', 'new a'); await stage.file('write', 'b.txt', 'new b'); const manifest = await stage.seal();
+  let resume!: () => void, reached!: () => void;
+  const paused = new Promise<void>(done => { reached = done; }), gate = new Promise<void>(done => { resume = done; }); t.after(() => resume());
+  const internal = stage as unknown as { writePrivate(path: string, data: Buffer): Promise<void> };
+  const original = internal.writePrivate.bind(stage);
+  internal.writePrivate = async (path, data) => {
+    await original(path, data);
+    if (path.endsWith('journal.json') && JSON.parse(data.toString()).state === 'publishing' && JSON.parse(data.toString()).changed === 1) { reached(); await gate; }
+  };
+  const publication = stage.publish(manifest.hash);
+  const outcome = assert.rejects(publication, /Publication base changed at execution/);
+  await paused;
+  for (const name of ['read', 'write', 'bash', 'memoria_search']) assert.equal(await f.manager.guardAndAdmit({ type: 'tool_call', toolCallId: `foreground-${name}`, toolName: name, input: { path: join(f.root, 'b.txt') } } as ToolCallEvent, f.ctx), undefined);
+  assert.equal(await fs.readFile(join(f.root, 'a.txt'), 'utf8'), 'new a'); assert.equal(await fs.readFile(join(f.root, 'b.txt'), 'utf8'), 'base b');
+  await fs.writeFile(join(f.root, 'b.txt'), 'concurrent foreground edit'); resume(); await outcome;
+  assert.equal(await fs.readFile(join(f.root, 'a.txt'), 'utf8'), 'base a'); assert.equal(await fs.readFile(join(f.root, 'b.txt'), 'utf8'), 'concurrent foreground edit');
+  for (const name of ['read', 'write', 'bash', 'memoria_search']) await f.manager.toolEnded(`foreground-${name}`);
+});
+
+test('oldest tasks start up to capacity without resource aging/reservation, including overlapping direct and staged writers', async t => {
+  const f = await fixture(t);
+  const live = { ...f.record, id: 'bg-aaaaaaaaaaaa', execution: 'direct' as const }; f.manager.jobs.set(live.id, { record: live });
+  const started: string[] = [];
+  const scheduler = f.manager as unknown as { startQueued(job: Job): Promise<void>; pumpQueue(): Promise<void> };
+  scheduler.startQueued = async job => { started.push(job.record.id); job.record.status = 'running'; job.pending = undefined; };
   const old = { ...f.record, id: 'bg-bbbbbbbbbbbb', status: 'queued' as const, execution: 'direct' as const, queuedAt: Date.now() - 40000 };
   const young = { ...f.record, id: 'bg-cccccccccccc', status: 'queued' as const, execution: 'staged' as const, queuedAt: Date.now() };
-  f.manager.jobs.set(old.id, { record: old, ctx: ctx as never, controller: new AbortController(), pending: { dispatch, profile } });
-  f.manager.jobs.set(young.id, { record: young, ctx: ctx as never, controller: new AbortController(), pending: { dispatch: { ...dispatch, execution: 'staged', stage: { inputs: [], outputs: ['file.txt'] } }, profile } });
-  await (f.manager as unknown as { pumpQueue(): Promise<void> }).pumpQueue();
-  assert.equal(old.status, 'queued'); assert.equal(young.status, 'queued'); assert.equal(young.waitingReason, 'resources'); assert.deepEqual(started, [old.id]); assert.equal(live.status, 'running');
-  await f.manager.cancel(old.id); await f.manager.cancel(young.id); await held(); f.manager.jobs.delete(live.id);
+  f.manager.jobs.set(old.id, { record: old, controller: new AbortController(), pending: {} as Job['pending'] });
+  f.manager.jobs.set(young.id, { record: young, controller: new AbortController(), pending: {} as Job['pending'] });
+  await scheduler.pumpQueue();
+  assert.equal(old.status, 'running'); assert.equal(young.status, 'queued'); assert.equal(young.waitingReason, 'capacity'); assert.deepEqual(started, [old.id]);
+  live.status = 'completed'; await scheduler.pumpQueue(); assert.equal(young.status, 'running'); assert.deepEqual(started, [old.id, young.id]);
+  for (const job of f.manager.jobs.values()) job.record.status = 'completed';
 });

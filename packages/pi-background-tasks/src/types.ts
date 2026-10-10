@@ -3,7 +3,6 @@ import type { Model, Provider, Usage } from '@earendil-works/pi-ai';
 import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { Stage, StageSpec, OutputManifest } from './staging.ts';
-import type { ResourceLease } from './resources.ts';
 
 export type Status = 'queued' | 'starting' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type ContextMode = 'brief' | 'selected' | 'full';
@@ -20,6 +19,7 @@ export interface TerminalDiagnostics {
   visibleTextCharacters: number;
   hadToolCalls: boolean;
   lastToolOutcome?: 'completed' | 'error' | 'aborted';
+  /** Legacy v1 diagnostic, read for honest restoration only; no current resource leases. */
   leaseCleanupFailed?: boolean;
 }
 export interface Dispatch {
@@ -57,7 +57,7 @@ export interface RecordData {
   startedAt: number;
   queuedAt?: number;
   queueWaitMs?: number;
-  waitingReason?: 'capacity' | 'resources' | 'admission';
+  waitingReason?: 'capacity' | 'admission';
   execution?: 'direct' | 'staged';
   manifest?: OutputManifest;
   publication?: 'ready' | 'published' | 'review-required';
@@ -87,8 +87,6 @@ export interface Job {
   done?: Promise<void>;
   finish?: () => void;
   settling?: boolean;
-  release?: () => Promise<void>;
-  resourceLease?: ResourceLease;
   stage?: Stage;
   starting?: boolean;
   pending?: { dispatch: NormalizedDispatch; profile: Profile };
@@ -108,7 +106,7 @@ export interface Job {
   memoryReport?: string;
   storageFailed?: boolean;
   /** Ephemeral dispatch-captured transport capability. Never persisted or exposed to workers. */
-  noticeRouter?: (noticeId: string, content: string) => boolean;
+  noticeRouter?: (noticeId: string, content: string, metadata?: { kind: 'eta' | 'overdue' | 'settled'; status?: Status }) => boolean;
 }
 export interface Profile {
   model: Model<any>;

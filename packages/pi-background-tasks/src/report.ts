@@ -9,7 +9,7 @@ const outcomes = ['completed', 'error', 'aborted'] as const;
 // A closed vocabulary, not provider-supplied or dynamically named tool identities.
 const toolNames = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'memoria_add', 'memoria_edit',
   'memoria_delete', 'memoria_search', 'memoria_sessions', 'web_enable', 'web_search', 'source_check',
-  'fetch_content', 'get_search_content', 'auto_learn_status', 'latency_query', 'background_update_eta',
+  'fetch_content', 'get_search_content', 'background_update_eta',
   'background_start_check', 'background_stage_file', 'background_publish', 'background_fs_inspect', 'background_web_search', 'background_web_result']);
 export function safeToolName(value: unknown): string | undefined {
   if (value === undefined) return undefined;
@@ -72,7 +72,7 @@ const descriptions: Record<TerminalCategory, string> = {
   turn_limit: 'The worker reached the 200-turn safety limit.',
   shutdown: 'Pi stopped or reloaded while the worker was running.',
   interrupted: 'The previous process ended before settlement was recorded. The exact terminal reason is unavailable.',
-  lease_cleanup_error: 'Writer lease cleanup failed. Inspect runtime storage before starting another writer.',
+  lease_cleanup_error: 'A legacy runtime recorded writer lease cleanup failure. This version has no workspace/resource locks; review historical partial effects.',
   admission_error: 'Background admission, captured profile or permission revalidation failed. No worker model request was started; review partial snapshot/state before retrying.',
   stage_validation_error: 'Staged output validation failed. No publication was attempted.',
   queue_cancelled: 'Queued task cancelled before worker effects started.',
@@ -86,6 +86,7 @@ const legacyErrors = new Set([
   'Stopped because Pi is shutting down or reloading; effects may be partial.',
   'Worker failed. Effects may be partial; no automatic replay was performed.',
   'Writer lease cleanup failed; inspect runtime storage before starting another writer.',
+  'Writer lease cleanup failed. Inspect runtime storage before starting another writer.',
   'Task result could not be saved. Review workspace effects before retrying.',
   'Pi stopped or reloaded before this task settled. Effects may be partial. It was NOT replayed.',
   'Runtime stopped before cancellation settled. Tool effects may be partial. No task replay was attempted.',
@@ -93,6 +94,7 @@ const legacyErrors = new Set([
   ...Object.values(descriptions),
 ]);
 export function safeStoredError(value: unknown): string | undefined {
+  if (typeof value === 'string' && ['Writer lease cleanup failed; inspect runtime storage before starting another writer.', 'Writer lease cleanup failed. Inspect runtime storage before starting another writer.'].includes(value)) return descriptions.lease_cleanup_error;
   return value === undefined ? undefined : typeof value === 'string' && legacyErrors.has(value) ? value : descriptions.unknown;
 }
 
@@ -114,8 +116,8 @@ export function buildSettlementReport(record: RecordData, visibleFinal = '', sto
     ...(queueWait !== undefined ? [`Queue wait (separate from execution): ${Math.floor(safeCounter(queueWait) / 1000)}s.`] : []), '',
     'Effects may have occurred. This fallback does NOT verify the work, tool effects, artifacts, or tests. A successful tool return alone does not prove task completion.',
     'No automatic replay was performed. Review workspace state and existing artifacts/checkpoints before retrying any writes.',
-    ...(d.leaseCleanupFailed ? ['Writer lease cleanup failed; lease ownership may still be reserved.'] : []),
-    d.category === 'lease_cleanup_error' || d.leaseCleanupFailed ? 'Next step: inspect the writer lease and ensure cooperating tools have settled before further work.'
+    ...(d.leaseCleanupFailed ? ['Legacy writer cleanup uncertainty was recorded; no current resource ownership is inferred.'] : []),
+    d.category === 'lease_cleanup_error' || d.leaseCleanupFailed ? 'Next step: review historical partial effects and recovery evidence. This diagnostic does not impose a current workflow lock.'
       : 'Next step: independently verify the requested deliverables and possible partial effects; obtain authorization before any retry.',
     ...(storageFailed ? ['', 'Storage failure: the result could not be durably saved or retrieved. This bounded in-memory report is available only in this process; durable survival and usage bookkeeping are not guaranteed.'] : []),
     ...(visibleFinal.trim() ? ['', '## Partial worker prose (unverified, not a completion report)', visibleFinal] : []),

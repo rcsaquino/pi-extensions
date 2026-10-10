@@ -80,7 +80,7 @@ export class EffectRegistry {
       if (['read', 'ls', 'write', 'edit'].includes(name) && info?.sourceInfo?.path === `builtin:${name}`) {
         const path = args.path ?? args.file_path ?? (name === 'ls' ? cwd : undefined);
         // Pi expands tilde, @ and file: URLs and normalizes Unicode spaces. Do not
-        // grant disjoint-write permission for an alternative interpretation of a path.
+        // trust argument effects for an alternative interpretation of a path.
         if (typeof path !== 'string' || /^[@~]|^file:/i.test(path) || /[\u00a0\u2000-\u200a\u202f\u205f\u3000]/.test(path)) return unknown();
         const resource = canonicalPath(path, cwd);
         effects = ['write', 'edit'].includes(name) ? { kind: 'declared-write', writes: [resource] } : { kind: 'filesystem-read', reads: [resource] };
@@ -106,11 +106,5 @@ export class EffectRegistry {
   safeRead(effects: ToolEffects, workspace: string): boolean {
     return effects.kind === 'filesystem-read' || (effects.kind === 'network-read' &&
       (!effects.privateCache || !overlap(effects.privateCache, workspace)));
-  }
-  conflicts(effects: ToolEffects, workspace: string): boolean {
-    if (effects.kind === 'filesystem-read') return false;
-    if (effects.kind === 'network-read') return !!effects.privateCache && overlap(effects.privateCache, workspace);
-    if (effects.kind === 'declared-write') return !!effects.writes?.some(p => overlap(p, workspace));
-    return true;
   }
 }

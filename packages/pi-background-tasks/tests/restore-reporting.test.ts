@@ -88,6 +88,18 @@ test('restored new terminal fields are optional for v1 and sanitized before resu
   assert.equal(r.terminalDiagnostics!.category, 'unknown'); assert.equal(r.terminalDiagnostics!.visibleTextCharacters, 0);
   assert.equal(r.reportSource, undefined); assert.doesNotMatch(JSON.stringify(r), new RegExp(SECRET));
 });
+test('legacy lease diagnostics survive as historical evidence without resource wait reasons or current ownership claims', async t => {
+  const { store } = await fixture(t);
+  const legacy = { ...data(), status: 'failed', finishedAt: 5000, waitingReason: 'resources', error: 'Writer lease cleanup failed. Inspect runtime storage before starting another writer.',
+    terminalDiagnostics: { stopReason: 'stop', category: 'lease_cleanup_error', lastPhase: 'finalizing', visibleTextCharacters: 0, hadToolCalls: false, leaseCleanupFailed: true } } as unknown as RecordData;
+  await store.write(legacy);
+  const restored = (await store.restore())[0]!; const report = await store.output(restored.id);
+  assert.equal(restored.waitingReason, undefined); assert.equal(restored.terminalDiagnostics!.leaseCleanupFailed, true);
+  assert.equal(restored.terminalDiagnostics!.category, 'lease_cleanup_error'); assert.match(restored.error!, /legacy runtime/);
+  assert.match(report, /does not impose a current workflow lock/); assert.doesNotMatch(report, /ownership may still be reserved|before starting another writer/);
+  assert.equal('acquireWriter' in store, false);
+});
+
 test('manager retains restored storage failure for explicit retrieval and suppresses settlement reservation', async t => {
   const { root, store } = await fixture(t); await store.write(data());
   // A directory at the output path produces EISDIR without global permission manipulation.

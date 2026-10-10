@@ -3,7 +3,6 @@ import type { Stats } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { Directory, digest, literalPath, readRegular } from './files.ts';
-import { normalizeResources, type ResourceLocks } from './resources.ts';
 import { within, plainArgs } from './effects.ts';
 
 export type StageSpec = { inputs: string[]; outputs: string[]; immutable_refs?: string[] };
@@ -49,12 +48,13 @@ export class Stage {
   private operations = Promise.resolve();
   manifest?: OutputManifest;
   published = false;
+  private publishing = false;
+  private recoveryRequired = false;
   readonly taskId: string;
   readonly cwd: string;
   readonly root: string;
   readonly spec: StageSpec;
   constructor(taskId: string, cwd: string, root: string, spec: StageSpec) { this.taskId = taskId; this.cwd = cwd; this.root = root; this.spec = spec; }
-  snapshotResources() { return normalizeResources([...this.spec.inputs, ...this.spec.outputs].map(p => ({ path: join(this.cwd, p), mode: 'read' as const })).concat((this.spec.immutable_refs ?? []).map(path => ({ path, mode: 'read' as const })))); }
   private async readPrivate(path: string): Promise<Buffer | null> {
     const directory = await this.anchor!.child(dirname(path)); try { return await directory.read(basename(path)); } finally { await directory.close(); }
   }
@@ -136,23 +136,15 @@ export class Stage {
     const payload = { version: 1 as const, taskId: this.taskId, outputs }; this.manifest = { ...payload, hash: digest(JSON.stringify(payload)) };
     await this.writePrivate('manifest.json', Buffer.from(JSON.stringify(this.manifest))); return this.manifest;
   }
-  async publish(locks: ResourceLocks, expectedHash: string, signal?: AbortSignal, fault?: (index: number) => void): Promise<void> {
-    if (!this.manifest || this.manifest.hash !== expectedHash || this.published || !this.manifest.outputs.length) throw new Error('Review a nonempty sealed manifest before publication.');
+  async publish(expectedHash: string, signal?: AbortSignal, fault?: (index: number) => void): Promise<void> {
+    // Once-only manifest identity, not a resource lock or conflict queue. Different
+    // tasks/publications and all authorized foreground operations remain concurrent.
+    if (!this.manifest || this.manifest.hash !== expectedHash || this.published || this.publishing || this.recoveryRequired || !this.manifest.outputs.length) throw new Error('Review a nonempty sealed manifest before publication; it must not already be publishing/published.');
     const outputs = this.manifest.outputs;
     const changedPaths = new Set(outputs.map(o => o.path));
     const temporaryNames = new Map(outputs.map(o => [o.path, `.bg-${randomUUID()}.tmp`]));
     const rollbackNames = new Map(outputs.map(o => [o.path, `.bg-${randomUUID()}.tmp`]));
-    const resources = [...this.bases.keys()].map(path => ({ path: join(this.cwd, path), mode: changedPaths.has(path) ? 'write' as const : 'read' as const })).concat([...this.refHashes.keys()].map(path => ({ path, mode: 'read' as const })))
-      .concat([{ path: this.root, mode: 'write' as const }], outputs.flatMap(o => [temporaryNames.get(o.path)!, rollbackNames.get(o.path)!].map(name => ({ path: join(this.cwd, dirname(o.path), name), mode: 'write' as const }))));
-    let release: (() => Promise<void>) | undefined;
-    // Brief lock-table contention is not a conflicting publication. True target
-    // conflicts return immediately for review; no foreground tool waits on them.
-    for (let i = 0; i < 20 && !release; i++) {
-      signal?.throwIfAborted(); release = await locks.acquire(resources, true);
-      if (!release && locks.conflicts(resources)) break;
-      if (!release) await new Promise(r => setTimeout(r, 10));
-    }
-    if (!release) throw new Error('Publication resources are busy. No output was changed; retry after review.');
+    this.publishing = true;
     const prepared: { dir: Directory; output: typeof outputs[number]; temp: string; before: Buffer | null; identity: Stats; published?: Stats }[] = [];
     let changed = 0, rollbackFailed = false;
     try {
@@ -217,10 +209,11 @@ export class Stage {
         await item.dir.handle.sync();
       } catch { rollbackFailed = true; }
       await this.writePrivate(join('recovery', 'journal.json'), Buffer.from(JSON.stringify({ version: 1, state: rollbackFailed ? 'review-required' : 'rolled-back', manifest: this.manifest, changed }))).catch(() => { rollbackFailed = true; });
-      throw new Error(rollbackFailed ? 'Publication recovery requires review. Resource locks retained; no automatic replay.' : e instanceof Error ? e.message : 'Publication failed and rolled back.');
+      this.recoveryRequired = rollbackFailed;
+      throw new Error(rollbackFailed ? 'Publication recovery requires review. Preserve the journal/backups; no automatic replay.' : e instanceof Error ? e.message : 'Publication failed and rolled back.');
     } finally {
       for (const item of prepared) { await fs.unlink(item.dir.entry(item.temp)).catch(() => {}); await item.dir.close(); }
-      if (!rollbackFailed) await release();
+      this.publishing = false;
     }
   }
 }

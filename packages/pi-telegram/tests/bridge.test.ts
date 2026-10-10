@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncResource } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -10,6 +11,8 @@ import { TelegramBridge } from "../src/bridge.ts";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { type Fetch, type TgMessage, type TgUpdate } from "../src/api.ts";
 import { DeliveryRefusal, stamp, type Config } from "../src/config.ts";
+import { readDeliveryLedger } from "../src/delivery-ledger.ts";
+import { references } from "./reply-context-fixture.ts";
 
 const workspace = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
 await mkdir(workspace, { recursive: true });
@@ -68,43 +71,55 @@ class Server {
   texts(): { chat_id: number; text: string }[] { return this.calls.filter(call => call.method === "sendMessage").map(call => call.args); }
 }
 
-async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; mode?: string; lockDir?: string; start?: boolean } = {}) {
+async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; consumeReports?: boolean; mode?: string; lockDir?: string; start?: boolean } = {}) {
   const dir = await mkdtemp(resolve(workspace, "telegram-bridge-"));
   const server = options.server || new Server();
   const submissions: (TextContent | ImageContent)[][] = [];
   const deliveries: string[] = [];
+  const consumers: (() => void)[] = [];
   const statuses: string[] = [];
   const notices: string[] = [];
   let idle = true;
   let aborts = 0;
+  let sessionId = "fixture";
   let bridge: TelegramBridge;
   const ctx = {
     cwd: dir, mode: options.mode || "tui", hasUI: true,
     isIdle: () => idle, hasPendingMessages: () => false,
-    sessionManager: { getSessionId: () => "fixture" },
+    sessionManager: { getSessionId: () => sessionId },
     abort: () => { aborts++; },
     ui: { setStatus: (_key: string, value: string) => statuses.push(value), notify: (value: string) => notices.push(value), theme: { fg: (_color: string, value: string) => value } },
   } as unknown as ExtensionContext;
   const events = createEventBus();
   const reports: any[] = [];
   const pi = { events, sendMessage: (msg: any) => {
-    reports.push(msg); idle = false; bridge.userStart({ role: "custom", ...msg });
+    reports.push(msg); idle = false;
+    if (options.consumeReports !== false) bridge.userStart({ role: "custom", ...msg });
   }, sendUserMessage: (content: (TextContent | ImageContent)[], opts: any) => {
     assert.equal(opts.expandPromptTemplates, false);
     deliveries.push(opts.deliverAs);
     submissions.push(content);
-    bridge.input({ type: "input", source: "extension", text: content.filter(b => b.type === "text").map(b => b.text).join("\n") });
-    if (options.consume !== false) {
+    const text = content.filter(b => b.type === "text").map(b => b.text).join("\n");
+    const images = content.filter(b => b.type === "image");
+    bridge.input({ type: "input", source: "extension", text, images });
+    const consume = AsyncResource.bind(() => {
+      bridge.beforeStart(text, images);
+      bridge.agentStart();
       idle = false;
       bridge.userStart({ role: "user", content });
-    }
+    });
+    consumers.push(consume);
+    if (options.consume !== false) consume();
   } } as unknown as ExtensionAPI;
-  bridge = new TelegramBridge(pi, ctx, { ...config, dataDir: resolve(dir, "downloads"), stateDir: resolve(dir, "state"), tmpDir: resolve(dir, "tmp"), lockDir: options.lockDir }, server.fetch);
+  bridge = new TelegramBridge(pi, ctx, { ...config, allowed: new Set(config.allowed), dataDir: resolve(dir, "downloads"), stateDir: resolve(dir, "state"), tmpDir: resolve(dir, "tmp"), lockDir: options.lockDir }, server.fetch);
   t.after(async () => { await bridge.stop(); await rm(dir, { recursive: true, force: true }); });
   if (options.start !== false) await bridge.start();
   return {
     dir, server, bridge, submissions, deliveries, statuses, notices, events, reports,
+    consume: (index: number) => consumers[index](),
     setIdle: (value: boolean) => { idle = value; }, getAborts: () => aborts,
+    setSessionId: (value: string) => { sessionId = value; },
+    startReport: (index = reports.length - 1) => bridge.userStart({ role: "custom", ...reports[index] }),
     finish: async (text = "Final reply.", stopReason = "stop") => {
       bridge.assistantEnd({ role: "assistant", content: [{ type: "thinking", thinking: "private" }, { type: "text", text }], stopReason });
       idle = true;
@@ -112,6 +127,56 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
     },
   };
 }
+
+// Top-level tests in this file are serial, and node:test isolates test files in separate processes.
+// TestContext mocks restore every console method after all cleanup hooks, even on assertion failure.
+function captureConsole(t: test.TestContext, throwing = false) {
+  return (["log", "info", "debug", "warn", "error"] as const).map(method => t.mock.method(console, method, () => {
+    if (throwing) throw new Error("PRIVATE terminal");
+  }));
+}
+
+function assertConsoleSilent(mocks: ReturnType<typeof captureConsole>): void {
+  for (const mock of mocks) assert.equal(mock.mock.callCount(), 0, "delivery metadata must not write to the terminal");
+}
+
+test("successful delivery and cancellation keep redacted ledger records without console or notification traces", { concurrency: false }, async t => {
+  const terminal = captureConsole(t);
+  const h = await fixture(t);
+  h.server.feed({ ...message(1, "Private synthetic request body"),
+    reply_to_message: { ...message(10, `PRIVATE quoted body ${config.token} ${config.groqKey} ${config.elevenKey}`), from: { id: 999, is_bot: true } } });
+  await until(() => h.submissions.length === 1);
+  assert.ok((h.submissions[0][0] as TextContent).text.includes("<telegram_reply_context>"));
+  await h.finish("Private synthetic final body");
+  h.server.feed(message(2, "Another private synthetic body"));
+  await until(() => h.submissions.length === 2);
+  h.bridge.input({ type: "input", source: "interactive", text: (h.submissions[1][0] as TextContent).text });
+  await h.finish("Must not leak");
+  await h.bridge.stop();
+  const records = await ledgerRecords(h);
+  const replies = records.filter(record => record.operation === "reply");
+  assert.deepEqual(replies.map(item => item.phase), ["generated", "settled", "send_attempt", "api_attempt", "api_ack", "sent", "cancelled", "suppressed"]);
+  assert.ok(records.some(record => record.operation === "incoming" && record.method === "getUpdates" && record.phase === "api_failed" && record.code === "TG_TRANSPORT_CANCELLED"), "shutdown retains poll cancellation metadata");
+  const sent = records.filter(record => record.operation === "reply" && record.phase !== "cancelled" && record.phase !== "suppressed");
+  const cancelled = records.filter(record => record.reason === "foreign_input");
+  assert.ok(sent.every(record => record.reply === sent[0].reply));
+  assert.equal(cancelled.length, 2);
+  assert.ok(cancelled.every(record => record.reply === cancelled[0].reply && record.outcome === "suppressed"));
+  assert.notEqual(sent[0].reply, cancelled[0].reply);
+  const delivery = sent.filter(record => record.phase !== "generated");
+  assert.ok(delivery.every(record => record.delivery === delivery[0].delivery));
+  assert.equal(sent.find(record => record.phase === "sent")?.outcome, "acknowledged");
+  for (const record of replies) {
+    assert.ok(Object.keys(record).every(key => ["v", "at", "event", "writer", "sequence", "reply", "delivery", "revision", "operation", "outcome", "phase", "reason", "method", "attempt", "chunk", "chunks"].includes(key)));
+    assert.match(record.reply!, /^[0-9a-f-]{36}$/);
+  }
+  for (const privateValue of ["Private synthetic", "Another private", "Must not leak", "PRIVATE quoted body", config.token, config.groqKey!, config.elevenKey!, h.dir]) {
+    assert.ok(!JSON.stringify(records).includes(privateValue));
+  }
+  assert.equal(h.server.texts().length, 1, "cancelled final must not send");
+  assert.deepEqual(h.notices, [], "routine traces must not become UI notifications");
+  assertConsoleSilent(terminal);
+});
 
 test("authenticate before replying, downloading, STT or Pi dispatch; reject groups and bots", async t => {
   const h = await fixture(t);
@@ -124,12 +189,16 @@ test("authenticate before replying, downloading, STT or Pi dispatch; reject grou
   assert.ok(!h.server.calls.some(call => call.method === "getFile"));
 });
 
-test("inbound text has only a leading host-local timestamp; plain final only after settlement", async t => {
+test("inbound text has only a leading second-only host-local sent timestamp; plain final only after settlement", async t => {
   const h = await fixture(t);
   h.server.feed(message());
   await until(() => h.submissions.length === 1);
-  assert.equal((h.submissions[0][0] as TextContent).text, stamp("Hello", new Date(message().date * 1000)));
-  assert.ok(!(h.submissions[0][0] as TextContent).text.includes("Telegram user"));
+  const text = (h.submissions[0][0] as TextContent).text;
+  assert.equal(text, stamp("Hello", new Date(message().date * 1000)));
+  const iso = text.match(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\] Hello$/)?.[1];
+  assert.ok(iso);
+  assert.equal(Date.parse(iso), message().date * 1000);
+  assert.ok(!text.includes("Telegram user"));
   h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Working..." }, { type: "toolCall", name: "bash" }], stopReason: "toolUse" });
   h.bridge.assistantEnd({ role: "toolResult", content: [{ type: "text", text: "tool output" }] });
   assert.equal(h.server.texts().length, 0);
@@ -303,14 +372,14 @@ test("unconsumed steering retains the earlier final and the late correction's re
   const h = await fixture(t, { consume: false });
   h.server.feed(message(1, "Initial task"));
   await until(() => h.submissions.length === 1);
-  h.bridge.userStart({ role: "user", content: h.submissions[0] });
+  h.consume(0);
   h.setIdle(false);
   h.server.feed(message(2, "Delayed correction"));
   await until(() => h.submissions.length === 2);
   assert.ok(h.bridge.isTelegramPrompt((h.submissions[1][0] as TextContent).text));
   await h.finish("Initial completed before input hook.");
   assert.equal(h.server.texts()[0].text, "Initial completed before input hook.");
-  h.bridge.userStart({ role: "user", content: h.submissions[1] });
+  h.consume(1);
   h.setIdle(false);
   await h.finish("Late corrected final.");
   assert.deepEqual(h.server.texts().map(item => [item.chat_id, item.text]), [[123, "Initial completed before input hook."], [123, "Late corrected final."]]);
@@ -619,11 +688,12 @@ test("aborted or errored assistant messages cannot be forwarded as final answers
   assert.match(h.server.texts()[0].text, /could not complete/);
 });
 
-test("incoming albums across separate polls produce one ordered prompt and all native image blocks", async t => {
+test("incoming albums across separate polls retain the earliest sent second, one ordered prompt and all native image blocks", async t => {
   const h = await fixture(t);
+  const earliest = message().date - 30;
   h.server.feed({ ...message(10), text: undefined, caption: "Describe both", media_group_id: "album-a", photo: [{ file_id: "first" }] });
   await delay(150);
-  h.server.feed({ ...message(11), text: undefined, media_group_id: "album-a", photo: [{ file_id: "second" }] });
+  h.server.feed({ ...message(11), date: earliest, text: undefined, media_group_id: "album-a", photo: [{ file_id: "second" }] });
   await until(() => h.submissions.length === 1);
   const text = (h.submissions[0][0] as TextContent).text;
   const paths = text.split("[Attachment/s]\n")[1].split("\n");
@@ -631,12 +701,34 @@ test("incoming albums across separate polls produce one ordered prompt and all n
   assert.ok(paths[0].includes("10-") && paths[1].includes("11-"));
   assert.equal(h.submissions[0].filter(block => block.type === "image").length, 2);
   assert.equal((text.match(/\[Attachment\/s\]/g) || []).length, 1);
-  assert.match(text, /^\[\d{4}-/);
+  const iso = text.match(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\] Describe both/)?.[1];
+  assert.ok(iso);
+  assert.equal(Date.parse(iso), earliest * 1000);
   assert.ok(!text.includes("saved at:") && !text.includes("Telegram photo"));
   await h.finish("Both cats.");
   await delay(250);
   assert.equal(h.submissions.length, 1);
   assert.equal(h.server.texts().length, 1);
+});
+
+test("reply-bearing albums keep deduplicated XML before the earliest current timestamp and native attachments", async t => {
+  const h = await fixture(t);
+  const earliest = message().date - 45;
+  const reply_to_message = { ...message(200, "A prior answer & detail"), from: { id: 999, is_bot: true, first_name: "Eve" } };
+  h.server.feed({ ...message(10), text: undefined, caption: "Describe both", media_group_id: "reply-album", photo: [{ file_id: "first" }], reply_to_message });
+  await delay(150);
+  h.server.feed({ ...message(11), date: earliest, text: undefined, media_group_id: "reply-album", photo: [{ file_id: "second" }], reply_to_message });
+  await until(() => h.submissions.length === 1);
+  const text = (h.submissions[0][0] as TextContent).text;
+  const refs = references(text); assert.equal(refs.length, 1); assert.equal(refs[0].sender, "Eve");
+  assert.equal(refs[0].body, "A prior answer & detail");
+  const current = text.slice(refs[0].xml.length + 2);
+  assert.ok(current.startsWith(stamp("Describe both", new Date(earliest * 1000))));
+  assert.ok(text.startsWith("<telegram_reply_context>\n")); assert.ok(!text.includes("[Current Telegram request]"));
+  assert.equal(current.split("[Attachment/s]\n")[1].split("\n").length, 2);
+  assert.equal(h.submissions[0].filter(block => block.type === "image").length, 2);
+  assert.deepEqual(h.server.calls.filter(call => call.method === "getFile").map(call => call.args.file_id), ["first", "second"]);
+  await h.finish(); assert.equal(h.server.texts().length, 1);
 });
 
 test("same album ID from different users cannot merge attachments or reply targets", async t => {
@@ -720,9 +812,9 @@ test("transport command menus are cleared only by the owner before polling", asy
   assert.ok(h.server.calls.findIndex(call => call.method === "deleteMyCommands") < h.server.calls.findIndex(call => call.method === "getUpdates"));
 });
 
-function captureRoute(h: Awaited<ReturnType<typeof fixture>>, sessionId = "fixture") {
+function captureRoute(h: Awaited<ReturnType<typeof fixture>>, sessionId = "fixture", taskId = "bg-123456abcdef") {
   let route: ((id: string, content: string) => boolean) | undefined;
-  h.events.emit("background-tasks:claim-owner:v1", { sessionId, taskId: "bg-123456abcdef", rootCallId: "dispatch",
+  h.events.emit("background-tasks:claim-owner:v1", { sessionId, taskId, rootCallId: "dispatch",
     accept: (value: typeof route) => { route = value; } });
   return route;
 }
@@ -789,7 +881,7 @@ test("task-linked report allows captionless artifacts and voice-only replies, ne
   const route = captureRoute(h)!; await h.finish("Accepted.");
   await assert.rejects(h.bridge.send({ speech: "Unowned send" }), /TG_NO_CONTEXT/);
   route("artifact", "Fetch the requested artifact."); await until(() => h.reports.length === 1);
-  assert.equal(captureRoute(h), undefined, "a status turn does not grant fresh dispatch ownership");
+  assert.ok(captureRoute(h), "only the actually started, owned report can pass on its route to a main-chat continuation");
   const path = resolve(h.dir, "report.txt"); await writeFile(path, "Synthetic report");
   await h.bridge.send({ path }); await h.finish("");
   const file = h.server.calls.find(x => x.method === "sendDocument")!;
@@ -812,6 +904,100 @@ test("navigation, shutdown and an intervening local user revoke task report deli
   assert.equal(route("third", "Stale status."), false);
   await delay(150); assert.equal(h.reports.length, 1);
   await h.bridge.stop(); assert.equal(route("fourth", "Shutdown status."), false);
+});
+
+async function ownedReport(t: test.TestContext, pending = false) {
+  const h = await fixture(t, { consumeReports: !pending });
+  h.server.feed(message(1, "Delegate an authorized task")); await until(() => h.submissions.length === 1);
+  const parent = captureRoute(h)!; assert.ok(parent); await h.finish("Accepted.");
+  assert.equal(parent("parent:settled", "Verify the saved parent report."), true);
+  await until(() => h.reports.length === 1);
+  return h;
+}
+
+test("report continuation capture requires actual start, current ownership and an unsettled successful window", async t => {
+  await t.test("pending custom notice and pre-start hook confer no route", async t => {
+    const h = await ownedReport(t, true);
+    assert.equal(h.bridge.beforeStart(h.reports[0].content), true);
+    assert.equal(captureRoute(h), undefined);
+    h.startReport(); assert.ok(captureRoute(h)); await h.finish("Parent verified.");
+    assert.equal(captureRoute(h), undefined, "settled report is no ambient target");
+  });
+  await t.test("unowned report object", async t => {
+    const h = await ownedReport(t);
+    (h.bridge as unknown as { foregroundOwner?: unknown }).foregroundOwner = undefined;
+    assert.equal(captureRoute(h), undefined);
+  });
+  for (const outcome of ["aborted", "error"] as const) await t.test(`closed ${outcome} boundary`, async t => {
+    const h = await ownedReport(t); h.bridge.boundary(outcome);
+    assert.equal(captureRoute(h), undefined);
+  });
+  await t.test("settlement in progress cannot grant a route", async t => {
+    const h = await ownedReport(t);
+    const child = captureRoute(h, "fixture", "bg-abcdef123456")!; assert.ok(child);
+    let waiting = false, release: (() => void) | undefined;
+    h.bridge.api.sendText = async () => { waiting = true; await new Promise<void>(done => { release = done; }); };
+    const done = h.finish("Parent final."); await until(() => waiting);
+    assert.equal(captureRoute(h), undefined);
+    release!(); await done;
+    assert.equal(child("child:settled", "Child verified."), true, "normal parent settlement preserves the capture");
+  });
+});
+
+for (const revoke of ["navigation", "session", "allowlist", "foreign_input", "unowned_user", "generic_notice", "spoofed_notice", "duplicate_notice", "abort", "shutdown"] as const) {
+  test(`report continuation ${revoke} blocks new capture and late child notices`, async t => {
+    const h = await ownedReport(t);
+    const child = captureRoute(h, "fixture", "bg-abcdef123456")!; assert.ok(child);
+    assert.equal(captureRoute(h, "foreign-session"), undefined);
+    if (revoke === "navigation") h.bridge.invalidate();
+    else if (revoke === "session") h.setSessionId("foreign-session");
+    else if (revoke === "allowlist") h.bridge.config.allowed.delete("123");
+    else if (revoke === "foreign_input") h.bridge.input({ type: "input", source: "rpc", text: "Foreign request" });
+    else if (revoke === "unowned_user") h.bridge.userStart({ role: "user", content: "Local TUI request" });
+    else if (revoke === "abort") h.bridge.boundary("aborted");
+    else if (revoke === "shutdown") await h.bridge.stop();
+    else h.bridge.userStart({ role: "custom", customType: "background-notice", content: "Untrusted notice",
+      details: revoke === "generic_notice" ? { backgroundNoticeId: h.reports[0].details.telegramNoticeId }
+        : { telegramNoticeId: revoke === "duplicate_notice" ? h.reports[0].details.telegramNoticeId : "forged" } });
+    assert.equal(captureRoute(h, revoke === "session" ? "foreign-session" : "fixture"), undefined);
+    assert.equal(child("child:settled", "Must remain private."), false);
+    await h.finish("Foreign final."); await delay(150);
+    assert.equal(h.reports.length, 1); assert.equal(h.server.texts().some(s => s.text === "Must remain private."), false);
+  });
+}
+
+test("a report-owned child notice already queued is suppressed if its parent is explicitly cancelled", async t => {
+  const h = await ownedReport(t);
+  const child = captureRoute(h, "fixture", "bg-abcdef123456")!;
+  assert.equal(child("child:settled", "Queued child."), true);
+  h.bridge.input({ type: "input", source: "rpc", text: "Local intervention" });
+  await h.finish("Never forward this local final."); await delay(200);
+  assert.equal(h.reports.length, 1); assert.equal(h.server.texts().length, 1);
+  await h.bridge.ledger.flush(2000);
+  const records = (await readDeliveryLedger(h.bridge.ledger.path, { task: "bg-abcdef123456", limit: 200 })).records;
+  assert.equal(records.filter(r => r.phase === "notice_queued").length, 1);
+  assert.equal(records.filter(r => r.phase === "notice_suppressed").length, 1);
+  assert.equal(records.filter(r => r.phase === "report_started").length, 0);
+});
+
+test("report-owned child capture retains the existing seven-day route expiry after parent settlement", async t => {
+  const h = await ownedReport(t);
+  const child = captureRoute(h, "fixture", "bg-abcdef123456")!; assert.ok(child);
+  const capturedAt = Date.now(); await h.finish("Parent verified.");
+  t.mock.method(Date, "now", () => capturedAt + 7 * 86400_000 + 1);
+  assert.equal(child("expired-child:settled", "Expired child."), false);
+  t.mock.restoreAll();
+  await delay(150); assert.equal(h.reports.length, 1);
+});
+
+test("generic TUI background notices and stale IDs never become Telegram task owners", async t => {
+  const h = await fixture(t);
+  for (const details of [{ backgroundNoticeId: "generic" }, { telegramNoticeId: "forged" }, undefined]) {
+    h.bridge.userStart({ role: "custom", customType: "background-notice", content: "TUI-only report", details });
+    assert.equal(captureRoute(h), undefined);
+    await h.finish("Unowned final.");
+  }
+  assert.equal(h.server.texts().length, 0);
 });
 
 test("concurrent settlements and ambiguous report sends never replay a successfully attempted final", async t => {
@@ -933,4 +1119,92 @@ test("an ambiguous attachment attempt does not consume or reassign report owners
   const uploaded = h.server.calls.find(c => c.method === "sendDocument")!;
   assert.equal(uploaded.args.get("chat_id"), "123"); assert.equal(uploaded.args.get("caption"), null);
   await h.finish("");
+});
+
+async function ledgerRecords(h: Awaited<ReturnType<typeof fixture>>) {
+  await until(() => h.bridge.ledger.pendingWrites === 0);
+  return (await readDeliveryLedger(h.bridge.ledger.path, { limit: 200 })).records;
+}
+
+test("durable final failure and its separately acknowledged warning share reply but never delivery identity or console traces", { concurrency: false }, async t => {
+  const terminal = captureConsole(t);
+  const server = new Server(), original = server.fetch;
+  let sends = 0;
+  server.fetch = async (url, init) => {
+    const response = await original(url, init);
+    if (String(url).endsWith("/sendMessage") && ++sends === 1) throw new Error(`PRIVATE synthetic provider body https://api.telegram.org/bot${config.token}/sendMessage ${config.groqKey} ${config.elevenKey}`, { cause: { code: "UND_ERR_SOCKET" } });
+    return response;
+  };
+  const h = await fixture(t, { server }); h.server.feed(message()); await until(() => h.submissions.length === 1);
+  await h.finish("PRIVATE generated final");
+  const records = await ledgerRecords(h);
+  const failed = records.find(r => r.phase === "send_failed" && r.operation === "reply")!;
+  const warning = records.find(r => r.phase === "sent" && r.operation === "warning")!;
+  assert.equal(failed.outcome, "unknown"); assert.equal(failed.cause, "UND_ERR_SOCKET");
+  assert.equal(warning.outcome, "acknowledged"); assert.equal(warning.reply, failed.reply); assert.equal(warning.parent, failed.delivery);
+  assert.notEqual(warning.delivery, failed.delivery);
+  assert.ok(records.some(r => r.phase === "generated" && r.reply === failed.reply && r.outcome === "not_applicable"));
+  assert.ok(!records.some(r => r.phase === "sent" && r.operation === "reply"));
+  assert.equal(sends, 2, "one uncertain original and one warning, never an original replay");
+  assert.deepEqual(records.filter(r => r.operation === "reply").map(r => r.phase), ["generated", "settled", "send_attempt", "api_attempt", "api_failed", "send_failed"]);
+  assert.deepEqual(records.filter(r => r.operation === "warning").map(r => r.phase), ["send_attempt", "api_attempt", "api_ack", "sent"]);
+  assert.equal(h.notices.length, 1, "real delivery failure still reaches the UI");
+  assert.match(h.notices[0], /TG_TRANSPORT_FAILED.*Delivery outcome unknown/);
+  assert.match(h.server.texts()[1].text, /TG_TRANSPORT_FAILED.*Delivery outcome unknown/);
+  for (const privateValue of ["PRIVATE", "synthetic provider body", "https://api.telegram.org", config.token, config.groqKey!, config.elevenKey!, h.dir]) {
+    assert.ok(!JSON.stringify({ records, notices: h.notices, warning: h.server.texts()[1].text }).includes(privateValue));
+  }
+  await h.bridge.stop();
+  assertConsoleSilent(terminal);
+});
+
+test("attachment and voice acknowledgment correlate with their reply; voice-only and foreign input suppression never imply API receipt", async t => {
+  const h = await fixture(t); h.server.feed(message()); await until(() => h.submissions.length === 1);
+  await writeFile(resolve(h.dir, "private.txt"), "PRIVATE artifact");
+  await h.bridge.send({ path: "private.txt" });
+  await h.bridge.send({ speech: "[warm] PRIVATE requested voice" }); await h.finish("Do not forward after voice");
+  const records = await ledgerRecords(h);
+  const attachment = records.find(r => r.phase === "sent" && r.operation === "attachment")!;
+  const voice = records.find(r => r.phase === "sent" && r.operation === "voice")!;
+  assert.equal(attachment.reply, voice.reply);
+  assert.ok(records.some(r => r.phase === "suppressed" && r.reason === "voice_only" && r.reply === voice.reply));
+  assert.ok(!records.some(r => r.phase === "api_ack" && r.operation === "reply"));
+  h.server.feed(message(2)); await until(() => h.submissions.length === 2);
+  h.bridge.input({ type: "input", source: "interactive", text: "PRIVATE unrelated input" }); await h.finish("Never send");
+  const cancelled = (await ledgerRecords(h)).filter(r => r.reason === "foreign_input");
+  assert.ok(cancelled.some(r => r.phase === "cancelled")); assert.ok(cancelled.some(r => r.phase === "suppressed"));
+  assert.ok(cancelled.every(r => r.outcome === "suppressed"));
+  assert.ok(!JSON.stringify(await ledgerRecords(h)).includes("PRIVATE"));
+});
+
+test("unavailable ledger and throwing console methods cannot suppress final transport or leak traces", { concurrency: false }, async t => {
+  const terminal = captureConsole(t, true);
+  const h = await fixture(t); h.server.feed(message()); await until(() => h.submissions.length === 1);
+  assert.equal((await readDeliveryLedger(h.bridge.ledger.path)).state, "missing");
+  await writeFile(h.bridge.ledger.path, "PRIVATE blocker", { mode: 0o600 });
+  await h.finish("Final still delivered");
+  assert.equal(h.server.texts().length, 1); assert.equal(h.server.texts()[0].text, "Final still delivered");
+  await until(() => h.bridge.ledger.pendingWrites === 0); assert.ok(h.bridge.ledger.dropped > 0);
+  assert.equal((await readDeliveryLedger(h.bridge.ledger.path)).state, "unavailable");
+  assert.equal(await readFile(h.bridge.ledger.path, "utf8"), "PRIVATE blocker");
+  await h.bridge.stop();
+  assertConsoleSilent(terminal);
+});
+
+test("throwing or rejecting ledger observers cannot alter successful delivery or cancellation", { concurrency: false }, async t => {
+  const terminal = captureConsole(t);
+  const h = await fixture(t);
+  t.mock.method(h.bridge.ledger, "append", () => { throw new Error("PRIVATE observer"); });
+  h.server.feed(message()); await until(() => h.submissions.length === 1);
+  await h.finish("Final despite throwing ledger");
+  t.mock.method(h.bridge.ledger, "append", () => Promise.reject(new Error("PRIVATE persistence")));
+  h.server.feed(message(2)); await until(() => h.submissions.length === 2);
+  await h.finish("Final despite rejecting ledger");
+  h.server.feed(message(3)); await until(() => h.submissions.length === 3);
+  h.bridge.input({ type: "input", source: "interactive", text: "PRIVATE interruption" });
+  await h.finish("Must not send");
+  assert.deepEqual(h.server.texts().map(item => item.text), ["Final despite throwing ledger", "Final despite rejecting ledger"]);
+  assert.deepEqual(h.notices, []);
+  await h.bridge.stop();
+  assertConsoleSilent(terminal);
 });

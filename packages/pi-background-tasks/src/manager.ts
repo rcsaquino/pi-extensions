@@ -15,8 +15,6 @@ import type { TerminalCategory } from './types.ts';
 import { buildSessionContext } from '@earendil-works/pi-coding-agent';
 import { contextMessages } from './policy.ts';
 import { Stage } from './staging.ts';
-import { ResourceLocks, resourcesConflict } from './resources.ts';
-import type { Resource, ResourceLease } from './resources.ts';
 import { Admission } from './admission.ts';
 
 function abortWorker(job: Job, category: NonNullable<Job['abortCategory']>): void {
@@ -58,11 +56,9 @@ export class BackgroundManager {
   private initializations?: Promise<void>;
   readonly pi: ExtensionAPI;
   readonly effects: EffectRegistry;
-  locks?: ResourceLocks;
   admission?: Admission;
   private scheduling = false;
   private brokerSource?: string;
-  private toolResources = new Map<string, ResourceLease>();
   private subprocesses = new Map<string, () => void>();
   private workerCalls = new Map<string, string>();
   private owner(event: ToolCallEvent): Job | undefined {
@@ -83,7 +79,6 @@ export class BackgroundManager {
     const root = typeof configured === 'string' && configured.trim() ? resolve(ctx.cwd, configured) : join(ctx.cwd, 'temp_files', 'pi-background-tasks');
     this.store = new Store(root, ctx.sessionManager.getSessionId());
     await this.store.init();
-    this.locks = new ResourceLocks(join(root, 'locks'));
     this.admission = new Admission(this.maxWorkers());
     this.brokerSource = this.pi.getAllTools?.().find(t => t.name === 'background_stage_file')?.sourceInfo?.path;
     for (const record of await this.store.restore()) {
@@ -113,7 +108,7 @@ export class BackgroundManager {
     const profile = captureProfile(ctx);
     if ([...this.jobs.values()].filter(j => j.record.status === 'queued').length >= this.maxQueue()) throw new Error('Background queue is full. No task was accepted or started.');
     const cwd = canonicalPath(ctx.cwd);
-    // Reserve synchronously before the first async lease operation, including simultaneous sibling dispatch tools.
+    // Reserve synchronously before persistence, including simultaneous sibling dispatch tools.
     const id = `bg-${randomBytes(6).toString('hex')}`;
     const record: RecordData = {
       version: 1, id, title: p.title, sessionId: ctx.sessionManager.getSessionId(), cwd,
@@ -137,7 +132,7 @@ export class BackgroundManager {
       telemetry(this.pi, job, 'worker-queued', { provider: record.provider, model: record.model, thinking: record.thinking });
     } catch (e) {
       telemetry(this.pi, job, 'worker-end', { status: 'error' });
-      this.jobs.delete(id); await job.release?.(); throw e;
+      this.jobs.delete(id); throw e;
     }
     this.render(); this.emitActivity(); this.scheduleQueue();
     return {
@@ -160,28 +155,15 @@ export class BackgroundManager {
     telemetry(this.pi, job, 'worker-start', { provider: job.record.provider, model: job.record.model, thinking: job.record.thinking, queueWaitMs: job.record.queueWaitMs });
   }
   scheduleQueue(): void { if (!this.closed) setImmediate(() => { void this.pumpQueue().catch(() => { this.ctx?.ui.notify('Background admission state needs review. No uncertain work was replayed.', 'error'); }); }); }
-  private queueRequests(job: Job): Resource[] {
-    const p = job.pending!.dispatch;
-    if (p.execution !== 'staged') return [{ path: job.record.cwd, mode: p.access }];
-    return [{ path: join(this.store!.recordsDir, `${job.record.id}.stage`), mode: 'write' },
-      ...[...p.stage!.inputs, ...p.stage!.outputs].map(path => ({ path: join(job.record.cwd, path), mode: 'read' as const })),
-      ...(p.stage!.immutable_refs ?? []).map(path => ({ path, mode: 'read' as const }))];
-  }
   private async pumpQueue(): Promise<void> {
     if (this.scheduling || this.closed) return; this.scheduling = true;
     try {
-      // Oldest supported eligible work first. Conflicting jobs remain observable; disjoint
-      // staged jobs may pass them. No task is replayed after process/reload recovery.
+      // Oldest work first, bounded only by worker capacity, not file/resource conflicts.
+      // No task is replayed after process/reload recovery.
       for (const job of [...this.jobs.values()].sort((a, b) => (a.record.queuedAt ?? a.record.startedAt) - (b.record.queuedAt ?? b.record.startedAt))) {
         if (this.closed || job.record.status !== 'queued' || !job.pending) continue;
-        const running = [...this.jobs.values()].filter(j => j.record.status === 'starting' || j.record.status === 'running' || j.record.status === 'cancelling' || j.starting || j.release);
+        const running = [...this.jobs.values()].filter(j => j.record.status === 'starting' || j.record.status === 'running' || j.record.status === 'cancelling' || j.starting);
         if (running.length >= this.maxWorkers()) { this.waiting(job, 'capacity'); continue; }
-        const p = job.pending.dispatch;
-        if (p.access === 'write' && this.store!.hasWriterEvidence(job.record.cwd) && !running.some(j => j.record.access === 'write' && j.record.execution !== 'staged')) { this.waiting(job, 'resources'); continue; }
-        const aged = [...this.jobs.values()].filter(old => old !== job && old.pending && old.record.status === 'queued' &&
-          (old.record.queuedAt ?? old.record.startedAt) < (job.record.queuedAt ?? job.record.startedAt) && Date.now() - (old.record.queuedAt ?? old.record.startedAt) >= 30000);
-        if (aged.some(old => resourcesConflict(this.queueRequests(old), this.queueRequests(job)))) { this.waiting(job, 'resources'); continue; }
-        if (p.execution !== 'staged' && p.access === 'write' && running.some(j => j.record.access === 'write' && j.record.execution !== 'staged')) { this.waiting(job, 'resources'); continue; }
         job.starting = true;
         const admission = this.startQueued(job).catch(async () => {
           // Never expose credential/provider errors or the task brief in admission diagnostics.
@@ -189,7 +171,6 @@ export class BackgroundManager {
           job.record.error = safeReason('admission_error');
           captureDiagnostics(job, job.controller?.signal.aborted ? 'cancelled' : 'admission_error');
           job.record.finishedAt = Date.now(); job.record.notification = 'pending'; job.record.reportSource = 'fallback';
-          try { await job.release?.(); job.release = undefined; } catch { /* uncertain ownership stays guarded */ }
           await this.store!.write(job.record, buildSettlementReport(job.record).text).catch(() => { job.storageFailed = true; job.memoryReport = buildSettlementReport(job.record, '', true).text; });
           job.pending = undefined; job.ctx = undefined; telemetry(this.pi, job, 'worker-end', { status: job.record.status }); job.finish?.();
           this.scheduleNotifications();
@@ -208,20 +189,8 @@ export class BackgroundManager {
     job.controller!.signal.throwIfAborted(); this.assertOpen(); revalidateProfile(profile, job.ctx!);
     if (p.execution === 'staged') {
       const stage = new Stage(job.record.id, job.record.cwd, join(this.store!.recordsDir, `${job.record.id}.stage`), p.stage!);
-      const resources = await this.locks!.acquire([{ path: stage.root, mode: 'write' }, ...stage.snapshotResources()], false, false, true);
-      if (!resources) { this.waiting(job, 'resources'); job.starting = false; return; }
-      job.release = resources; job.resourceLease = resources;
       try { await this.admitted(job); await stage.snapshot(job.controller!.signal); await stage.saveProfile({ provider: profile.model.provider, model: profile.model.id, thinking: profile.thinking }); job.controller!.signal.throwIfAborted(); job.stage = stage; }
       catch (e) { await stage.close(); throw e; }
-      finally { await resources.narrow([{ path: stage.root, mode: 'write' }]); }
-    } else if (p.access === 'write') {
-      const resourcesRelease = await this.locks!.acquire([{ path: job.record.cwd, mode: 'write' }], true, false, false);
-      if (!resourcesRelease) { this.waiting(job, 'resources'); job.starting = false; return; }
-      let legacyRelease: (() => Promise<void>) | undefined;
-      try { legacyRelease = await this.store!.acquireWriter(job.record.cwd, true); }
-      catch (e) { await resourcesRelease(); if (e instanceof Error && /live background writer/.test(e.message)) { this.waiting(job, 'resources'); job.starting = false; return; } throw e; }
-      job.resourceLease = resourcesRelease;
-      job.release = async () => { await legacyRelease!(); await resourcesRelease(); };
     }
     job.controller!.signal.throwIfAborted(); this.assertOpen();
     if (job.record.status === 'queued') await this.admitted(job);
@@ -253,7 +222,7 @@ export class BackgroundManager {
   async publish(id: string, expectedHash: string, signal?: AbortSignal): Promise<RecordData> {
     this.assertOpen(); const job = this.get(id);
     if (job.record.status !== 'completed' || job.settling || !job.stage) throw new Error('Only settled completed staged output can be reviewed and published. Restored jobs require explicit recovery review.');
-    try { await job.stage.publish(this.locks!, expectedHash, signal); job.record.publication = 'published'; await job.stage.close(); }
+    try { await job.stage.publish(expectedHash, signal); job.record.publication = 'published'; await job.stage.close(); }
     catch (e) { if (e instanceof Error && /recovery requires review/.test(e.message)) job.record.publication = 'review-required'; await this.persist(job); throw e; }
     await this.persist(job); return structuredClone(job.record);
   }
@@ -288,14 +257,6 @@ export class BackgroundManager {
       job.record.finishedAt = Date.now(); job.record.notification = 'pending';
       captureDiagnostics(job, category);
       if (job.progress) job.progress.lastPhase = 'finalizing';
-      // Do not release ownership until all cooperating tool calls have settled.
-      try { await job.release?.(); job.release = undefined; } catch {
-        if (job.record.status === 'completed') {
-          job.record.status = 'failed'; category = 'lease_cleanup_error'; captureDiagnostics(job, category);
-        }
-        job.record.terminalDiagnostics!.leaseCleanupFailed = true;
-        job.record.error = safeReason('lease_cleanup_error');
-      }
       const report = buildSettlementReport(job.record, output);
       job.record.reportSource = report.source;
       await this.writes.catch(() => {});
@@ -346,17 +307,13 @@ export class BackgroundManager {
     job.record.etaSeconds = elapsed + remaining; job.record.etaMaxSeconds = elapsed + max;
     job.record.estimateReason = reason.trim(); job.record.overrunNotified = false;
     await this.persist(job); this.render();
-    this.enqueueNotice(job, `Background task ${id} revised estimate: ${remaining}s${max !== remaining ? ` to ${max}s` : ''} remaining. Basis: ${reason.trim()}. Report this as an estimate, not a guaranteed finish time.`);
+    this.enqueueNotice(job, `Background task ${id} revised estimate: ${remaining}s${max !== remaining ? ` to ${max}s` : ''} remaining. Basis: ${reason.trim()}. Report this as an estimate, not a guaranteed finish time.`, undefined, { kind: 'eta' });
     return structuredClone(job.record);
   }
   guard(event: ToolCallEvent, ctx: ExtensionContext): { block: true; reason: string } | undefined {
     const own = this.owner(event);
     if (own && (!isActive(own.record.status) || own.controller?.signal.aborted || this.closed)) return { block: true, reason: 'Background task is stopping or no longer active.' };
     if (own) this.workerCalls.set(event.toolCallId, own.record.id);
-    // An uncertain/stuck tool can outlive status interruption. Retain the guard as
-    // long as this process still holds its lease, including after bounded shutdown.
-    const writer = [...this.jobs.values()].find(j => j.record.access === 'write' && j.record.execution !== 'staged' && (j.record.status === 'running' || j.record.status === 'cancelling' || !!j.release));
-    const legacyEvidence = !writer && this.store?.hasWriterEvidence(canonicalPath(ctx.cwd)) ? { id: 'legacy-writer-evidence', cwd: canonicalPath(ctx.cwd) } as RecordData : undefined;
     const info = this.pi.getAllTools().find(t => t.name === event.toolName);
     const args = event.input as Record<string, unknown>;
     if (['background_start_check', 'background_stage_file'].includes(event.toolName)) {
@@ -368,18 +325,12 @@ export class BackgroundManager {
       const effect = this.effects.classify(event.toolName, args, ctx.cwd, info);
       if (!['background_web_search', 'background_web_result'].includes(event.toolName) || effect.kind !== 'network-read' || effect.privateCache) return { block: true, reason: 'Staged workers use only their validated file broker and reviewed memory-only web tools. Unknown/live-parent effects are blocked.' };
     }
-    if ((!own || !own.stage) && !['background_dispatch', 'background_tasks', 'background_update_eta', 'background_publish'].includes(event.toolName)) {
-      const effect = this.effects.classify(event.toolName, args, ctx.cwd, info);
-      const parents = [...this.toolResources].filter(([id]) => event.toolCallId.startsWith(`${id}/`)).map(([, lease]) => lease);
-      if (own?.resourceLease) parents.push(own.resourceLease);
-      if (['unknown', 'external-mutation'].includes(effect.kind) && ([...this.jobs.values()].some(j => j.stage && (j.record.status === 'running' || !!j.release)) || this.locks?.conflicts([{ path: '/', mode: 'write' }], true, parents))) return { block: true, reason: 'Unclassified effects could escape into private staged resources. Use reviewed/disjoint tools or wait for staged work to settle.' };
-      const resources = [...(effect.reads ?? []).map(path => ({ path, mode: 'read' as const })), ...(effect.writes ?? []).map(path => ({ path, mode: 'write' as const }))];
-      if (resources.length && this.locks?.conflicts(resources, !!own?.release || effect.kind === 'filesystem-read', parents)) return { block: true, reason: 'Resource is being snapshotted or published. This call was not queued or executed; unrelated tools remain available.' };
-    }
-    const reason = guardTool(event.toolName, args, ctx.cwd, writer?.record ?? legacyEvidence, own?.record, info, this.effects);
+    // Foreground and direct write operations still pass every other host permission hook.
+    // Effect classification restricts read/staged workers, never concurrent resource ownership.
+    const reason = guardTool(event.toolName, args, ctx.cwd, own?.record, info, this.effects);
     return reason ? { block: true, reason } : undefined;
   }
-  async guardAndAcquire(event: ToolCallEvent, ctx: ExtensionContext): Promise<{ block: true; reason: string } | undefined> {
+  async guardAndAdmit(event: ToolCallEvent, ctx: ExtensionContext): Promise<{ block: true; reason: string } | undefined> {
     const denied = this.guard(event, ctx); if (denied) return denied;
     const own = this.owner(event);
     const source = this.pi.getAllTools().find(t => t.name === event.toolName)?.sourceInfo?.path;
@@ -389,34 +340,10 @@ export class BackgroundManager {
       const release = await this.admission!.acquire('subprocess', own.controller?.signal);
       this.subprocesses.set(event.toolCallId, release);
     }
-    if (own?.stage || ['background_dispatch', 'background_tasks', 'background_update_eta', 'background_start_check', 'background_publish'].includes(event.toolName)) return;
-    const info = this.pi.getAllTools().find(t => t.name === event.toolName);
-    const effect = this.effects.classify(event.toolName, event.input, ctx.cwd, info);
-    const uncertain = ['unknown', 'external-mutation'].includes(effect.kind);
-    const resources = uncertain ? [{ path: '/', mode: 'write' as const }] : [...(effect.reads ?? []).map(path => ({ path, mode: 'read' as const })), ...(effect.writes ?? []).map(path => ({ path, mode: 'write' as const }))];
-    if (!resources.length || !this.locks) return;
-    const parents = [...this.toolResources].filter(([id]) => event.toolCallId.startsWith(`${id}/`)).map(([, lease]) => lease);
-    if (own?.resourceLease) parents.push(own.resourceLease);
-    if (parents.some(lease => lease.covers(resources))) return;
-    // Only brief bounded lock-table contention is retried, not live resource ownership.
-    // Compatibility readers can observe a legacy direct writer's partial state;
-    // publication readers hold a real shared lease until host tool completion.
-    let release: ResourceLease | undefined;
-    for (let i = 0; i < 3 && !release; i++) {
-      release = await this.locks.acquire(resources, uncertain, effect.kind === 'filesystem-read', uncertain && !own, parents);
-      if (!release && this.locks.conflicts(resources, effect.kind === 'filesystem-read')) break;
-      if (!release) await new Promise(r => setTimeout(r, 5));
-    }
-    if (!release) return { block: true, reason: 'Resource admission is busy. No tool effects started; unrelated safe tools remain available.' };
-    if (this.toolResources.has(event.toolCallId)) { await release(); return { block: true, reason: 'Duplicate live tool resource identity.' }; }
-    this.toolResources.set(event.toolCallId, release);
   }
   async toolEnded(callId: string): Promise<void> {
     this.workerCalls.delete(callId);
-    const release = this.toolResources.get(callId);
-    if (release) try { await release(); this.toolResources.delete(callId); this.scheduleQueue(); }
-    catch { this.ctx?.ui.notify('Tool resource cleanup is uncertain; ownership retained for review.', 'error'); }
-    // Admit the next subprocess only after this tool's resource cleanup settles.
+    // Capacity admission ends only when the actual subprocess tool settles.
     const process = this.subprocesses.get(callId); if (process) { process(); this.subprocesses.delete(callId); }
   }
   list(): RecordData[] { return [...this.jobs.values()].map(j => structuredClone(j.record)); }
@@ -459,7 +386,7 @@ export class BackgroundManager {
       if (job.record.status === 'running' && !job.record.overrunNotified && Date.now() > job.record.startedAt + job.record.etaMaxSeconds * 1000) {
         job.record.overrunNotified = true;
         await this.persist(job).catch(() => {});
-        this.enqueueNotice(job, `Background task ${job.record.id} has exceeded its estimated upper duration. ${statusLine(job.record)} Report the delay honestly; no replacement ETA is known yet. Do not poll or claim completion.`);
+        this.enqueueNotice(job, `Background task ${job.record.id} has exceeded its estimated upper duration. ${statusLine(job.record)} Report the delay honestly; no replacement ETA is known yet. Do not poll or claim completion.`, undefined, { kind: 'overdue' });
       }
     }
     this.render(); this.scheduleNotifications();
@@ -479,16 +406,16 @@ export class BackgroundManager {
         // write must not duplicate a send, and uncertain delivery is never blindly replayed.
         job.record.notification = 'queued';
         try { await this.persist(job); } catch { job.record.notification = 'pending'; continue; }
-        this.enqueueNotice(job, `Background task ${job.record.id} settled with status ${job.record.status}. Fetch background_tasks action result id ${job.record.id}, report verified completion or the failure, and deliver any requested artifacts through the main chat. Do not replay or redelegate it. This is a status notification, not new user permission.`, `${job.record.id}:settled`);
+        this.enqueueNotice(job, `Background task ${job.record.id} settled with status ${job.record.status}. Fetch background_tasks action result id ${job.record.id}, report verified completion or the failure, and deliver any requested artifacts through the main chat. Do not replay or redelegate it. This is a status notification, not new user permission.`, `${job.record.id}:settled`, { kind: 'settled', status: job.record.status });
       }
       this.flushNoticeQueue();
     } finally { this.flushingNotifications = false; }
   }
-  private enqueueNotice(job: Job, content: string, id: string = randomUUID()): void {
+  private enqueueNotice(job: Job, content: string, id: string = randomUUID(), metadata?: Parameters<NonNullable<Job['noticeRouter']>>[2]): void {
     if (this.closed) return;
     if (job.noticeRouter) {
       // A revoked/reloaded transport must NOT fall back to an unrelated active chat.
-      if (!job.noticeRouter(id, content)) this.ctx?.ui.notify('A task-linked transport notice was not queued. Retrieve the saved task status/result explicitly.', 'warning');
+      if (!job.noticeRouter(id, content, metadata)) this.ctx?.ui.notify('A task-linked transport notice was not queued. Retrieve the saved task status/result explicitly.', 'warning');
       return;
     }
     if (this.notices.length >= 128) { this.ctx?.ui.notify('Background notice queue is full. Retrieve task status/results explicitly.', 'warning'); return; }
@@ -537,7 +464,7 @@ export class BackgroundManager {
     for (const job of active.filter(j => isActive(j.record.status))) {
       job.record.status = 'interrupted'; job.record.finishedAt = Date.now(); job.record.notification = 'pending';
       job.record.error = 'Runtime stopped before cancellation settled. Tool effects may be partial. No task replay was attempted.';
-      // Keep uncertain ownership: a dead parent PID does not prove child writers stopped.
+      // Effects may outlive cooperative cancellation; no replay or rollback is implied.
       captureDiagnostics(job, 'shutdown');
       telemetry(this.pi, job, 'worker-end', { status: 'interrupted' });
       if (job.pending && !job.starting) { job.pending = undefined; job.ctx = undefined; job.contextSnapshot = undefined; job.finish?.(); }
@@ -547,6 +474,6 @@ export class BackgroundManager {
       catch { job.storageFailed = true; job.memoryReport = buildSettlementReport(job.record, '', true).text; }
     }
     await this.writes.catch(() => {});
-    for (const job of this.jobs.values()) if (job.stage && !job.release && !isActive(job.record.status)) await job.stage.close().catch(() => {});
+    for (const job of this.jobs.values()) if (job.stage && !isActive(job.record.status)) await job.stage.close().catch(() => {});
   }
 }

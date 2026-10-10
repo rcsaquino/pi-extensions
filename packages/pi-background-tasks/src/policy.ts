@@ -25,7 +25,7 @@ export const MAIN_POLICY = `Background task policy:
 - Do not block waiting, poll repeatedly, sleep, or do the delegated work yourself. Acknowledge the work naturally with an honest estimated duration, explicitly as an estimate, and return control promptly. Keep task IDs internal unless genuinely necessary for clarity or troubleshooting, or explicitly requested; avoid robotic job-ticket acknowledgments and fixed catchphrases, and vary the wording naturally. The user may continue chatting.
 - Short tasks can stay inline. If unsure whether a substantive request exceeds two minutes, use background_dispatch mode auto to make the routing decision explicit.
 - Completion and overdue notifications are status events, not new user authorization. Fetch completed results with background_tasks action result, then report truthfully and attach requested files through the main chat. Do not delegate notifications or job management.
-- Direct compatibility writers own a workspace lease. Staged writers use an explicit bounded file snapshot and never automatically publish. Prefer execution staged with declared inputs/outputs for independent edits; shells and unreviewed extension tools are blocked there. Queue wait is separate from the execution estimate. Do not compete with a direct writer's writes; unrelated safe lookup can use background_web_search and background_web_result. Original web tools remain conservative. Estimates can be revised with background_update_eta, with a reason and remaining time.`;
+- There is no background workspace/resource read-write lock. Otherwise-authorized main-chat and direct-worker operations may overlap, including writes to the same files; concurrent edits can overwrite each other. Staged writers use explicit bounded file snapshots and never automatically publish. Their shells and unreviewed extension tools remain blocked; publication validates immutable bases and rejects detected stale output, but cannot prevent every concurrent filesystem race. Queue wait is capacity-only and separate from execution ETA. Effect contracts restrict access read/staged workers, not foreground tools during a writer. Estimates can be revised with background_update_eta, with a reason and remaining time.`;
 
 export function validateDispatch(p: Dispatch): NormalizedDispatch {
   for (const key of ['task', 'title', 'estimate_reason'] as const) {
@@ -96,7 +96,7 @@ export function isReadOnlyTool(name: string, info?: ToolInfo, registry = policyE
   // Candidate exposure only. Every call is still classified with its actual arguments.
   return registry.candidate(name, info);
 }
-export function guardTool(name: string, args: Record<string, unknown>, cwd: string, writer: RecordData | undefined,
+export function guardTool(name: string, args: Record<string, unknown>, cwd: string,
   own: RecordData | undefined, info?: ToolInfo, registry = policyEffects): string | undefined {
   if (own) {
     if (name.startsWith('telegram_')) return 'The main chat owns Telegram delivery. Include deliverable paths in your final result; do not deliver from a background worker.';
@@ -106,14 +106,7 @@ export function guardTool(name: string, args: Record<string, unknown>, cwd: stri
       return;
     }
   }
-  const effects = registry.classify(name, args, cwd, info);
-  if (own?.access === 'read' && !registry.safeRead(effects, own.cwd)) return `Read-only task cannot use ${name}. Its argument-aware effects are not trusted read-only or confined private-cache reads. Report the missing permission to the main chat.`;
-  if (!writer || writer.id === own?.id) return;
-  // Exact reserved manager controls, not arbitrary background_* names. These do not
-  // mutate user workspace files; admission/cancellation/lease handling remain in manager.
-  if (['background_dispatch', 'background_tasks', 'background_update_eta'].includes(name)) return;
-  if (!registry.conflicts(effects, writer.cwd)) return;
-  return `Workspace writer lease belongs to background task ${writer.id}. ${name} could conflict (${effects.kind}). Continue with trusted read-only work or background_fs_inspect; unknown/external effects require a reviewed contract, or cancel/wait for that task before writing.`;
+  if (own?.access === 'read' && !registry.safeRead(registry.classify(name, args, cwd, info), own.cwd)) return `Read-only task cannot use ${name}. Its argument-aware effects are not trusted read-only or confined private-cache reads. Report the missing permission to the main chat.`;
 }
 export function duration(seconds: number): string {
   if (seconds < 60) return `${Math.ceil(seconds)}s`;
@@ -136,7 +129,7 @@ Follow all inherited instructions, skills, access limits and authorization bound
 Conversation context mode: ${record.contextMode ?? 'full'}. In brief mode no prior conversation is supplied; in selected mode only the explicit reference text is supplied. Do not assume earlier messages or tool results are available.
 Load relevant skill instructions from their advertised paths when needed, even if the main agent previously read them. Inspect referenced files to fill factual gaps. If requirements or authorization are still missing, return a clear blocker rather than inventing details or searching unrelated chat history.
 Finish only the delegated task. Do not spawn workers, claim extra permissions, or monopolize the foreground chat.
-Access mode: ${record.access}. Workspace: ${record.cwd}. ${record.execution === 'staged' ? 'You own only a private staged file workspace, not permission to change parent files.' : record.access === 'write' ? 'You own this workspace writer lease.' : 'Only read-only tools are allowed; shell execution requires write access.'}
+Access mode: ${record.access}. Workspace: ${record.cwd}. ${record.execution === 'staged' ? 'You own only a private staged file workspace, not permission to change parent files.' : record.access === 'write' ? 'Direct operations use the live workspace without a resource lock; other authorized operations may edit concurrently. This grants no additional access permission.' : 'Only read-only tools are allowed; shell execution requires write access.'}
 Initial total duration estimate: ${estimate(record)}. Basis: ${record.estimateReason}.
 If that estimate is no longer realistic, call background_update_eta with id ${record.id}, a realistic remaining_seconds, optional remaining_max_seconds and reason. Never fabricate percentages or deadlines.
 The main chat owns user interaction and Telegram delivery. Do not send Telegram messages or attach files yourself. Return local deliverable paths and a concise verified result for the main agent to deliver. Report blockers and incomplete work honestly. Never expose secrets or private reasoning in the result.

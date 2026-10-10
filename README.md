@@ -2,7 +2,7 @@
 
 # pi-extensions
 
-**Independent extensions for [Pi](https://github.com/earendil-works/pi): memory, Telegram, skill learning, idle compaction, latency analytics, and background work.**
+**Independent extensions for [Pi](https://github.com/earendil-works/pi): memory, Telegram, idle compaction, and background work.**
 
 [![Node.js](https://img.shields.io/badge/full%20suite-Node.js%2026.10%2B-3c873a?style=flat-square)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
@@ -11,16 +11,14 @@
 
 </div>
 
-One repository, six separately versioned Pi packages. Install only the extensions you need. The root is a private npm development workspace, not an all-in-one Pi extension or a published npm package.
+One repository, four separately versioned Pi packages. Install only the extensions you need. The root is a private npm development workspace, not an all-in-one Pi extension or a published npm package.
 
 ## Packages
 
 - **[pi-memoria](packages/pi-memoria/README.md)**: global startup rules, SQLite fact recall, and cited search across past conversations.
 - **[@rcsaquino/pi-telegram](packages/pi-telegram/README.md)**: Telegram transport for the existing Pi conversation, with attachments, steering, and explicitly requested voice replies.
-- **[pi-auto-learn](packages/pi-auto-learn/README.md)**: background creation, improvement, and recoverable retirement of skills inside one managed directory.
 - **[pi-idle-compaction](packages/pi-idle-compaction/README.md)**: native compaction after an eligible idle period, with conservative background-work checks.
-- **[pi-latency-analytics](packages/pi-latency-analytics/README.md)**: local, metadata-only traces of time spent inside Pi.
-- **[@rcsaquino/pi-background-tasks](packages/pi-background-tasks/README.md)**: non-blocking same-model workers with compact task briefs and realistic duration estimates.
+- **[@rcsaquino/pi-background-tasks](packages/pi-background-tasks/README.md)**: non-blocking same-model workers with compact task briefs, realistic duration estimates and capacity-only scheduling, without workspace/resource read-write locks. Authorized concurrent edits can overwrite one another.
 
 Each package owns its manifest, entry point, runtime dependencies, tests, README, and agent instructions. Versions and release readiness are independent; inclusion here does not imply npm publication or production activation.
 
@@ -62,7 +60,7 @@ pi remove /absolute/path/to/pi-extensions/packages/pi-background-tasks
 Removal does not erase that extension's runtime data.
 
 > [!IMPORTANT]
-> Do not install the repository root expecting all six extensions to load. Do not register a package and a copied extension-directory entry for the same implementation. Cloning or editing files is not activation, and a service restart needs separate approval.
+> Do not install the repository root expecting all four extensions to load. Do not register a package and a copied extension-directory entry for the same implementation. Cloning or editing files is not activation, and a service restart needs separate approval.
 
 ## Development
 
@@ -110,11 +108,10 @@ See [RELEASING.md](RELEASING.md) for independent package versions, npm names, dr
 
 Extensions execute with Pi's OS permissions. They are not sandboxes, and in-process background work does not create a new security boundary.
 
-- Keep credentials, real memory, conversation archives, analytics databases, Telegram downloads/cursors/locks, and learning state outside source control.
-- Keep tests isolated from live providers, Telegram pollers, the real managed skill library, and global agent settings.
-- Directory-scoped learning affects only its configured managed root. Put skills that must remain manually maintained outside that root.
+- Keep credentials, real memory, conversation archives, Telegram downloads/cursors/locks, and private runtime state outside source control.
+- Keep tests isolated from live providers, Telegram pollers, the real skill library, and global agent settings.
 - Background tasks incur normal model/tool usage and stop when their host exits. Idle compaction can incur a native summarization request when it runs.
-- Optional background coordination covers reviewed integrations, not every OS process or remote job.
+- Background-task source does not lock workspace/resources or gate authorized foreground operations behind workers. Other integrations retain their independent admission/ownership contracts (for example Telegram's single poller). Staged publication validates detected stale bases but has no multi-file transaction or exclusion against concurrent edits.
 - Never delete an unknown active lock, automatically replay uncertain work, or describe an offline check as live acceptance.
 
 On the maintained deployment, old workspace source names remain compatibility symlinks into `packages/`. Existing registrations and deployed copies were preserved during migration. Review dependent settings, lazy imports, and helper scripts before removing those aliases. Local history archives and private migration reports are not part of the shareable source tree.

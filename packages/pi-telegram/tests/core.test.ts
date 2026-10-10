@@ -65,19 +65,25 @@ test("errors and redaction never include network URLs or configured keys", () =>
   assert.equal(text, "[REDACTED] [REDACTED] [REDACTED]");
 });
 
-test("incoming timestamps are one leading ISO 8601 field in the host timezone", () => {
+test("incoming timestamps are one leading second-only ISO 8601 field in the host timezone", () => {
   const previous = process.env.TZ;
   try {
     for (const [zone, date, expected] of [
-      ["Asia/Manila", "2026-10-02T12:34:56Z", "2026-10-02T20:34:56.000+08:00"],
-      ["UTC", "2026-10-02T12:34:56Z", "2026-10-02T12:34:56.000+00:00"],
-      ["Asia/Kathmandu", "2026-10-02T12:34:56Z", "2026-10-02T18:19:56.000+05:45"],
-      ["America/New_York", "2026-07-02T12:34:56Z", "2026-07-02T08:34:56.000-04:00"],
-      ["America/New_York", "2026-01-02T12:34:56Z", "2026-01-02T07:34:56.000-05:00"],
+      ["Asia/Manila", "2026-10-02T12:34:56Z", "2026-10-02T20:34:56+08:00"],
+      ["UTC", "2026-10-02T12:34:56Z", "2026-10-02T12:34:56+00:00"],
+      ["Asia/Kathmandu", "2026-10-02T12:34:56Z", "2026-10-02T18:19:56+05:45"],
+      ["America/New_York", "2026-07-02T12:34:56Z", "2026-07-02T08:34:56-04:00"],
+      ["America/New_York", "2026-01-02T12:34:56Z", "2026-01-02T07:34:56-05:00"],
+      ["UTC", "2026-10-02T12:34:56.987Z", "2026-10-02T12:34:56+00:00"],
+      ["Asia/Kathmandu", "2026-10-02T12:34:56.999Z", "2026-10-02T18:19:56+05:45"],
+      ["America/St_Johns", "2026-01-02T00:04:05.999Z", "2026-01-01T20:34:05-03:30"],
+      ["Asia/Manila", "2026-12-31T23:59:59.999Z", "2027-01-01T07:59:59+08:00"],
     ]) {
       process.env.TZ = zone;
       assert.equal(stamp("hello", new Date(date)), `[${expected}] hello`);
-      assert.equal(stamp("multi\nline  ", new Date(date)), `[${expected}] multi\nline  `);
+      assert.equal(stamp("multi\nline 😀  ", new Date(date)), `[${expected}] multi\nline 😀  `);
+      assert.equal(stamp("", new Date(date)), `[${expected}] `);
+      assert.equal(Date.parse(expected), Math.floor(Date.parse(date) / 1000) * 1000);
     }
   } finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }
 });

@@ -8,10 +8,8 @@ The only automated publication path is `pi-memoria` through `.github/workflows/p
 
 Prepared versions are independent and are not claims of publication:
 
-- `packages/pi-auto-learn`: `pi-auto-learn` **0.1.0**.
 - `packages/pi-background-tasks`: `@rcsaquino/pi-background-tasks` **0.1.0**.
 - `packages/pi-idle-compaction`: `pi-idle-compaction` **0.1.0**.
-- `packages/pi-latency-analytics`: `pi-latency-analytics` **0.1.0**.
 - `packages/pi-memoria`: `pi-memoria` **0.3.2**, the patch after public 0.3.1.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.0**.
 

@@ -26,11 +26,11 @@ test('audited fixture: active importer plus cached/uncached network lookups, col
       if (!plainArgs(args) || Object.keys(args).some(k => !['key','mode'].includes(k)) || typeof args.key !== 'string' || !/^[a-z]{1,20}$/.test(args.key) || (args.mode !== undefined && args.mode !== 'lookup')) return { kind: 'unknown' };
       return { kind: 'network-read', privateCache: cache, writes: [join(cache, `${args.key}.json`)] };
     } }]);
-  const writer = record(workspace), own = record(workspace, 'read');
+  const own = record(workspace, 'read');
   let providers = 0, hooks = 0, effects = 0;
   const inFlight = new Map<string, Promise<string>>();
   const lookup = async (args: Record<string, unknown>) => {
-    const reason = guardTool('fixture_lookup', args, workspace, writer, undefined, lookupInfo, registry); if (reason) throw new Error(reason);
+    const reason = guardTool('fixture_lookup', args, workspace, own, lookupInfo, registry); if (reason) throw new Error(reason);
     // Stand-in for parent ctx.executeTool pipeline. Admission never skips its hooks.
     hooks++; if (args.key === 'denied') throw new Error('Parent permission hook denied');
     const key = args.key as string, path = join(cache, `${key}.json`);
@@ -52,40 +52,40 @@ test('audited fixture: active importer plus cached/uncached network lookups, col
   assert.equal(providers, 4); assert.equal(effects, 4); assert.equal(hooks, 24);
   await assert.rejects(lookup({ key: 'denied' }), /Parent permission/); assert.equal(effects, 4);
   assert.equal(await fs.readFile(join(workspace, 'importer.txt'), 'utf8'), 'unchanged');
-  assert.equal(guardTool('fixture_lookup', { key: 'safe' }, workspace, writer, own, lookupInfo, registry), undefined);
+  assert.equal(guardTool('fixture_lookup', { key: 'safe' }, workspace, own, lookupInfo, registry), undefined);
   for (const args of [{ key: '../escape' }, { key: 'safe', download: true }, { key: 'safe', mode: 'delete' }, { key: 'safe', auth: true }, { key: 'safe', frames: 3 }, { key: 'safe', command: 'touch file' }, [] as never, null as never]) await assert.rejects(lookup(args));
-  assert.match(guardTool('fixture_lookup', { key: 'safe' }, workspace, writer, undefined, info('fixture_lookup', '<spoof>'), registry)!, /unknown/);
+  assert.match(guardTool('fixture_lookup', { key: 'safe' }, workspace, own, info('fixture_lookup', '<spoof>'), registry)!, /Read-only/);
   for (const name of ['web_search','source_check','fetch_content','get_search_content','bash','powershell','unknown','memoria_add','telegram_send']) {
-    assert.match(guardTool(name, { command: 'ls > bad; $(touch evil); find . -exec rm {} \\;' }, workspace, writer, undefined, info(name), registry)!, /could conflict/);
-    assert.match(guardTool(name, {}, workspace, undefined, own, info(name), registry)!, /Read-only|main chat owns/);
+    assert.match(guardTool(name, { command: 'ls > bad; $(touch evil); find . -exec rm {} \\;' }, workspace, own, info(name), registry)!, /Read-only|main chat owns/);
+    assert.match(guardTool(name, {}, workspace, own, info(name), registry)!, /Read-only|main chat owns/);
   }
   await fs.symlink(join(workspace, 'importer.txt'), join(cache, 'symlink.json'));
   await fs.link(join(workspace, 'importer.txt'), join(cache, 'hardlink.json'));
-  await assert.rejects(lookup({ key: 'symlink' }), /could conflict/);
-  await assert.rejects(lookup({ key: 'hardlink' }), /could conflict/);
+  await assert.rejects(lookup({ key: 'symlink' }), /Read-only/);
+  await assert.rejects(lookup({ key: 'hardlink' }), /Read-only/);
   assert.equal((await fs.readdir(workspace)).length, 1);
 });
 
-test('contracts normalize resources, reject symlink/unsafe cache ownership and conflicting writes', async t => {
+test('read-worker contracts normalize paths and reject unsafe aliases, cache ownership and mutations', async t => {
   const root = await scratch('effects-paths-'); t.after(() => fs.rm(root, { recursive: true, force: true }));
   const workspace = join(root, 'workspace'), sibling = join(root, 'workspace-other'); await fs.mkdir(workspace); await fs.mkdir(sibling);
   await fs.symlink(workspace, join(root, 'alias')); await fs.symlink(join(root, 'missing'), join(root, 'dangling'));
-  const writer = record(workspace);
+  const own = record(workspace, 'read');
   for (const path of [workspace, join(root, 'alias', 'new'), root, join(root, 'dangling', 'new'), '@' + join(workspace, 'new'), 'file://' + join(workspace, 'new'), '~/.x']) {
-    assert.match(guardTool('write', { path }, root, writer, undefined, info('write'))!, /could conflict/);
+    assert.match(guardTool('write', { path }, root, own, info('write'))!, /Read-only/);
   }
   assert.throws(() => canonicalPath(join(root, 'dangling', 'new')));
-  assert.equal(guardTool('write', { path: join(sibling, 'new') }, root, writer, undefined, info('write')), undefined, 'disjoint is not authorization; parent hooks remain required');
+  assert.equal(guardTool('write', { path: join(sibling, 'new') }, root, undefined, info('write')), undefined, 'no conflict check is authorization; parent hooks remain required');
   await fs.writeFile(join(workspace, 'existing'), 'fixture'); await fs.link(join(workspace, 'existing'), join(sibling, 'linked'));
-  assert.match(guardTool('write', { path: join(sibling, 'linked') }, root, writer, undefined, info('write'))!, /unknown/);
-  assert.match(guardTool('write', { path: join(sibling, 'new') }, root, writer, undefined, info('write','<extension-shadow>'))!, /unknown/);
+  assert.match(guardTool('write', { path: join(sibling, 'linked') }, root, own, info('write'))!, /Read-only/);
+  assert.match(guardTool('write', { path: join(sibling, 'new') }, root, own, info('write','<extension-shadow>'))!, /Read-only/);
   for (const cache of [workspace, join(root, 'alias'), join(sibling, 'cache')]) {
     if (cache.endsWith('cache')) await fs.mkdir(cache, { mode: 0o755 });
     const registry = new EffectRegistry([{ name: 'lookup', source: '<fixture>', readCandidate: true, classify: () => ({ kind: 'network-read', privateCache: cache }) }]);
-    assert.match(guardTool('lookup', {}, root, writer, undefined, info('lookup','<fixture>'), registry)!, /could conflict/);
+    assert.match(guardTool('lookup', {}, root, own, info('lookup','<fixture>'), registry)!, /Read-only/);
   }
   const registry = new EffectRegistry([{ name: 'mutate', source: '<fixture>', readCandidate: true, classify: () => ({ kind: 'external-mutation' }) }]);
-  assert.match(guardTool('mutate', {}, root, writer, undefined, info('mutate','<fixture>'), registry)!, /external-mutation/);
+  assert.match(guardTool('mutate', {}, root, own, info('mutate','<fixture>'), registry)!, /Read-only/);
 });
 
 test('structured filesystem inspection is useful during writer activity, bounded and inert for malicious shell-like arguments', async t => {
@@ -94,9 +94,9 @@ test('structured filesystem inspection is useful during writer activity, bounded
   await fs.symlink(join(root, 'sub'), join(root, 'alias')); await fs.writeFile(join(root, 'large.txt'), 'x'.repeat(1024 * 1024 + 1));
   const registry = new EffectRegistry([{ name: 'background_fs_inspect', source: '<fixture>', readCandidate: true,
     classify: (args, cwd) => { validateInspection(args); return { kind: 'filesystem-read', reads: [canonicalPath(args.path as string, cwd)] }; } }]);
-  const writer = record(root);
+  const own = record(root, 'read');
   const inspect = async (args: Record<string, unknown>) => {
-    const reason = guardTool('background_fs_inspect', args, root, writer, undefined, info('background_fs_inspect','<fixture>'), registry);
+    const reason = guardTool('background_fs_inspect', args, root, own, info('background_fs_inspect','<fixture>'), registry);
     if (reason) throw new Error(reason); return inspectFilesystem(args, root);
   };
   assert.equal((await inspect({ action: 'grep', path: '.', text: 'needle' })).results.length, 2);

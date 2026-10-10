@@ -21,20 +21,20 @@ async function eventually<T>(fn: () => Promise<T> | T, predicate: (value: T) => 
   for (;;) { const value = await fn(); if (predicate(value)) return value; if (Date.now() > end) throw new Error('Timed out waiting for test condition.'); await new Promise(r => setTimeout(r, 10)); }
 }
 interface Call { worker: boolean; model: string; reasoning?: string; budgets: unknown; system: string; tools: string[]; text: string; lastRole: string; transcript: string }
-async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', forcedPrompt?: string, withAnalytics = false) {
+interface Metadata { type?: string; taskId?: string; requestId?: string; rootCallId?: string; usage?: { totalTokens?: number; output?: number } }
+async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', forcedPrompt?: string, sourceLoader = false) {
   const root = await scratch('bg-sdk-test-');
   const agentDir = join(root, 'agent'); await fs.mkdir(agentDir);
-  const previous = process.env.PI_CODING_AGENT_DIR, offline = process.env.PI_OFFLINE, oldLatency = process.env.PI_LATENCY_DIR;
+  const previous = process.env.PI_CODING_AGENT_DIR, offline = process.env.PI_OFFLINE;
   process.env.PI_CODING_AGENT_DIR = agentDir; process.env.PI_OFFLINE = '1';
-  if (withAnalytics) process.env.PI_LATENCY_DIR = join(root, 'analytics');
   const provider = 'background-offline-fixture';
   const model: Model<Api> = { id: 'main', name: 'Main offline fixture', provider, api: 'background-fake-api', baseUrl: 'http://127.0.0.1', reasoning: true, input: ['text', 'image'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 32000 };
-  const calls: Call[] = [], errors: string[] = [], hooks: string[] = []; const settledTasks = new Set<string>();
+  const calls: Call[] = [], errors: string[] = [], hooks: string[] = []; const settledTasks = new Set<string>(); const metadata: Metadata[] = [];
   const file = join(root, 'source.txt'); await fs.writeFile(file, 'Known inherited-tool result');
   await fs.mkdir(join(agentDir, 'skills', 'inherited-skill'), { recursive: true });
   await fs.writeFile(join(agentDir, 'skills', 'inherited-skill', 'SKILL.md'), '---\nname: inherited-skill\ndescription: Special inherited fixture skill.\n---\nUse this skill for the fixture.\n');
   let gate = deferred(), blocked = true;
-  let behavior: 'plain' | 'read' | 'slow' | 'nested' | 'dynamic' | 'error' | 'length' | 'staged' | 'shell_pair' | 'stage_escape' = 'plain';
+  let behavior: 'plain' | 'read' | 'slow' | 'nested' | 'dynamic' | 'error' | 'length' | 'staged' | 'shell_pair' | 'stage_escape' | 'direct_write' = 'plain';
   let nestedEffects = 0, denyStart = false, mutateStart = false;
   let slowStarted = false, slowAborted = false;
   let p: Dispatch = { task: 'Do the delegated fixture work and verify it.', title: 'Fixture', eta_seconds: 300, eta_max_seconds: 480, estimate_reason: 'Several tool/model rounds, implementation and verification.', mode: 'manual', access: 'write' };
@@ -50,7 +50,7 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
     return last?.role === 'user' ? typeof last.content === 'string' ? last.content : last.content.filter(c => c.type === 'text').map(c => c.text).join('') : '';
   };
   const fake = (pi: ExtensionAPI) => {
-    const stop = pi.events.on('background-tasks:telemetry:v1', data => { const event = data as { type?: string; taskId?: string }; if (event.type === 'worker-end' && event.taskId) settledTasks.add(event.taskId); });
+    const stop = pi.events.on('background-tasks:telemetry:v1', data => { const event = data as Metadata; metadata.push(event); if (event.type === 'worker-end' && event.taskId) settledTasks.add(event.taskId); });
     pi.on('session_shutdown', () => stop());
     pi.registerProvider(provider, {
       baseUrl: model.baseUrl, apiKey: 'inert-offline-fixture-key', api: model.api, models: [{ ...model }, { ...model, id: 'second', name: 'Second fixture' }],
@@ -65,8 +65,9 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
           await options?.onResponse?.({ status: 200, headers: { private: 'SDK_TELEMETRY_PRIVATE_HEADERS' } }, m);
           let content: AssistantMessage['content']; let stop: AssistantMessage['stopReason'] | undefined;
           if (worker) {
-            if (blocked && (behavior === 'plain' || behavior === 'error' || behavior === 'length' || (behavior === 'read' && last.role === 'toolResult') || (behavior === 'staged' && last.role === 'toolResult' && last.toolName === 'write'))) await gate.promise;
-            if (last.role === 'user' && behavior === 'shell_pair') content = ['one', 'two'].map(id => toolCall('bash', { command: `node ${JSON.stringify(join(root, 'shell-test.mjs'))} ${JSON.stringify(join(root, 'shell-events.jsonl'))} ${id}`, timeout: 5 }, `shell-${id}`));
+            if (blocked && (behavior === 'plain' || behavior === 'error' || behavior === 'length' || ((behavior === 'read' || behavior === 'direct_write') && last.role === 'toolResult') || (behavior === 'staged' && last.role === 'toolResult' && last.toolName === 'write'))) await gate.promise;
+            if (last.role === 'user' && behavior === 'direct_write') content = [toolCall('write', { path: join(root, 'competing.txt'), content: `worker edit ${options?.sessionId}` })];
+            else if (last.role === 'user' && behavior === 'shell_pair') content = ['one', 'two'].map(id => toolCall('bash', { command: `node ${JSON.stringify(join(root, 'shell-test.mjs'))} ${JSON.stringify(join(root, 'shell-events.jsonl'))} ${id}`, timeout: 5 }, `shell-${id}`));
             else if (last.role === 'user' && behavior === 'stage_escape') content = [toolCall('write', { path: '../staged-escape.txt', content: 'must be blocked' })];
             else if (last.role === 'user' && behavior === 'staged') content = [toolCall('read', { path: 'source.txt' })];
             else if (last.role === 'toolResult' && last.toolName === 'read' && behavior === 'staged') {
@@ -91,7 +92,10 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
           else if (text.startsWith('DELEGATE') || text.startsWith('Manual background delegation')) content = [toolCall('background_dispatch', { ...p })];
           else if (text.startsWith('AUTO-LONG')) content = [toolCall('background_dispatch', { ...p, mode: 'auto' })];
           else if (text.startsWith('DOUBLE')) content = [toolCall('background_dispatch', { ...p, title: 'One' }, 'first-dispatch'), toolCall('background_dispatch', { ...p, title: 'Two' }, 'second-dispatch')];
-          else if (text.startsWith('TRY-WRITE')) content = [toolCall('write', { path: join(root, 'competing.txt'), content: 'must not write' })];
+          else if (text.startsWith('TRY-WRITE')) content = [toolCall('write', { path: join(root, 'competing.txt'), content: 'foreground edit' })];
+          else if (text.startsWith('LOCAL-LOOKUP')) content = [toolCall('bash', { command: `python -c 'from pathlib import Path; print(Path(${JSON.stringify(file)}).read_text())'`, timeout: 5 })];
+          else if (text.startsWith('MEMORY-LOOKUP')) content = [toolCall('memoria_search', { query: 'synthetic fixture' })];
+          else if (text.startsWith('DENIED-READ')) content = [toolCall('read', { path: '/denied' })];
           else if (text.startsWith('RESULT ') || text.includes('settled with status')) {
             const id = text.match(/bg-[a-f0-9]{12}/)![0]; content = [toolCall('background_tasks', { action: 'result', id })];
           } else content = [{ type: 'text', text: 'Foreground is responsive.' }];
@@ -120,6 +124,9 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
         });
         return { content: [{ type: 'text', text: 'Tool settled' }], details: undefined };
       },
+    });
+    pi.registerTool({ name: 'memoria_search', label: 'Synthetic memory', description: 'Inert memory query without trusted effect annotations.', parameters: Type.Object({ query: Type.String() }),
+      execute: async () => ({ content: [{ type: 'text', text: 'Synthetic memory result' }], details: undefined }),
     });
     pi.registerTool({ name: 'telegram_attach', label: 'Fake delivery', description: 'Must not run inside worker.', parameters: Type.Object({}),
       execute: async () => { nestedEffects++; return { content: [], details: undefined }; },
@@ -154,8 +161,8 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
   };
   const settings = SettingsManager.inMemory({ defaultTools: ['read', 'bash', 'edit', 'write'], defaultProvider: provider, defaultModel: model.id, defaultThinkingLevel: 'high', thinkingBudgets: { medium: 1000, high: 9000 }, retry: { enabled: false }, cacheWarming: 'off', enableAnalytics: false, enableInstallTelemetry: false });
   const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager: settings, noContextFiles: true, noPromptTemplates: true, noThemes: true, appendSystemPrompt: ['Inherited identity and workspace rules.'],
-    extensionFactories: withAnalytics ? [fake] : [fake, extension],
-    ...(withAnalytics ? { additionalExtensionPaths: [fileURLToPath(new URL('../index.ts', import.meta.url)), fileURLToPath(new URL('../../pi-latency-analytics/index.ts', import.meta.url))] } : {}),
+    extensionFactories: sourceLoader ? [fake] : [fake, extension],
+    ...(sourceLoader ? { additionalExtensionPaths: [fileURLToPath(new URL('../index.ts', import.meta.url))] } : {}),
   });
   await loader.reload();
   const { session } = await createAgentSession({ cwd: root, agentDir, model, thinkingLevel: 'high', settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(root) });
@@ -166,7 +173,6 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
     await fs.rm(root, { recursive: true, force: true });
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     if (offline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = offline;
-    if (withAnalytics) { if (oldLatency === undefined) delete process.env.PI_LATENCY_DIR; else process.env.PI_LATENCY_DIR = oldLatency; }
   });
   const records = async () => {
     const directory = store().recordsDir;
@@ -174,7 +180,8 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
     for (const name of await fs.readdir(directory)) if (name.endsWith('.json')) all.push(JSON.parse(await fs.readFile(join(directory, name), 'utf8')) as RecordData);
     return all;
   };
-  return { root, agentDir, session, model, calls, errors, hooks, records, store,
+  return { root, agentDir, session, model, calls, errors, hooks, records, store, metadata,
+    setCapacity: (workers: number) => session.extensionRunner.setFlagValue('background-max-workers', String(workers)),
     setParams: (next: Partial<Dispatch>) => { p = { ...p, ...next }; },
     denyStart: () => { denyStart = true; },
     mutateStart: () => { mutateStart = true; },
@@ -305,15 +312,16 @@ test('real Pi SDK: foreground abort does not abort worker; explicit cancellation
   await eventually(f.records, rows => rows[0]!.status === 'cancelled');
   assert.deepEqual(f.errors, []);
 });
-test('real Pi SDK: parent writer guard prevents racing writes but permits another normal conversation', async t => {
+test('real Pi SDK: active writer permits authorized foreground writes and another normal conversation', async t => {
   const f = await fixture(t); await f.session.prompt('DELEGATE'); await eventually(() => f.calls, calls => calls.some(c => c.worker)); await f.session.prompt('TRY-WRITE');
-  await assert.rejects(fs.stat(join(f.root, 'competing.txt')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(join(f.root, 'competing.txt'), 'utf8'), 'foreground edit');
   const result = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === 'write').at(-1)!;
-  assert.equal(result.role === 'toolResult' && result.isError, true);
+  assert.equal(result.role === 'toolResult' && result.isError, false);
+  assert.ok(f.hooks.includes('write'));
   await f.session.prompt('Keep chatting'); assert.equal(f.session.getLastAssistantText(), 'Foreground is responsive.');
 });
-test('real Pi SDK: second direct writer returns queued immediately and queued cancellation starts no effects', async t => {
-  const f = await fixture(t); const before = performance.now(); await f.session.prompt('DOUBLE');
+test('real Pi SDK: capacity-only queue returns immediately and queued cancellation starts no effects', async t => {
+  const f = await fixture(t); f.setCapacity(1); const before = performance.now(); await f.session.prompt('DOUBLE');
   assert.ok(performance.now() - before < 1000); assert.equal((await f.records()).length, 2);
   const results = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === 'background_dispatch');
   assert.equal(results.length, 2); assert.ok(results.every(r => r.role === 'toolResult' && !r.isError));
@@ -323,6 +331,43 @@ test('real Pi SDK: second direct writer returns queued immediately and queued ca
   f.release(); await eventually(f.records, rows => rows.every(r => r.status === 'completed' || r.status === 'cancelled'));
   assert.equal(f.calls.filter(c => c.worker).length, 1);
 });
+test('real Pi SDK: two actual direct writers overlap foreground Python lookup, memory query and same-file write without bypassing hooks', async t => {
+  const f = await fixture(t); f.setBehavior('direct_write', true);
+  await f.session.prompt('DELEGATE first');
+  await eventually(() => f.calls, calls => calls.some(c => c.worker && c.lastRole === 'toolResult'));
+  await f.session.prompt('DELEGATE second');
+  await eventually(() => f.calls, calls => calls.filter(c => c.worker && c.lastRole === 'toolResult').length === 2);
+  assert.equal((await f.records()).filter(r => r.status === 'running').length, 2);
+  assert.match(await fs.readFile(join(f.root, 'competing.txt'), 'utf8'), /worker edit/);
+  for (const prompt of ['LOCAL-LOOKUP', 'MEMORY-LOOKUP', 'TRY-WRITE']) await f.session.prompt(prompt);
+  for (const name of ['bash', 'memoria_search', 'write']) {
+    const result = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === name).at(-1)!;
+    assert.ok(result.role === 'toolResult' && !result.isError, name); assert.ok(f.hooks.includes(name));
+  }
+  const lookup = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === 'bash').at(-1)!;
+  assert.match(JSON.stringify(lookup), /Known inherited-tool result/);
+  assert.equal(await fs.readFile(join(f.root, 'competing.txt'), 'utf8'), 'foreground edit');
+  await f.session.prompt('DENIED-READ'); const denied = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === 'read').at(-1)!;
+  assert.ok(denied.role === 'toolResult' && denied.isError); assert.match(JSON.stringify(denied), /Inherited permission guard/);
+  await assert.rejects(fs.stat(join(f.store().root, 'locks')), { code: 'ENOENT' });
+  f.release(); await eventually(f.records, rows => rows.every(r => r.status === 'completed'));
+  assert.deepEqual(f.errors, []);
+});
+
+test('real Pi SDK: active staged snapshots do not block foreground shell/memory/write; stale publication remains explicit', async t => {
+  const f = await fixture(t); await fs.writeFile(join(f.root, 'a.txt'), 'base'); f.setBehavior('staged', true);
+  f.setParams({ execution: 'staged', stage: { inputs: ['source.txt'], outputs: ['a.txt'] } });
+  await f.session.prompt('DELEGATE'); await eventually(() => f.calls, calls => calls.some(c => c.worker && c.transcript.includes('Staged file updated')));
+  for (const prompt of ['LOCAL-LOOKUP', 'MEMORY-LOOKUP', 'TRY-WRITE']) await f.session.prompt(prompt);
+  for (const name of ['bash', 'memoria_search', 'write']) { const result = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === name).at(-1)!; assert.ok(result.role === 'toolResult' && !result.isError); }
+  await fs.writeFile(join(f.root, 'a.txt'), 'concurrent parent edit'); f.release();
+  const rows = await eventually(f.records, rows => rows.length === 1 && rows[0]!.status === 'completed' && !!rows[0]!.manifest);
+  await f.waitSettled(rows[0]!.id); await f.session.prompt(`PUBLISH ${rows[0]!.id} ${rows[0]!.manifest!.hash}`, { streamingBehavior: 'followUp' }); await f.session.waitForIdle();
+  const rejected = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === 'background_publish').at(-1)!;
+  assert.ok(rejected.role === 'toolResult' && rejected.isError); assert.match(JSON.stringify(rejected), /Stale publication base/);
+  assert.equal(await fs.readFile(join(f.root, 'a.txt'), 'utf8'), 'concurrent parent edit'); assert.deepEqual(f.errors, []);
+});
+
 test('real Pi SDK: automatic long routing accepts work; exactly two minutes stays inline', async t => {
   const f = await fixture(t); f.setParams({ eta_seconds: 120, eta_max_seconds: 120, mode: 'auto' });
   await f.session.prompt('AUTO-LONG'); assert.equal((await f.records()).length, 0); assert.equal(f.calls.some(c => c.worker), false);
@@ -409,7 +454,7 @@ test('real Pi SDK: shutdown cancels an inherited tool and leaves recoverable sta
   assert.equal(f.calls.filter(c => !c.worker).length, before); assert.deepEqual(f.errors, []);
 });
 
-test('real Pi SDK cross-package: two workers interleave with a foreground question without tool/model/usage contamination', async t => {
+test('real Pi SDK: standalone workers interleave with foreground work and emit task-scoped private metadata', async t => {
   const f = await fixture(t, 'rpc', undefined, true);
   const originalFetch = globalThis.fetch; let network = 0;
   globalThis.fetch = (() => { network++; throw new Error('Live network forbidden in SDK fixture'); }) as typeof fetch;
@@ -419,33 +464,23 @@ test('real Pi SDK cross-package: two workers interleave with a foreground questi
   await eventually(() => f.calls, calls => calls.filter(c => c.worker && c.lastRole === 'toolResult').length >= 2);
   assert.equal((await f.records()).length, 2);
   await f.session.prompt('FOREGROUND-READ while workers run');
-  const queryTool = f.session.agent.state.tools.find(tool => tool.name === 'latency_query')!;
-  const query = async (args: Record<string, unknown>) => {
-    const result = await queryTool.execute('cross-query', args, undefined); const first = result.content[0]!;
-    return JSON.parse(first.type === 'text' ? first.text : '[]');
-  };
-  const before = await query({ action: 'last' });
-  assert.equal(before[0].trace_scope, 'foreground-or-legacy');
-  assert.equal(before[0].model_request_count, 2); assert.equal(before[0].tool_call_count, 1);
-  assert.deepEqual(before[0].tools.map((tool: { name: string }) => tool.name), ['read']);
-  assert.ok(before[0].model_requests.every((m: { provider_hook_attribution: string }) => m.provider_hook_attribution === 'unknown_no_request_id'));
-  const foregroundId = before[0].trace_id;
+  const foreground = f.calls.filter(call => !call.worker).at(-1)!;
+  assert.equal(foreground.lastRole, 'toolResult');
+  const modelEventsBefore = f.metadata.filter(event => event.type === 'model-start').length;
+  await f.session.prompt('Foreground question while workers are blocked');
+  assert.equal(f.metadata.filter(event => event.type === 'model-start').length, modelEventsBefore, 'foreground inference is not worker metadata');
   f.release(); const settled = await eventually(f.records, rows => rows.every(row => row.status === 'completed'));
   await Promise.all(settled.map(row => f.waitSettled(row.id)));
-  const recent = await query({ action: 'recent', limit: 50 });
-  const workers = recent.filter((trace: { trace_scope: string }) => trace.trace_scope === 'worker'); assert.equal(workers.length, 2);
-  for (const worker of workers) {
-    assert.ok(worker.worker_link.parent_trace_id); assert.ok(worker.worker_link.parent_tool_span_id);
-    assert.equal(worker.model_request_count, 2); assert.equal(worker.tool_call_count, 2);
-    assert.equal(worker.model_requests.reduce((sum: number, model: { usage: { totalTokens: number } }) => sum + model.usage.totalTokens, 0), 60);
-    assert.ok(worker.model_requests.every((m: { provider_hook_attribution: string }) => m.provider_hook_attribution === 'explicit_worker_request_id'));
-    assert.ok(worker.tools.every((tool: { name: string }) => ['read', 'background_start_check'].includes(tool.name)));
-    assert.ok(worker.tools.some((tool: { name: string }) => tool.name === 'background_start_check'));
+  for (const record of settled) {
+    const events = f.metadata.filter(event => event.taskId === record.id);
+    assert.equal(events.filter(event => event.type === 'worker-start').length, 1);
+    assert.equal(events.filter(event => event.type === 'worker-end').length, 1);
+    assert.equal(events.filter(event => event.type === 'model-start').length, 2);
+    assert.equal(events.filter(event => event.type === 'model-end').reduce((sum, event) => sum + (event.usage?.totalTokens ?? 0), 0), 60);
+    assert.ok(events.every(event => event.rootCallId));
   }
-  const after = await query({ action: 'trace', trace_id: foregroundId });
-  assert.equal(after[0].model_request_count, 2); assert.equal(after[0].tool_call_count, 1);
-  assert.equal(JSON.stringify(after[0]).includes('background-worker'), false);
-  assert.doesNotMatch(JSON.stringify(recent), /PRIVATE_REASONING|SDK_TELEMETRY_PRIVATE|Known inherited-tool result|Do the delegated fixture/);
+  assert.equal(new Set(f.metadata.filter(event => event.type === 'model-start').map(event => event.requestId)).size, 4);
+  assert.doesNotMatch(JSON.stringify(f.metadata), /PRIVATE_REASONING|SDK_TELEMETRY_PRIVATE|Known inherited-tool result|Do the delegated fixture/);
   assert.equal(network, 0); assert.deepEqual(f.errors, []);
 });
 
@@ -456,19 +491,16 @@ test('real Pi SDK: nested tool usage is separate worker aggregate telemetry and 
   await f.session.prompt(`RESULT ${record.id}`, { streamingBehavior: 'followUp' }); await f.session.waitForIdle(); await f.session.prompt(`RESULT ${record.id}`, { streamingBehavior: 'followUp' }); await f.session.waitForIdle();
   const results = await eventually(() => f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === 'background_tasks' && m.usage), rows => rows.length === 1);
   assert.equal(results.length, 1); assert.ok(results[0]!.role === 'toolResult'); assert.equal(results[0]!.usage!.totalTokens, 71);
-  const tool = f.session.agent.state.tools.find(tool => tool.name === 'latency_query')!;
-  const page = (await tool.execute('aggregate-query', { action: 'recent', limit: 50 }, undefined)).content[0]!;
-  assert.ok(page.type === 'text'); const worker = JSON.parse(page.text).find((trace: { trace_scope: string }) => trace.trace_scope === 'worker');
-  const detail = (await tool.execute('aggregate-detail', { action: 'trace', trace_id: worker.trace_id }, undefined)).content[0]!;
-  assert.ok(detail.type === 'text'); const trace = JSON.parse(detail.text)[0];
-  assert.equal(trace.model_requests.reduce((sum: number, m: { usage: { totalTokens: number } }) => sum + m.usage.totalTokens, 0), 60);
-  const aggregates = trace.events.filter((event: { name: string }) => event.name === 'nested_tool_usage');
-  assert.equal(aggregates.length, 1); assert.equal(aggregates[0].meta.usage.totalTokens, 11);
-  assert.equal(aggregates[0].meta.usage.output, 7);
+  const events = f.metadata.filter(event => event.taskId === record.id);
+  assert.equal(events.filter(event => event.type === 'model-end').reduce((sum, event) => sum + (event.usage?.totalTokens ?? 0), 0), 60);
+  const aggregates = events.filter(event => event.type === 'tool-usage');
+  assert.equal(aggregates.length, 1); assert.equal(aggregates[0]!.usage!.totalTokens, 11);
+  assert.equal(aggregates[0]!.usage!.output, 7);
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_REASONING|SDK_TELEMETRY_PRIVATE/);
   assert.deepEqual(f.errors, []);
 });
 
-test('real Pi SDK activation: safe inspection stays available under an importer writer; direct writes fail and second writers queue', async t => {
+test('real Pi SDK: inspection, foreground writes and second direct writers stay available under an importer', async t => {
   const f = await fixture(t, 'rpc', undefined, true);
   await f.session.prompt('DELEGATE'); await eventually(() => f.calls, calls => calls.some(c => c.worker));
   await f.session.prompt('INSPECT unrelated source');
@@ -476,11 +508,12 @@ test('real Pi SDK activation: safe inspection stays available under an importer 
   assert.ok(result.role === 'toolResult' && !result.isError);
   assert.match(JSON.stringify(result), /Known inherited-tool result/);
   assert.ok(f.hooks.includes('background_fs_inspect'), 'inspection still runs through the host permission hook');
-  await f.session.prompt('TRY-WRITE'); await assert.rejects(fs.stat(join(f.root, 'competing.txt')), { code: 'ENOENT' });
+  await f.session.prompt('TRY-WRITE'); assert.equal(await fs.readFile(join(f.root, 'competing.txt'), 'utf8'), 'foreground edit');
   await f.session.prompt('DELEGATE second writer'); assert.equal((await f.records()).length, 2);
   const accepted = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === 'background_dispatch').at(-1)!;
   assert.ok(accepted.role === 'toolResult' && !accepted.isError);
-  assert.ok((await f.records()).some(r => r.status === 'queued'));
+  await eventually(f.records, rows => rows.length === 2 && rows.every(r => r.status === 'running'));
+  await eventually(() => f.calls, calls => calls.filter(c => c.worker).length === 2);
   assert.deepEqual(f.errors, []);
 });
 
@@ -502,20 +535,20 @@ test('actual Pi SDK: two staged file writers, foreground cached/uncached HTTPS l
   await f.session.prompt(`SAFE-RESULT ${result.responseId}`); const retrieved = f.session.messages.filter(m => m.role === 'toolResult' && m.toolName === 'background_web_result').at(-1)!;
   assert.ok(retrieved.role === 'toolResult' && !retrieved.isError); assert.match(JSON.stringify(retrieved), /SDK source-linked/);
   assert.ok(f.hooks.includes('background_stage_file')); assert.ok(f.hooks.includes('background_web_search')); assert.ok(f.hooks.includes('background_web_result'));
-  await f.session.prompt('TRY-WRITE unrelated parent file'); assert.equal(await fs.readFile(join(f.root, 'competing.txt'), 'utf8'), 'must not write', 'a declared disjoint parent write remains subject to normal hooks and is allowed');
+  await f.session.prompt('TRY-WRITE unrelated parent file'); assert.equal(await fs.readFile(join(f.root, 'competing.txt'), 'utf8'), 'foreground edit', 'parent writes remain subject to normal hooks and are allowed');
   f.release(); const done = await eventually(f.records, rows => rows.length === 2 && rows.every(r => r.status === 'completed' && r.manifest));
   for (const record of done) { await f.waitSettled(record.id); assert.equal(record.publication, 'ready'); assert.equal(record.manifest!.outputs.length, 1); await f.session.prompt(`PUBLISH ${record.id} ${record.manifest!.hash}`, { streamingBehavior: 'followUp' }); await f.session.waitForIdle(); }
   assert.equal(await fs.readFile(join(f.root, 'a.txt'), 'utf8'), 'Staged result for a.txt'); assert.equal(await fs.readFile(join(f.root, 'b.txt'), 'utf8'), 'Staged result for b.txt');
   assert.equal((await fs.stat(join(f.root, 'a.txt'))).mode & 0o777, 0o644);
-  const queryTool = f.session.agent.state.tools.find(tool => tool.name === 'latency_query')!;
-  const traces = (await queryTool.execute('staging-trace-query', { action: 'recent', limit: 50 }, undefined)).content[0]!; assert.ok(traces.type === 'text');
-  const workers = JSON.parse(traces.text).filter((r: { trace_scope: string }) => r.trace_scope === 'worker'); assert.equal(workers.length, 2);
-  for (const worker of workers) { assert.equal(worker.model_request_count, 3); assert.ok(worker.tools.every((tool: { name: string }) => ['background_stage_file', 'background_start_check'].includes(tool.name))); assert.ok(worker.worker_link.parent_trace_id); }
-  assert.doesNotMatch(traces.text, /SDK_SYNTHETIC_WEB_CREDENTIAL|PRIVATE_REASONING|Known inherited-tool result/); assert.deepEqual(f.errors, []);
+  for (const record of done) {
+    assert.equal(record.turns, 3);
+    assert.equal(f.metadata.filter(event => event.taskId === record.id && event.type === 'model-start').length, 3);
+  }
+  assert.doesNotMatch(JSON.stringify(f.metadata), /SDK_SYNTHETIC_WEB_CREDENTIAL|PRIVATE_REASONING|Known inherited-tool result/); assert.deepEqual(f.errors, []);
 });
 
-test('actual Pi SDK: a queued direct conflict later starts safely on its captured model; queue time is not execution ETA', async t => {
-  const f = await fixture(t, 'rpc', undefined, true); await f.session.prompt('DOUBLE');
+test('actual Pi SDK: capacity-queued work later starts on its captured model; queue time is not execution ETA', async t => {
+  const f = await fixture(t, 'rpc', undefined, true); f.setCapacity(1); await f.session.prompt('DOUBLE');
   const waiting = await eventually(f.records, rows => rows.length === 2 && rows.some(r => r.status === 'running') && rows.some(r => r.status === 'queued'));
   const queued = waiting.find(r => r.status === 'queued')!; assert.equal(queued.turns, 0); assert.equal(queued.queueWaitMs, undefined);
   await f.session.setModel({ ...f.model, id: 'second' }); f.session.setThinkingLevel('off'); f.release();
@@ -524,7 +557,7 @@ test('actual Pi SDK: a queued direct conflict later starts safely on its capture
   assert.equal(f.calls.filter(c => c.worker).length, 2); assert.ok(f.calls.filter(c => c.worker).every(c => c.model === 'main')); assert.deepEqual(f.errors, []);
 });
 
-test('actual Pi SDK: real safe HTTPS lookup and retrieval also stay available under a direct compatibility importer lease', async t => {
+test('actual Pi SDK: real safe HTTPS lookup and retrieval also stay available during direct importer work', async t => {
   const f = await fixture(t, 'rpc', undefined, true); const network = await offlineWeb(t, f.root, f.agentDir);
   await f.session.prompt('DELEGATE'); await eventually(() => f.calls, calls => calls.some(c => c.worker));
   await f.session.prompt('SAFE-WEB importer fixture'); await f.session.prompt('SAFE-WEB importer fixture'); assert.equal(network.requests(), 1);
@@ -535,7 +568,7 @@ test('actual Pi SDK: real safe HTTPS lookup and retrieval also stay available un
 });
 
 test('actual Pi SDK: queued permission revalidation can deny later execution, without worker calls or replay', async t => {
-  const f = await fixture(t, 'rpc', undefined, true); await f.session.prompt('DOUBLE');
+  const f = await fixture(t, 'rpc', undefined, true); f.setCapacity(1); await f.session.prompt('DOUBLE');
   await eventually(f.records, rows => rows.length === 2 && rows.some(r => r.status === 'running'));
   f.denyStart(); f.release(); const rows = await eventually(f.records, rows => rows.every(r => r.status === 'completed' || r.status === 'failed'));
   const denied = rows.find(r => r.status === 'failed')!; assert.ok(denied); assert.equal(denied.turns, 0); assert.equal(denied.usage.totalTokens, 0);
@@ -543,7 +576,7 @@ test('actual Pi SDK: queued permission revalidation can deny later execution, wi
 });
 
 test('actual Pi SDK: bounded queue rejects overflow clearly and accepts capacity conflicts immediately', async t => {
-  const f = await fixture(t); await f.session.prompt('DELEGATE active'); await eventually(() => f.calls, calls => calls.some(c => c.worker));
+  const f = await fixture(t); f.setCapacity(1); await f.session.prompt('DELEGATE active'); await eventually(() => f.calls, calls => calls.some(c => c.worker));
   for (let i = 0; i < 32; i++) await f.session.prompt(`DELEGATE queued ${i}`);
   const rows = await f.records(); assert.equal(rows.length, 33); assert.equal(rows.filter(r => r.status === 'queued').length, 32); assert.equal(f.calls.filter(c => c.worker).length, 1);
   const start = performance.now(); await f.session.prompt('DELEGATE overflow'); assert.ok(performance.now() - start < 1000);

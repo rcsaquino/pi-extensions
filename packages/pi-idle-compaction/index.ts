@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, join } from 'node:path';
-import { getAgentDir, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { createIdleCompactor } from './controller.mjs';
 import { createBackgroundGuard } from './background.mjs';
 
@@ -36,12 +35,6 @@ export default function idleCompaction(pi: ExtensionAPI) {
     acquireBackgroundLease: createBackgroundGuard({
       getTools: () => pi.getAllTools(),
       rpc,
-      autoLearnRoot: () => {
-        const override = pi.getFlag('auto-learn-state');
-        if (override !== undefined && (typeof override !== 'string' || !isAbsolute(override)))
-          throw Error('Invalid auto-learn coordination root');
-        return typeof override === 'string' ? override : join(getAgentDir(), 'auto-learn');
-      },
     }),
   });
 

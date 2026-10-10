@@ -2,14 +2,12 @@
 
 ## Project and scope
 
-This is a private npm workspace containing six independent Pi extension packages. The root supplies navigation and verification tooling, not an extension entry point. Read the target package's README and AGENTS.md before changing it; package-local instructions refine these rules for that subtree.
+This is a private npm workspace containing four independent Pi extension packages. The root supplies navigation and verification tooling, not an extension entry point. Read the target package's README and AGENTS.md before changing it; package-local instructions refine these rules for that subtree.
 
 - `packages/pi-memoria`: global memory and original-session retrieval.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram`, transport, media, and explicit speech delivery.
-- `packages/pi-auto-learn`: directory-scoped background skill maintenance.
 - `packages/pi-idle-compaction`: native idle compaction and admission guards.
-- `packages/pi-latency-analytics`: local Pi timing metadata and SQLite reporting.
-- `packages/pi-background-tasks`: `@rcsaquino/pi-background-tasks`, independent in-process workers and writer leases.
+- `packages/pi-background-tasks`: `@rcsaquino/pi-background-tasks`, independent in-process workers, capacity-only scheduling and optional staged file integrity; no workspace/resource locks.
 - `scripts/workspaces.mjs`: sequential shared verification runner.
 - `scripts/link-host.mjs`: development-only missing/broken host dependency links.
 - `scripts/publication.test.mjs`: offline release-metadata, included-file, import-closure, documentation, and publication-workflow regression checks.
@@ -47,17 +45,15 @@ The runner finds all package directories and uses `check` or `typecheck` plus `t
 Targeted examples:
 
 ```sh
-npm --prefix packages/pi-auto-learn run verify
 npm --prefix packages/pi-background-tasks run verify
 npm --prefix packages/pi-idle-compaction run verify
-npm --prefix packages/pi-latency-analytics run verify
 npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```
 
 Run focused checks while changing code, then the root suite for shared integration, imports, path changes, or final verification. Read failures; do not weaken a regression test to obtain a green run. Add relevant tests for behavioral changes.
 
-Use synthetic providers, isolated agent directories, fake clocks/transports, real local SQLite where appropriate, and read-only loader verification without session startup. Never use real memory, sessions, managed skills, analytics state, Telegram ownership/cursors, credentials, or live provider calls as test fixtures.
+Use synthetic providers, isolated agent directories, fake clocks/transports, real local SQLite where appropriate, and read-only loader verification without session startup. Never use real memory, sessions, user skills, Telegram ownership/cursors, credentials, or live provider calls as test fixtures.
 
 Report commands, outcomes, relevant environment, and remaining gaps. Offline SDK tests are not live-provider, production-poller, idle-soak, or end-to-end delivery acceptance. Benchmark claims must name the workload and distinguish synthetic observer costs from real user latency.
 
@@ -73,7 +69,7 @@ Report commands, outcomes, relevant environment, and remaining gaps. Offline SDK
 
 ## Files, permissions, and deployment
 
-Runtime state and source are different assets. Never commit secrets, `.env`, memory contents/databases, original transcripts, analytics databases, media downloads, persistent cursors, active locks, or private validation corpora. Keep local reports and fixtures in approved ignored locations or outside this repository.
+Runtime state and source are different assets. Never commit secrets, `.env`, memory contents/databases, original transcripts, private runtime databases, media downloads, persistent cursors, active locks, or private validation corpora. Keep local reports and fixtures in approved ignored locations or outside this repository.
 
 The existing workspace aliases are compatibility symlinks into `packages/`. Before changing them, inspect active lazy imports, settings, dependency links, and external helpers. Installed extension copies are deployment artifacts; canonical development happens here. Do not edit deployed copies in place during source work.
 

@@ -14,13 +14,13 @@ npm --prefix packages/pi-idle-compaction test
 npm --prefix packages/pi-idle-compaction run verify
 ```
 
-Install dependencies only when needed. Node `>=26.10.0 <27` and coding-agent `^0.99.2 || ^1.0.0` are declared. Runtime requires no npm dependencies; tooling/host links are development-only. Keep neighboring `pi-auto-learn` source available for the lock-protocol compatibility test.
+Install dependencies only when needed. Node `>=26.10.0 <27` and coding-agent `^0.99.2 || ^1.0.0` are declared. Runtime requires no npm dependencies; tooling/host links are development-only.
 
 ## Module boundaries
 
 - `index.ts`: registers lifecycle hooks, `/idle-compact`, and optional versioned subagent RPC.
 - `controller.mjs`: 60-minute timer, 100,000-token admission, generation/history invalidation, native compaction, and held-lease cleanup.
-- `background.mjs`: optional neutral/legacy provider contracts, bounded status validation, and auto-learn worker/writer admission leases.
+- `background.mjs`: optional neutral/legacy provider contracts, bounded status validation, and standalone admission without foreign runtime files.
 - `scripts/no-network.mjs`: test-process preload only; never a runtime dependency.
 - `scripts/link-host.mjs`: package-local development host linking; the root helper handles missing/broken links across packages.
 
@@ -30,8 +30,8 @@ Install dependencies only when needed. Node `>=26.10.0 <27` and coding-agent `^0
 - Timers run only for long-lived TUI/RPC modes. Input, tools/agents, UI waits, navigation, compaction, and shutdown invalidate/suspend admission correctly.
 - Revalidate after every asynchronous admission step. A new generation, changed history/tokens, disabled state, or pending work must prevent a late compaction and release its own lease.
 - Call only public native `ctx.compact`. Do not replace prompts, retention budgets, model choice, or Pi's normal compaction configuration.
-- Hold admitted auto-learn worker/writer leases through complete/error/synchronous-throw/shutdown paths. Do not introduce a check-to-start gap or admit a second overlapping compaction.
-- Never pause auto-learn, edit its state/config/skills, import it at runtime, steal an existing lease, or delete an uncertain owner's files. Validate tokens and unsafe file/link boundaries; release writer before worker.
+- Recheck provider snapshots after asynchronous RPC admission. Do not admit a second overlapping compaction or imply that a snapshot excludes future work.
+- Never edit another extension's state/config/skills or create foreign runtime leases.
 - Cleanup uncertainty fails closed and stops future admission rather than claiming success.
 - Missing optional subagent tooling requires no RPC. Present-but-broken RPC remains unsafe; absence and unhealthy presence are not interchangeable.
 - Registry providers are bounded, synchronous, versioned, and validated. Preserve same-session filtering and replacement-safe disposal. Unknown/malformed/throwing state cannot mean idle.
@@ -41,12 +41,12 @@ Install dependencies only when needed. Node `>=26.10.0 <27` and coding-agent `^0
 ## Tests
 
 - `controller.test.mjs`: timer thresholds, generation/history/token races, attempts, error paths, and lease lifetime.
-- `background.test.mjs`: optional RPC, auto-learn lock compatibility, stale/foreign owners, link safety, and cleanup uncertainty.
+- `background.test.mjs`: standalone admission, optional RPC failures, and provider changes during asynchronous admission.
 - `registry.test.mjs`: supported contracts, same-session visibility, limits, malformed providers, and replacement-safe disposal.
 - `adapter.test.mjs`: actual lifecycle adapter, modes, optional integrations, and mocked compaction.
 - `loader.test.mjs`: isolated public Pi loading without runtime dependencies or subagents.
 
-Tests forbid network operations and must not invoke paid native compaction. Use fake clocks, synthetic sessions, mock compact callbacks, and isolated local lease roots. Preserve the sibling import `../pi-auto-learn/src/lock.ts` as a test-only compatibility check, not a production dependency. Add race/fault cases for every admission or cleanup change.
+Tests forbid network operations and must not invoke paid native compaction. Use fake clocks, synthetic sessions, mock compact callbacks, and isolated local fixtures. Add race/fault cases for every admission or cleanup change.
 
 ## Deployment and release
 

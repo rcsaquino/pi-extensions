@@ -91,22 +91,19 @@ test('history preserves completed pairs and strips the unfinished dispatch plus 
   assert.equal(clean.length, 4); assert.equal(clean.at(-1)!.role, 'user'); assert.notEqual(clean[1], a);
   assert.equal(messages.length, 6);
 });
-test('writer lease blocks competing file and shell writes, but leaves conversation and reading free', () => {
-  const writer = record();
-  for (const name of ['read', 'ls']) assert.equal(guardTool(name, { path: '/workspace/file' }, '/workspace', writer, undefined, tool(name)), undefined);
-  for (const name of ['grep', 'find']) assert.match(guardTool(name, {}, '/workspace', writer, undefined, tool(name))!, /unknown/);
-  assert.match(guardTool('bash', { command: 'echo hi' }, '/workspace', writer, undefined)!, /writer lease/);
-  assert.equal(guardTool('background_tasks', { action: 'cancel' }, '/workspace', writer, undefined), undefined);
-  for (const name of ['telegram_attach', 'memoria_search', 'web_enable', 'background_arbitrary']) assert.match(guardTool(name, {}, '/workspace', writer, undefined)!, /unknown/);
-  assert.equal(guardTool('write', { path: '/elsewhere/file' }, '/workspace', writer, undefined, tool('write')), undefined);
-  assert.equal(guardTool('bash', {}, '/workspace', writer, writer), undefined);
+test('foreground operations need no effect whitelist; direct writes have no workspace conflict gate', () => {
+  for (const name of ['read', 'ls', 'grep', 'find', 'bash', 'write', 'memoria_search', 'memoria_add', 'web_enable', 'fetch_content', 'telegram_attach']) {
+    assert.equal(guardTool(name, { path: '/workspace/file' }, '/workspace', undefined, tool(name)), undefined);
+  }
+  assert.equal(guardTool('write', { path: '/workspace/file' }, '/workspace', record(), tool('write')), undefined);
+  assert.equal(guardTool('bash', {}, '/workspace', record()), undefined);
 });
 test('workers cannot recursively delegate, hijack Telegram or manage other ETAs through nested codemode calls', () => {
   const own = record();
-  assert.match(guardTool('telegram_attach', {}, '/workspace', own, own)!, /main chat/);
-  assert.match(guardTool('background_dispatch', {}, '/workspace', own, own)!, /cannot spawn/);
-  assert.match(guardTool('background_update_eta', { id: 'other' }, '/workspace', own, own)!, /own ETA/);
-  assert.equal(guardTool('background_update_eta', { id: own.id }, '/workspace', own, own), undefined);
+  assert.match(guardTool('telegram_attach', {}, '/workspace', own)!, /main chat/);
+  assert.match(guardTool('background_dispatch', {}, '/workspace', own)!, /cannot spawn/);
+  assert.match(guardTool('background_update_eta', { id: 'other' }, '/workspace', own)!, /own ETA/);
+  assert.equal(guardTool('background_update_eta', { id: own.id }, '/workspace', own), undefined);
   assert.equal(workerOwnsCall('dispatch', 'dispatch/2/3'), true);
   assert.equal(workerOwnsCall('dispatch', 'dispatch-other/2'), false);
   assert.equal(workerOwnsCall('dispatch', 'dispatch'), false);
@@ -119,17 +116,17 @@ test('workers cannot recursively delegate, hijack Telegram or manage other ETAs 
 });
 test('read-only jobs deny unclassified tools even with misleading annotations', () => {
   const own = record({ access: 'read' });
-  assert.match(guardTool('bash', {}, '/workspace', undefined, own)!, /Read-only/);
+  assert.match(guardTool('bash', {}, '/workspace', own)!, /Read-only/);
   const info = { ...tool('search'), annotations: { readOnlyHint: true } };
-  assert.match(guardTool('search', {}, '/workspace', undefined, own, info)!, /Read-only/);
+  assert.match(guardTool('search', {}, '/workspace', own, info)!, /Read-only/);
 });
 test('path comparisons prevent sibling-prefix confusion and resolve symlink writes', async () => {
   const root = await scratch('bg-path-test-');
   try {
     await fs.mkdir(join(root, 'protected')); await fs.symlink(join(root, 'protected'), join(root, 'alias'));
     assert.equal(canonicalPath(join(root, 'alias', 'new-file')), join(root, 'protected', 'new-file'));
-    const writer = record({ cwd: join(root, 'protected') });
-    assert.match(guardTool('write', { path: join(root, 'alias', 'new-file') }, root, writer, undefined, tool('write'))!, /writer lease/);
+    const own = record({ cwd: join(root, 'protected'), access: 'read' });
+    assert.match(guardTool('write', { path: join(root, 'alias', 'new-file') }, root, own, tool('write'))!, /Read-only/);
     assert.equal(within('/workspace-other/file', '/workspace'), false);
     assert.equal(within('/workspace/file', '/workspace'), true);
   } finally { await fs.rm(root, { recursive: true, force: true }); }

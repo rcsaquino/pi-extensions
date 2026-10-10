@@ -197,27 +197,21 @@ test('cooperative shutdown stores its actual cause and does not notify a new for
   assert.equal(f.job.record.status, 'cancelled'); assert.equal(f.job.record.terminalDiagnostics!.category, 'shutdown');
   assert.match(await f.manager.store!.output(f.job.record.id), /Pi stopped or reloaded/); assert.equal(f.notices.length, 0);
 });
-test('stuck-tool shutdown retains writer lease until the cooperating tool actually settles', async t => {
+test('stuck-tool shutdown reports interruption without resource locks; late calls remain task-scoped', async t => {
   const f = await fixture(t, { scenario: 'stuck-tool' }); await f.toolRunning;
   await f.manager.shutdown();
-  assert.equal(f.job.record.status, 'interrupted'); assert.ok(f.job.release);
+  assert.equal(f.job.record.status, 'interrupted'); assert.equal('release' in f.job, false);
   const before = await f.manager.store!.output(f.job.record.id);
   assert.match(before, /Status: interrupted/); assert.match(before, /outcome: not recorded/);
-  assert.equal((await fs.readdir(join(f.manager.store!.root, 'locks'))).filter(name => /^[a-f0-9]{24}\.json$/.test(name)).length, 1);
-  assert.equal(f.manager.locks!.conflicts([{ path: f.root, mode: 'write' }]), true);
+  await assert.rejects(fs.stat(join(f.manager.store!.root, 'locks')), { code: 'ENOENT' });
   f.releaseTool(); await f.job.done;
-  assert.equal(f.job.record.status, 'interrupted'); assert.equal((await fs.readdir(join(f.manager.store!.root, 'locks'))).filter(name => /^[a-f0-9]{24}\.json$/.test(name)).length, 0);
-  assert.equal(f.manager.locks!.conflicts([{ path: f.root, mode: 'write' }]), false);
+  assert.equal(f.job.record.status, 'interrupted'); assert.equal('locks' in f.manager, false);
   assert.equal(f.counts().tools, 1); assert.equal(f.counts().requests, 1); assert.equal(f.notices.length, 0);
 });
-test('lease cleanup failure cannot remain successful and does not leak the cleanup error', async t => {
-  const f = await fixture(t); const release = f.job.release!;
-  f.job.release = async () => { throw new Error(SECRET); }; await f.job.done;
-  assert.equal(f.job.record.status, 'failed'); assert.equal(f.job.record.terminalDiagnostics!.category, 'lease_cleanup_error');
-  assert.equal(f.job.record.terminalDiagnostics!.failurePhase, 'finalizing');
-  const output = await f.manager.store!.output(f.job.record.id);
-  assert.match(output, /Writer lease cleanup failed/); assert.match(output, /Partial worker prose/); assert.doesNotMatch(output, new RegExp(SECRET));
-  await release();
+test('completion has no resource-release callback or current lease cleanup diagnostic', async t => {
+  const f = await fixture(t); await f.job.done;
+  assert.equal(f.job.record.status, 'completed'); assert.equal('release' in f.job, false);
+  assert.equal(f.job.record.terminalDiagnostics!.category, 'complete'); assert.equal(f.job.record.terminalDiagnostics!.leaseCleanupFailed, undefined);
 });
 for (const fault of ['before-output', 'after-output'] as const) test(`storage failure ${fault} retains bounded honest retrieval without reserving completion`, async t => {
   const f = await fixture(t); const store = f.manager.store!; const write = store.write.bind(store);

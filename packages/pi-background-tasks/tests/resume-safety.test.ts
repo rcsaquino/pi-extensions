@@ -4,7 +4,6 @@ import * as fs from 'node:fs/promises';
 import { readFileSync, unlinkSync, writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { BackgroundManager } from '../src/manager.ts';
-import { ResourceLocks } from '../src/resources.ts';
 import { SafeWeb } from '../src/web.ts';
 import { Stage } from '../src/staging.ts';
 import { Store, atomicPrivateWrite } from '../src/store.ts';
@@ -27,22 +26,14 @@ async function fixture(t: test.TestContext) {
 const recordFor = (cwd: string): RecordData => ({ version: 1, id: 'bg-aaaaaaaaaaaa', title: 'Synthetic', sessionId: 'synthetic', cwd, provider: 'fake', model: 'fake', thinking: 'off', status: 'running', access: 'write', execution: 'direct', startedAt: Date.now(), etaSeconds: 300, etaMaxSeconds: 300, estimateReason: 'Synthetic', lastActivityAt: Date.now(), toolCalls: 0, turns: 0, usage: emptyUsage(), usageReported: false, notification: 'read', overrunNotified: false });
 const call = (toolCallId: string, toolName: string, path?: string) => ({ type: 'tool_call', toolCallId, ...(toolCallId.includes('/') ? { parentToolCallId: toolCallId.slice(0, toolCallId.lastIndexOf('/')) } : {}), toolName, input: path ? { path, content: 'synthetic' } : { command: 'synthetic' } }) as ToolCallEvent;
 
-test('direct worker escaping writes and opaque tools cannot bypass another protected namespace', async t => {
+test('direct concurrency grants no read-worker mutation permission', async t => {
   const { root, manager, ctx } = await fixture(t);
-  const record = recordFor(ctx.cwd);
-  const direct = await manager.locks!.acquire([{ path: ctx.cwd, mode: 'write' }], true, false, false); assert.ok(direct);
-  manager.jobs.set(record.id, { record, rootCallId: 'dispatch', controller: new AbortController(), release: direct, resourceLease: direct });
-  const target = join(root, 'other-stage'); const staged = await manager.locks!.acquire([{ path: target, mode: 'write' }], false, false, true); assert.ok(staged);
-  t.after(async () => { await staged(); await direct(); manager.jobs.delete(record.id); });
-  assert.equal(manager.guard(call('dispatch/1', 'write', join(target, 'file')), ctx)?.block, true);
+  const record = { ...recordFor(ctx.cwd), access: 'read' as const };
+  manager.jobs.set(record.id, { record, rootCallId: 'dispatch', controller: new AbortController() });
+  t.after(() => manager.jobs.delete(record.id));
+  assert.equal(manager.guard(call('dispatch/1', 'write', join(root, 'other-stage', 'file')), ctx)?.block, true);
   assert.equal(manager.guard(call('dispatch/2', 'bash'), ctx)?.block, true);
-});
-
-test('dead or replaced resource mutex is uncertainty, not a concurrently stealable lock', async t => {
-  const { root } = await fixture(t); const locks = new ResourceLocks(join(root, 'independent-locks'));
-  await fs.mkdir(locks.root); await fs.writeFile(join(locks.root, 'resources.mutex'), JSON.stringify({ pid: 2147483647, token: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }));
-  assert.equal(await locks.acquire([{ path: root, mode: 'write' }]), undefined);
-  assert.ok(await fs.stat(join(locks.root, 'resources.mutex')), 'do not unlink a mutex inspected earlier and race a new live owner');
+  assert.equal(manager.guard(call('foreground', 'bash'), ctx), undefined);
 });
 
 test('clearing web ownership aborts or invalidates pending work and prevents late result/cache publication', async () => {
@@ -56,23 +47,16 @@ test('clearing web ownership aborts or invalidates pending work and prevents lat
   } finally { if (previous === undefined) delete process.env.RESUME_INERT_KEY; else process.env.RESUME_INERT_KEY = previous; }
 });
 
-test('direct effects beyond cwd hold atomic tool resources, with safe ancestor-call ownership and no sibling exemption', async t => {
+test('opaque direct effects no longer acquire resources; nested identity and late-call cancellation still hold', async t => {
   const { root, manager, ctx } = await fixture(t); const record = recordFor(ctx.cwd);
-  const direct = await manager.locks!.acquire([{ path: ctx.cwd, mode: 'write' }], true, false, false); assert.ok(direct);
-  manager.jobs.set(record.id, { record, rootCallId: 'dispatch', controller: new AbortController(), release: direct, resourceLease: direct });
-  t.after(async () => { await direct(); manager.jobs.delete(record.id); });
-  const other = new ResourceLocks(manager.locks!.root), target = join(root, 'outside-cwd');
-  assert.equal(await manager.guardAndAcquire(call('dispatch/1', 'write', target), ctx), undefined);
-  assert.equal(await other.acquire([{ path: target, mode: 'read' }]), undefined);
-  await manager.toolEnded('dispatch/1');
-  assert.equal(await manager.guardAndAcquire(call('dispatch/2', 'opaque_fixture'), ctx), undefined);
-  assert.equal(await other.acquire([{ path: join(root, 'private-stage'), mode: 'write' }]), undefined, 'opaque live effects block new snapshot admission atomically');
-  assert.equal(await manager.guardAndAcquire(call('dispatch/2/1', 'read', target), ctx), undefined, 'owning ancestor capability covers the child');
-  assert.equal((await manager.guardAndAcquire(call('dispatch/3', 'write', target), ctx))?.block, true, 'sibling cannot inherit another invocation lease');
-  assert.equal(await manager.guardAndAcquire(call('foreground-read', 'read', target), ctx), undefined, 'compatibility foreground readers remain available during opaque direct work');
-  await manager.toolEnded('foreground-read');
-  await manager.toolEnded('dispatch/2');
-  const now = await other.acquire([{ path: target, mode: 'write' }]); assert.ok(now); await now();
+  const controller = new AbortController(); manager.jobs.set(record.id, { record, rootCallId: 'dispatch', controller });
+  t.after(() => manager.jobs.delete(record.id));
+  const target = join(root, 'outside-cwd');
+  for (const event of [call('dispatch/1', 'write', target), call('dispatch/2', 'opaque_fixture'), call('dispatch/2/1', 'read', target), call('dispatch/3', 'write', target), call('foreground-read', 'read', target)]) assert.equal(await manager.guardAndAdmit(event, ctx), undefined);
+  controller.abort(); assert.equal(manager.guard(call('dispatch/2/2', 'read', target), ctx)?.block, true);
+  assert.equal(manager.guard(call('foreground-write', 'write', target), ctx), undefined);
+  for (const id of ['dispatch/1', 'dispatch/2', 'dispatch/2/1', 'dispatch/3', 'foreground-read']) await manager.toolEnded(id);
+  assert.equal(manager.webScope('dispatch/1', ctx), 'synthetic:foreground');
 });
 
 test('captured model/provider definition is revalidated without resolving credentials or silently substituting a new profile', () => {
@@ -118,24 +102,25 @@ async function publication(t: test.TestContext) {
 
 test('rollback refuses an unowned replacement even when its bytes match the published output', async t => {
   const f = await publication(t);
-  await assert.rejects(f.stage.publish(f.manager.locks!, f.manifest.hash, undefined, index => {
+  await assert.rejects(f.stage.publish(f.manifest.hash, undefined, index => {
     if (index === 1) { unlinkSync(join(f.ctx.cwd, 'a.txt')); writeFileSync(join(f.ctx.cwd, 'a.txt'), 'new a'); throw new Error('Synthetic second-file failure'); }
   }), /recovery requires review/);
   assert.equal(await fs.readFile(join(f.ctx.cwd, 'a.txt'), 'utf8'), 'new a'); assert.equal(await fs.readFile(join(f.ctx.cwd, 'b.txt'), 'utf8'), 'base b');
-  assert.equal(f.manager.locks!.conflicts([{ path: join(f.ctx.cwd, 'a.txt'), mode: 'read' }], true), true);
+  await assert.rejects(f.stage.publish(f.manifest.hash), /Review/);
+  assert.equal(await f.manager.guardAndAdmit(call('foreground', 'write', join(f.ctx.cwd, 'a.txt')), f.ctx), undefined);
 });
 
-test('last publication validation catches prepared symlink swaps and locks rollback temps before any destructive effect', async t => {
+test('last publication validation catches prepared symlink swaps before any destructive effect', async t => {
   const f = await publication(t); const outside = join(f.root, 'outside.txt'); await fs.writeFile(outside, 'outside unchanged', { mode: 0o644 });
-  await assert.rejects(f.stage.publish(f.manager.locks!, f.manifest.hash, undefined, index => {
+  await assert.rejects(f.stage.publish(f.manifest.hash, undefined, index => {
     if (index !== 0) return;
     const journal = JSON.parse(readFileSync(join(f.stage.root, 'recovery', 'journal.json'), 'utf8'));
-    assert.equal(f.manager.locks!.conflicts([{ path: join(f.ctx.cwd, journal.rollbackNames['a.txt']), mode: 'write' }]), true);
+    assert.match(journal.rollbackNames['a.txt'], /^\.bg-.*\.tmp$/);
     const temp = join(f.ctx.cwd, journal.temporaryNames['a.txt']); unlinkSync(temp); symlinkSync(outside, temp);
   }));
   assert.equal(await fs.readFile(join(f.ctx.cwd, 'a.txt'), 'utf8'), 'base a'); assert.equal(await fs.readFile(join(f.ctx.cwd, 'b.txt'), 'utf8'), 'base b');
   assert.equal(await fs.readFile(outside, 'utf8'), 'outside unchanged'); assert.equal((await fs.stat(outside)).mode & 0o777, 0o644);
-  assert.equal(f.manager.locks!.conflicts([{ path: f.ctx.cwd, mode: 'write' }]), false);
+  assert.equal('locks' in f.manager, false);
 });
 
 test('foreground provider IDs cannot impersonate an owning staged broker or worker web namespace by prefix alone', async t => {

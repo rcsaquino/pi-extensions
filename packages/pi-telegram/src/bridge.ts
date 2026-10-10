@@ -4,12 +4,23 @@ import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { AgentActivityOutcome, ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
-import { ApiError, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type TgMessage, type TgUpdate } from "./api.ts";
+import { ApiError, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type TgMessage, type TgUpdate, type TgUser } from "./api.ts";
 import { type Config, DeliveryRefusal, type DeliveryRefusalCode, SafeError, redact, safeError, stamp } from "./config.ts";
 import { ConnectionLease } from "./connection-lease.ts";
 import { HumanInputScope } from "./human-input.ts";
+import { formatReplyContext } from "./reply-context.ts";
+import { DeliveryLedger, type DeliveryContext, type DeliveryEvent, type DeliveryRecord } from "./delivery-ledger.ts";
 
 const ALBUM_WAIT_MS = 1000;
+function noticeMetadata(value: unknown): Pick<Notice, "kind" | "status"> {
+  try {
+    const fields = value && typeof value === "object" ? Object.getOwnPropertyDescriptors(value) : {};
+    const kind = fields.kind && "value" in fields.kind ? fields.kind.value : undefined;
+    const status = fields.status && "value" in fields.status ? fields.status.value : undefined;
+    return { kind: ["eta", "overdue", "settled"].includes(kind) ? kind : "unknown",
+      status: ["completed", "failed", "cancelled", "interrupted"].includes(status) ? status : undefined };
+  } catch { return { kind: "unknown" }; }
+}
 interface QueuedRequest { messages: TgMessage[]; readyAt: number; content?: (TextContent | ImageContent)[] }
 interface Reply {
   sessionId: string;
@@ -17,7 +28,12 @@ interface Reply {
   started: boolean;
   submittedAt?: number;
   prompt?: string;
-  steeringPrompts?: Set<string>;
+  diagnosticId?: string;
+  taskId?: string;
+  ledgerNotice?: string;
+  noticeKind?: DeliveryRecord["kind"];
+  taskStatus?: DeliveryRecord["status"];
+  cancellation?: "foreign_input" | "unowned_user_start" | "custom_interruption";
   revision?: number;
   settling?: boolean;
   final?: string;
@@ -27,12 +43,15 @@ interface Reply {
 }
 interface Request extends QueuedRequest, Reply {}
 interface Report extends Reply { chat: number; noticeId: string }
-interface Notice { chat: number; sessionId: string; generation: number; id: string; content: string }
+interface Notice { chat: number; sessionId: string; generation: number; id: string; content: string;
+  replyId: string; noticeId: string; taskId?: string; kind: DeliveryRecord["kind"]; status?: DeliveryRecord["status"]; origin?: Report }
+type DiagnosticReason = NonNullable<Reply["cancellation"]> | "context_revoked" | "owner_session_or_allowlist_changed" | "outcome_unknown";
 export interface SendParams { path?: string; paths?: string[]; kind?: MediaKind; speech?: string }
 
 /** One Pi conversation and reply owner. Same-chat follow-ups steer; other chats wait. */
 export class TelegramBridge {
   readonly api: TelegramApi;
+  readonly ledger: DeliveryLedger;
   private controller = new AbortController();
   private queue: QueuedRequest[] = [];
   private active?: Request;
@@ -47,6 +66,7 @@ export class TelegramBridge {
   private directory: string;
   private stateDirectory: string;
   private offset?: number;
+  private botId?: number;
   private pollTask?: Promise<void>;
   private workTask?: Promise<void>;
   private worker?: ReturnType<typeof setInterval>;
@@ -61,31 +81,43 @@ export class TelegramBridge {
   private stopTask?: Promise<void>;
 
   constructor(private pi: ExtensionAPI, private ctx: ExtensionContext, readonly config: Config, fetcher?: Fetch) {
-    this.api = new TelegramApi(config, fetcher);
+    this.ledger = new DeliveryLedger(config.diagnosticsDir || resolve(config.stateDir || config.dataDir, "diagnostics"));
+    this.api = new TelegramApi(config, fetcher, this.ledger);
     const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
     this.directory = resolve(config.dataDir, bot);
     this.stateDirectory = resolve(config.stateDir || config.dataDir, bot);
   }
 
   private listen(): void {
-    this.humanInput = new HumanInputScope(this.pi);
+    this.humanInput = new HumanInputScope();
     this.offOwner = this.pi.events.on("background-tasks:claim-owner:v1", data => {
-      const query = data as { sessionId?: string; accept?: (route: (id: string, content: string) => boolean) => void };
-      const request = this.active;
-      if (!this.running || this.report || !request?.started || request.settling || request.controller.signal.aborted || this.foregroundOwner !== request ||
-        query.sessionId !== this.ctx.sessionManager.getSessionId() || request.sessionId !== query.sessionId || typeof query.accept !== "function") return;
-      // Capture the authenticated owner NOW, never an ambient last-chat fallback.
-      const chat = request.messages[0].chat.id;
-      const sessionId = request.sessionId;
+      const query = data as { sessionId?: string; taskId?: string; accept?: (route: (id: string, content: string, metadata?: { kind?: string; status?: string }) => boolean) => void };
+      const owner = this.reply();
+      if (!this.running || !owner?.started || owner.settling || owner.controller.signal.aborted || this.foregroundOwner !== owner ||
+        query?.sessionId !== this.ctx.sessionManager.getSessionId() || owner.sessionId !== query.sessionId || typeof query.accept !== "function") return;
+      // A report is authority only after its matching bridge-generated custom message
+      // actually starts. Inherit its route, not its text or new user authorization.
+      const origin = owner === this.report ? this.report : undefined;
+      const chat = this.chat(owner);
+      if (!this.config.allowed.has(String(chat)) || (origin && origin.outcome !== "completed")) return;
+      const sessionId = owner.sessionId;
       const generation = this.generation;
       const expiresAt = Date.now() + 7 * 86400_000;
-      query.accept((id, content) => {
-        if (!this.running || generation !== this.generation || Date.now() > expiresAt ||
-          sessionId !== this.ctx.sessionManager.getSessionId()) return false;
+      const taskId = typeof query.taskId === "string" && /^bg-[a-f0-9]{12}$/.test(query.taskId) ? query.taskId : undefined;
+      this.record({ ...this.correlation(owner, "notice"), task: taskId, phase: "task_captured", outcome: "not_applicable" });
+      query.accept((id, content, metadata) => {
+        const notice: Notice = { chat, sessionId, generation, id, content, replyId: randomUUID(), noticeId: randomUUID(), taskId, origin, ...noticeMetadata(metadata) };
+        // Normal report settlement does not abort its controller. Explicit report
+        // cancellation still revokes descendants, even if a notice already queued.
+        if (!this.running || generation !== this.generation || Date.now() > expiresAt || sessionId !== this.ctx.sessionManager.getSessionId() ||
+          !this.config.allowed.has(String(chat)) || (origin && (origin.controller.signal.aborted || origin.outcome !== "completed"))) {
+          this.noticeRecord(notice, "notice_suppressed", "route_expired"); return false;
+        }
         if (this.noticeIds.has(id)) return true;
-        if (this.notices.length >= 128 || this.noticeIds.size >= 1024) return false;
+        if (this.notices.length >= 128 || this.noticeIds.size >= 1024) { this.noticeRecord(notice, "notice_suppressed", "queue_full"); return false; }
         this.noticeIds.add(id);
-        this.notices.push({ chat, sessionId, generation, id, content });
+        this.notices.push(notice);
+        this.noticeRecord(notice, "notice_queued");
         return true;
       });
     });
@@ -95,12 +127,13 @@ export class TelegramBridge {
   get ownsConnection(): boolean { return this.running; }
   isTelegramPrompt(prompt: string): boolean {
     if (this.report?.prompt === prompt) return true;
-    return Boolean(this.active?.prompt && (prompt.includes(this.active.prompt) ||
-      [...this.active.steeringPrompts || []].some(text => prompt.includes(text))));
+    return Boolean(this.active && (prompt === this.active.prompt || this.humanInput?.hasPrompt(this.active, prompt)));
   }
 
   /** Navigation revokes ephemeral capabilities, including a switch that is later cancelled. */
   invalidate(): void {
+    for (const reply of [this.active, this.report]) if (reply) this.record({ ...this.correlation(reply, "reply"), phase: "suppressed", outcome: "suppressed", reason: "navigation_or_shutdown" });
+    for (const notice of this.notices) this.noticeRecord(notice, "notice_suppressed", "navigation_or_shutdown");
     this.generation++;
     this.foregroundRunning = false;
     this.active?.controller.abort();
@@ -114,9 +147,11 @@ export class TelegramBridge {
   private submit(request: Request, content: (TextContent | ImageContent)[], deliverAs: "steer" | "followUp"): void {
     const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
     const generation = this.generation;
-    this.humanInput!.send(text, this.ctx.sessionManager.getSessionId(),
-      () => this.running && generation === this.generation && !request.controller.signal.aborted,
-      () => this.pi.sendUserMessage(content, { deliverAs, expandPromptTemplates: false }));
+    this.humanInput!.send(text, request.sessionId,
+      () => this.running && generation === this.generation && !request.controller.signal.aborted &&
+        request.sessionId === this.ctx.sessionManager.getSessionId(),
+      () => this.pi.sendUserMessage(content, { deliverAs, expandPromptTemplates: false }),
+      { images: content.filter(block => block.type === "image"), owner: request, steering: deliverAs === "steer" });
   }
 
   private statusChanged(connected: boolean, detail?: string): void {
@@ -132,6 +167,7 @@ export class TelegramBridge {
     if (this.running) return;
     if (this.stopTask) { await this.stopTask; return this.start(); }
     this.running = true;
+    this.botId = undefined;
     this.controller = new AbortController();
     this.listen();
     this.statusChanged(false, "connecting");
@@ -198,6 +234,7 @@ export class TelegramBridge {
     this.active = undefined;
     this.stopTask = (async () => {
       await Promise.allSettled([this.pollTask, this.workTask, this.typingTask, this.sending]);
+      await this.ledger.flush(2000);
       const lease = this.lease;
       this.lease = undefined;
       await lease?.release();
@@ -221,7 +258,8 @@ export class TelegramBridge {
     while (!signal.aborted) {
       try {
         if (!verified) {
-          await this.api.call("getMe", {}, signal);
+          const me = await this.api.call<TgUser>("getMe", {}, signal);
+          this.botId = Number.isSafeInteger(me.id) && me.id > 0 ? me.id : undefined;
           const hook = await this.api.call<{ url: string }>("getWebhookInfo", {}, signal);
           if (hook.url) throw new ApiError(409);
           await this.api.clearCommands(signal);
@@ -264,9 +302,20 @@ export class TelegramBridge {
     return task;
   }
 
-  private async text(chat: number, text: string, signal?: AbortSignal): Promise<void> {
+  private async text(chat: number, text: string, signal?: AbortSignal, context?: DeliveryContext): Promise<void> {
     const combined = signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal;
-    await this.serial(() => { combined.throwIfAborted(); return this.api.sendText(chat, text, combined); });
+    await this.serial(() => { combined.throwIfAborted(); return this.api.sendText(chat, text, combined, context); });
+  }
+
+  private record(event: DeliveryEvent): void { try { void this.ledger.append(event).catch(() => {}); } catch {} }
+  private correlation(reply: Reply, operation: DeliveryContext["operation"], parent?: string): DeliveryContext {
+    reply.diagnosticId ||= randomUUID();
+    return { reply: reply.diagnosticId, operation, parent, revision: reply.revision || 0,
+      task: reply.taskId, notice: reply.ledgerNotice, kind: reply.noticeKind, status: reply.taskStatus };
+  }
+  private noticeRecord(notice: Notice, phase: "notice_queued" | "notice_suppressed", reason?: DeliveryEvent["reason"]): void {
+    this.record({ reply: notice.replyId, notice: notice.noticeId, task: notice.taskId, kind: notice.kind, status: notice.status, operation: "notice",
+      phase, outcome: phase === "notice_queued" ? "not_applicable" : "suppressed", reason });
   }
 
   private async receive(message: TgMessage): Promise<void> {
@@ -320,7 +369,9 @@ export class TelegramBridge {
     }
     if (paths.length) parts.push(`[Attachment/s]\n${paths.join("\n")}`);
     const date = new Date(Math.min(...request.messages.map(message => message.date)) * 1000);
-    content.unshift({ type: "text", text: stamp(redact(parts.join("\n\n"), this.config), date) });
+    const reference = formatReplyContext(request.messages, this.config, this.botId);
+    const current = stamp(redact(parts.join("\n\n"), this.config), date);
+    content.unshift({ type: "text", text: reference ? `${reference}\n\n${current}` : current });
     return content;
   }
 
@@ -334,8 +385,6 @@ export class TelegramBridge {
         this.queue.unshift(followUp);
         return;
       }
-      const prompt = followUp.content.filter(block => block.type === "text").map(block => block.text).join("\n");
-      (request.steeringPrompts ||= new Set()).add(prompt);
       this.submit(request, followUp.content, "steer");
     } catch (error) {
       if (this.running) await this.text(followUp.messages[0].chat.id, safeError(error)).catch(() => {});
@@ -346,6 +395,7 @@ export class TelegramBridge {
     if (!this.running) return;
     if (this.report) {
       if (!this.report.started && this.report.submittedAt && Date.now() - this.report.submittedAt > 10_000 && this.ctx.isIdle()) {
+        this.record({ ...this.correlation(this.report, "notice"), phase: "suppressed", outcome: "suppressed", reason: "start_watchdog" });
         this.report.controller.abort(); this.report = undefined;
       }
       return;
@@ -353,8 +403,9 @@ export class TelegramBridge {
     if (this.active) {
       const request = this.active;
       if (!request.started && request.submittedAt && Date.now() - request.submittedAt > 10_000 && this.ctx.isIdle()) {
+        this.record({ ...this.correlation(request, "reply"), phase: "suppressed", outcome: "suppressed", reason: "start_watchdog" });
         request.controller.abort(); this.foregroundOwner = undefined; this.active = undefined;
-        await this.text(request.messages[0].chat.id, "Pi did not start this request. Check the TUI for configuration or extension errors.");
+        await this.text(request.messages[0].chat.id, "Pi did not start this request. Check the TUI for configuration or extension errors.", undefined, this.correlation(request, "warning"));
       } else if (this.connected && request.started && !request.settling && !this.ctx.isIdle()) {
         // Do not let another chat's queued request block the current owner's correction.
         const index = this.queue.findIndex(item => item.messages[0].chat.id === request.messages[0].chat.id);
@@ -367,14 +418,23 @@ export class TelegramBridge {
     if (!this.connected || this.foregroundRunning || !this.ctx.isIdle() || this.ctx.hasPendingMessages()) return;
     if (!this.queue.length) {
       const notice = this.notices.shift();
-      if (!notice || notice.generation !== this.generation || notice.sessionId !== this.ctx.sessionManager.getSessionId()) return;
-      const noticeId = randomUUID();
+      if (!notice) return;
+      if (notice.generation !== this.generation || notice.sessionId !== this.ctx.sessionManager.getSessionId() || !this.config.allowed.has(String(notice.chat)) ||
+        (notice.origin && (notice.origin.controller.signal.aborted || notice.origin.outcome !== "completed"))) {
+        this.noticeRecord(notice, "notice_suppressed", "route_expired"); return;
+      }
+      const noticeId = notice.noticeId;
       this.report = { chat: notice.chat, noticeId, sessionId: notice.sessionId, prompt: notice.content, controller: new AbortController(),
+        diagnosticId: notice.replyId, taskId: notice.taskId, ledgerNotice: noticeId, noticeKind: notice.kind, taskStatus: notice.status,
         started: false, submittedAt: Date.now(), outcome: "completed" };
+      this.record({ ...this.correlation(this.report, "notice"), phase: "report_submitted", outcome: "not_applicable" });
       try {
         this.pi.sendMessage({ customType: "background-notice", content: notice.content, display: false,
           details: { telegramNoticeId: noticeId } }, { triggerTurn: true, deliverAs: "followUp" });
-      } catch { this.report.controller.abort(); this.report = undefined; }
+      } catch {
+        this.record({ ...this.correlation(this.report, "notice"), phase: "suppressed", outcome: "suppressed", reason: "start_failed" });
+        this.report.controller.abort(); this.report = undefined;
+      }
       return;
     }
     if (this.queue[0].readyAt > Date.now()) return;
@@ -397,11 +457,30 @@ export class TelegramBridge {
     }
   }
 
+  private diagnostic(reply: Reply, phase: "cancelled" | "suppressed" | "send_attempt" | "sent" | "send_failed", reason?: DiagnosticReason): void {
+    // Closed metadata only: no chat/session IDs, content, paths, provider errors or credentials.
+    reply.diagnosticId ||= randomUUID();
+    // Persistent-only: the API records send phases; do not duplicate them or write around Pi's TUI.
+    if (phase === "cancelled" || phase === "suppressed") this.record({ ...this.correlation(reply, "reply"), phase, outcome: "suppressed", reason });
+  }
+
+  private cancel(reply: Reply | undefined, reason: NonNullable<Reply["cancellation"]>): void {
+    if (!reply || reply.controller.signal.aborted) return;
+    reply.cancellation = reason;
+    reply.controller.abort();
+    this.diagnostic(reply, "cancelled", reason);
+  }
+
+  /** Arm only the admitted submission's own pre-normalization lifecycle. */
+  beforeStart(prompt: string, images?: ImageContent[]): boolean {
+    if (this.report) return !this.report.controller.signal.aborted && this.report.prompt === prompt;
+    return Boolean(this.active && this.humanInput?.prepare(prompt, images, this.ctx.sessionManager.getSessionId(), this.active));
+  }
+
   input(event: InputEvent): void {
-    // Text equality alone is not authority: an intervening local/generic input can
-    // repeat the exact Telegram prompt. Only this bridge's async submission is owned.
-    if (this.humanInput?.matches(event, this.ctx.sessionManager.getSessionId())) return;
-    this.active?.controller.abort(); this.report?.controller.abort();
+    // One-use admission, never ambient text equality or a last-chat fallback.
+    if (this.active && this.humanInput?.admit(event, this.ctx.sessionManager.getSessionId(), this.active)) return;
+    this.cancel(this.active, "foreign_input"); this.cancel(this.report, "foreign_input");
     this.foregroundOwner = undefined;
   }
 
@@ -409,23 +488,23 @@ export class TelegramBridge {
     if (message.role === "custom") {
       const id = (message.details as { telegramNoticeId?: unknown } | undefined)?.telegramNoticeId;
       this.foregroundOwner = undefined;
-      if (this.report && message.customType === "background-notice" && id === this.report.noticeId && !this.report.started && !this.report.controller.signal.aborted) {
+      if (this.running && this.report && this.report.sessionId === this.ctx.sessionManager.getSessionId() &&
+        message.customType === "background-notice" && id === this.report.noticeId && !this.report.started && !this.report.controller.signal.aborted) {
         this.report.started = true;
         this.foregroundOwner = this.report;
-      } else if (this.report) { this.report.started = false; this.report.controller.abort(); }
-      if (this.active) this.active.controller.abort();
+        this.record({ ...this.correlation(this.report, "notice"), phase: "report_started", outcome: "not_applicable" });
+      } else if (this.report) { this.report.started = false; this.cancel(this.report, "custom_interruption"); }
+      this.cancel(this.active, "custom_interruption");
       return;
     }
     if (message.role !== "user") return;
     // A local/RPC user that intervenes in a report must not capture its chat or final.
-    if (this.report) { this.report.started = false; this.report.controller.abort(); }
+    if (this.report) { this.report.started = false; this.cancel(this.report, "unowned_user_start"); }
     this.foregroundOwner = undefined;
-    if (!this.active?.prompt) return;
-    const text = typeof message.content === "string" ? message.content : Array.isArray(message.content)
-      ? message.content.filter(block => block?.type === "text").map(block => block.text).join("\n") : "";
-    const steering = [...this.active.steeringPrompts || []].find(prompt => text === prompt);
-    if (steering) {
-      this.active.steeringPrompts!.delete(steering);
+    if (!this.active?.prompt || this.active.controller.signal.aborted) return;
+    const consumed = this.humanInput?.consume(message.content, this.ctx.sessionManager.getSessionId(), this.active);
+    if (!consumed) { this.cancel(this.active, "unowned_user_start"); return; }
+    if (consumed.steering) {
       this.active.revision = (this.active.revision || 0) + 1;
       this.active.settling = false;
       // Only a consumed correction supersedes the old final/voice-only state.
@@ -433,13 +512,14 @@ export class TelegramBridge {
       this.active.spoke = this.active.delivered = false;
       this.active.outcome = "completed";
     }
-    if (text === this.active.prompt || steering) { this.active.started = true; this.foregroundOwner = this.active; }
-    else this.active.controller.abort();
+    this.active.started = true;
+    this.foregroundOwner = this.active;
   }
 
   assistantEnd(message: { role: string; content?: unknown; stopReason?: string }): void {
     const request = this.reply();
-    if (!request?.started || request.controller.signal.aborted || message.role !== "assistant" || !Array.isArray(message.content)) return;
+    if (!request?.started || request.controller.signal.aborted || this.foregroundOwner !== request ||
+      request.sessionId !== this.ctx.sessionManager.getSessionId() || message.role !== "assistant" || !Array.isArray(message.content)) return;
     if (message.stopReason === "toolUse" || message.content.some(block => block?.type === "toolCall")) {
       request.final = undefined;
       return;
@@ -447,17 +527,22 @@ export class TelegramBridge {
     const successful = ["stop", "length"].includes(message.stopReason || "");
     request.outcome = successful ? "completed" : message.stopReason === "aborted" ? "aborted" : "error";
     request.final = successful ? message.content.filter(block => block?.type === "text").map(block => block.text).join("\n").trim() : undefined;
+    this.record({ ...this.correlation(request, "reply"), phase: "generated", outcome: "not_applicable", reason: successful ? undefined : request.outcome === "aborted" ? "agent_aborted" : "agent_error" });
   }
 
   boundary(outcome: AgentActivityOutcome): void { const request = this.reply(); if (request?.started) request.outcome = outcome; }
 
-  agentStart(): void { this.foregroundRunning = true; }
+  agentStart(): void {
+    this.foregroundRunning = true;
+    this.humanInput?.startRun(this.ctx.sessionManager.getSessionId());
+  }
 
   async settled(): Promise<void> {
     this.foregroundRunning = false;
     const request = this.reply();
     if (request?.settling) return;
     if (!request?.started || request.controller.signal.aborted) {
+      if (request?.controller.signal.aborted) this.diagnostic(request, "suppressed", request.cancellation || "context_revoked");
       // Pi advertises idle before all agent_settled observers finish. A queue timer
       // can submit a deferred report in that interval; this is the OLD run's event,
       // not settlement of the report. Keep it pending, still unauthorized until its
@@ -472,21 +557,31 @@ export class TelegramBridge {
     request.settling = true;
     const revision = request.revision;
     const chat = this.chat(request);
+    const delivery = { ...this.correlation(request, "reply"), delivery: randomUUID() };
+    this.record({ ...delivery, phase: "settled", outcome: "not_applicable" });
     try {
       if (!this.running) return;
+      if (this.foregroundOwner !== request || request.sessionId !== this.ctx.sessionManager.getSessionId() || !this.config.allowed.has(String(chat))) {
+        this.diagnostic(request, "suppressed", "owner_session_or_allowlist_changed");
+        return;
+      }
       if (request.outcome !== "completed") {
-        await this.text(chat, request.outcome === "aborted" ? "Pi request was cancelled." : "Pi could not complete this request. Check the TUI for details.", request.controller.signal);
+        await this.text(chat, request.outcome === "aborted" ? "Pi request was cancelled." : "Pi could not complete this request. Check the TUI for details.", request.controller.signal, this.correlation(request, "warning", delivery.delivery));
       } else if (request.spoke) {
         // An explicit voice message is the complete reply, even if the model says 'Sent' afterward.
+        this.record({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "voice_only" });
         return;
       } else if (request.final) {
         // Input format does not opt the user into speech. Only explicit tool sends produce voice.
-        await this.text(chat, request.final, request.controller.signal);
-      }
+        this.diagnostic(request, "send_attempt");
+        await this.text(chat, request.final, request.controller.signal, delivery);
+        this.diagnostic(request, "sent");
+      } else this.record({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "empty_final" });
       // A successful empty final or attachment-only reply intentionally sends no chat.
     } catch (error) {
+      this.diagnostic(request, "send_failed", request.controller.signal.aborted ? "context_revoked" : "outcome_unknown");
       if (this.running && !request.controller.signal.aborted) {
-        await this.text(chat, safeError(error), request.controller.signal).catch(() => {});
+        await this.text(chat, safeError(error), request.controller.signal, this.correlation(request, "warning", delivery.delivery)).catch(() => {});
         if (this.ctx.hasUI) this.ctx.ui.notify(safeError(error), "warning");
       }
     } finally {
@@ -496,7 +591,7 @@ export class TelegramBridge {
       }
       if (this.active === request && request.revision === revision) {
         this.foregroundOwner = undefined;
-        if (this.running && request.steeringPrompts?.size) {
+        if (this.running && this.humanInput?.hasPending(request)) {
           // A slow input hook can finish after settlement and start a new run.
           // Retain the reply owner until that already-submitted input is consumed.
           request.started = false;
@@ -509,7 +604,9 @@ export class TelegramBridge {
   }
 
   private assertDelivery(request: Request | Report | undefined, signal?: AbortSignal): asserts request is Request | Report {
-    const refuse = (code: DeliveryRefusalCode): never => { throw new DeliveryRefusal(code, {
+    const refuse = (code: DeliveryRefusalCode): never => {
+      if (request) this.record({ ...this.correlation(request, "attachment"), phase: "suppressed", outcome: "suppressed", reason: "local_refusal" });
+      throw new DeliveryRefusal(code, {
       running: this.running, connected: this.connected, context: !request ? "none" : "chat" in request ? "report" : "request",
       started: Boolean(request?.started), settling: Boolean(request?.settling), cancelled: Boolean(request?.controller.signal.aborted),
       owned: Boolean(request && this.foregroundOwner === request),
@@ -537,15 +634,16 @@ export class TelegramBridge {
     if (signal) signals.push(signal);
     const combined = AbortSignal.any(signals);
     const beforeUpload = () => this.assertDelivery(request, signal);
+    const context = this.correlation(request, params.speech || params.kind === "voice" ? "voice" : "attachment");
     await this.serial(async () => {
       beforeUpload();
       if (params.speech) {
-        await this.api.speak(this.chat(request), params.speech, combined, beforeUpload);
+        await this.api.speak(this.chat(request), params.speech, combined, beforeUpload, context);
         request.spoke = request.delivered = true;
       } else {
         const files = await Promise.all((params.paths || [params.path!]).map(path => outboundFile(this.ctx.cwd, path, params.kind, this.config.dataDir, combined)));
         beforeUpload();
-        await this.api.sendGroup(this.chat(request), files, combined, beforeUpload);
+        await this.api.sendGroup(this.chat(request), files, combined, beforeUpload, { ...context, operation: files.some(file => file.kind === "voice") ? "voice" : "attachment" });
         request.delivered = true;
         if (files.some(file => file.kind === "voice")) request.spoke = true;
       }

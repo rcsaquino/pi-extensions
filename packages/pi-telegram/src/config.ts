@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { parseEnv } from "node:util";
+import type { CauseCode } from "./delivery-ledger.ts";
 
 export class SafeError extends Error {}
 
@@ -36,7 +37,7 @@ export class DeliveryRefusal extends SafeError {
 
 export type TransportFailureCode = "TG_TRANSPORT_CANCELLED" | "TG_TRANSPORT_TIMEOUT" | "TG_TRANSPORT_FAILED" | "TG_TRANSPORT_RESPONSE";
 export class TransportFailure extends SafeError {
-  constructor(readonly code: TransportFailureCode, readonly deliveryOutcome: "unknown" | "not_applicable") {
+  constructor(readonly code: TransportFailureCode, readonly deliveryOutcome: "unknown" | "not_applicable", readonly causeCode: CauseCode = "unknown") {
     const reason = code === "TG_TRANSPORT_CANCELLED" ? "request was cancelled" : code === "TG_TRANSPORT_TIMEOUT" ? "request deadline elapsed"
       : code === "TG_TRANSPORT_RESPONSE" ? "response could not be confirmed" : "network request failed (cause unverified)";
     super(`Telegram transport [${code}]: ${reason}.` + (deliveryOutcome === "unknown"
@@ -60,6 +61,8 @@ export interface Config {
   tmpDir?: string;
   /** Shared by all Pi instances using this agent directory, regardless of cwd. */
   lockDir?: string;
+  /** Metadata-only bounded delivery diagnostics, never credentials or recipient identity. */
+  diagnosticsDir?: string;
 }
 
 export function parseAllowed(value: string): Set<string> {
@@ -106,6 +109,7 @@ export async function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.e
     stateDir: resolve(home, "state"),
     tmpDir: resolve(home, "tmp"),
     lockDir: resolve(home, "locks"),
+    diagnosticsDir: resolve(home, "diagnostics"),
   };
 }
 
@@ -116,12 +120,12 @@ export function redact(text: string, config: Config): string {
   return text;
 }
 
-/** Telegram's original instant, represented in the host's timezone with an explicit ISO offset. */
+/** Telegram's original instant, represented to seconds in the host's timezone with an explicit ISO offset. */
 export function stamp(text: string, date = new Date()): string {
   const pad = (value: number, width = 2) => String(value).padStart(width, "0");
   const offset = -date.getTimezoneOffset();
   const iso = `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
-    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
     `${offset < 0 ? "-" : "+"}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
   return `[${iso}] ${text}`;
 }

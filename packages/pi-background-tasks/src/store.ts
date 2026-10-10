@@ -1,6 +1,5 @@
 import * as fs from 'node:fs/promises';
-import { constants, lstatSync } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { RecordData } from './types.ts';
 import { addUsage, emptyUsage, isActive } from './types.ts';
@@ -17,7 +16,7 @@ function safeRecord(record: RecordData): RecordData {
     ...(record.execution === 'direct' || record.execution === 'staged' ? { execution: record.execution } : {}),
     ...(record.queuedAt !== undefined ? { queuedAt: safeCounter(record.queuedAt) } : {}),
     ...(record.queueWaitMs !== undefined ? { queueWaitMs: safeCounter(record.queueWaitMs) } : {}),
-    ...(['capacity', 'resources', 'admission'].includes(record.waitingReason ?? '') ? { waitingReason: record.waitingReason } : {}),
+    ...(['capacity', 'admission'].includes(record.waitingReason ?? '') ? { waitingReason: record.waitingReason } : {}),
     ...(record.manifest !== undefined ? { manifest: safeManifest(record.manifest, record.id) } : {}),
     ...(['ready', 'published', 'review-required'].includes(record.publication ?? '') ? { publication: record.publication } : {}),
     startedAt: safeCounter(record.startedAt), ...(record.finishedAt !== undefined ? { finishedAt: safeCounter(record.finishedAt) } : {}),
@@ -34,7 +33,6 @@ function safeRecord(record: RecordData): RecordData {
 
 export const hash = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 24);
 export const validId = (id: string): boolean => /^bg-[a-f0-9]{12}$/.test(id);
-const noFollow = constants.O_NOFOLLOW ?? 0;
 
 export async function privateDirectory(path: string): Promise<void> {
   const dir = await Directory.open(path, true);
@@ -59,7 +57,7 @@ export class Store {
     this.root = resolve(root); this.sessionId = sessionId;
     this.recordsDir = join(this.root, 'sessions', hash(sessionId));
   }
-  async init(): Promise<void> { await privateDirectory(this.recordsDir); await privateDirectory(join(this.root, 'locks')); }
+  async init(): Promise<void> { await privateDirectory(this.recordsDir); }
   path(id: string, suffix: 'json' | 'md'): string {
     if (!validId(id)) throw new Error('Invalid background task ID.');
     return join(this.recordsDir, `${id}.${suffix}`);
@@ -111,48 +109,6 @@ export class Store {
       records.push(record);
     }
     return records.sort((a, b) => a.startedAt - b.startedAt);
-  }
-  hasWriterEvidence(cwd: string): boolean {
-    try { lstatSync(join(this.root, 'locks', `${hash(cwd)}.json`)); return true; }
-    catch (e) { return (e as NodeJS.ErrnoException).code !== 'ENOENT'; }
-  }
-  async acquireWriter(cwd: string, _retainUncertainDeadLease = true): Promise<() => Promise<void>> {
-    const dir = await Directory.open(join(this.root, 'locks')); const name = `${hash(cwd)}.json`, path = dir.entry(name);
-    const token = randomUUID(); let held = false;
-    const readLock = async () => {
-      const data = await dir.read(name, 4096);
-      if (!data) throw Object.assign(new Error('Writer lease is missing.'), { code: 'ENOENT' });
-      return JSON.parse(data.toString()) as { pid: number; token: string };
-    };
-    try {
-      // Never steal a live or malformed lease, and never replay work after a crash.
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          await dir.check();
-          const handle = await fs.open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600);
-          try { await handle.writeFile(JSON.stringify({ pid: process.pid, sessionId: this.sessionId, token }), 'utf8'); await handle.sync(); }
-          finally { await handle.close(); }
-          held = true; let released = false;
-          return async () => {
-            if (released) return;
-            const existing = await readLock();
-            if (existing.token !== token) throw new Error('Writer lease ownership changed; explicit review required.');
-            await dir.check(); await fs.unlink(path); await dir.handle.sync(); released = true; await dir.close();
-          };
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-          const existing = await readLock();
-          if (!Number.isSafeInteger(existing.pid) || existing.pid < 1) throw new Error('Malformed workspace writer lease; inspect storage before proceeding.');
-          let alive = true;
-          try { process.kill(existing.pid, 0); } catch (error) { alive = (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
-          if (alive) throw new Error('A live background writer already owns this workspace. Finish/cancel it first.');
-          // The legacy boolean remains source-compatible, but can no longer authorize
-          // racing dead-PID cleanup or assume detached children have stopped.
-          throw new Error('Interrupted legacy writer lease requires explicit review; a dead parent PID does not prove child writers stopped.');
-        }
-      }
-      throw new Error('Could not acquire the workspace writer lease.');
-    } finally { if (!held) await dir.close(); }
   }
 }
 async function readStoredText(path: string, limit: number): Promise<string> {

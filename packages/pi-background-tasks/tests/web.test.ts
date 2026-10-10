@@ -22,21 +22,21 @@ function syntheticProvider(t: test.TestContext) {
 const configuration = async () => ({ provider: 'parallel', parallelApiKey: '$SAFE_WEB_FIXTURE_KEY' });
 const result = { results: [{ title: 'Synthetic source', url: 'https://example.com/source', excerpts: ['Source-linked synthetic result'] }] };
 
-test('actual adapter is usable under a workspace writer, cached/uncached lookup and retrieval preserve source-bound guards', async t => {
+test('actual read-worker adapter cached/uncached lookup and retrieval preserve source-bound guards', async t => {
   const root = await scratch('web-'); t.after(() => fs.rm(root, { recursive: true, force: true }));
   const old = process.env.SAFE_WEB_FIXTURE_KEY; process.env.SAFE_WEB_FIXTURE_KEY = KEY; t.after(() => { if (old === undefined) delete process.env.SAFE_WEB_FIXTURE_KEY; else process.env.SAFE_WEB_FIXTURE_KEY = old; });
   let calls = 0; const web = new SafeWeb(async (_url, headers) => { calls++; assert.equal(headers['x-api-key'], KEY); await new Promise(r => setImmediate(r)); return result; }, configuration, () => 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
   const registry = new EffectRegistry(webContracts(['reviewed-source']));
   const info = (name: string) => ({ name, exposure: 'direct', sourceInfo: { path: 'reviewed-source' } }) as ToolInfo;
-  const writer = { version: 1 as const, id: 'bg-aaaaaaaaaaaa', title: 'Synthetic writer', sessionId: 'test', cwd: root, provider: 'fixture', model: 'fixture', thinking: 'off' as const, status: 'running' as const, access: 'write' as const, startedAt: 1, etaSeconds: 100, etaMaxSeconds: 100, estimateReason: 'fixture', lastActivityAt: 1, toolCalls: 0, turns: 0, usage: emptyUsage(), usageReported: false, notification: 'read' as const, overrunNotified: false };
-  assert.equal(guardTool('background_web_search', { query: 'synthetic' }, root, writer, undefined, info('background_web_search'), registry), undefined);
+  const own = { version: 1 as const, id: 'bg-aaaaaaaaaaaa', title: 'Synthetic writer', sessionId: 'test', cwd: root, provider: 'fixture', model: 'fixture', thinking: 'off' as const, status: 'running' as const, access: 'read' as const, startedAt: 1, etaSeconds: 100, etaMaxSeconds: 100, estimateReason: 'fixture', lastActivityAt: 1, toolCalls: 0, turns: 0, usage: emptyUsage(), usageReported: false, notification: 'read' as const, overrunNotified: false };
+  assert.equal(guardTool('background_web_search', { query: 'synthetic' }, root, own, info('background_web_search'), registry), undefined);
   const rows = await Promise.all(Array.from({ length: 20 }, () => web.search({ query: 'synthetic' }, 'test')));
   assert.equal(calls, 1); assert.equal(new Set(rows.map(r => r.responseId)).size, 20, 'intentional generator ID collisions cannot overwrite ownership');
   await web.search({ query: 'uncached' }, 'test'); assert.equal(calls, 2);
   const page = web.retrieve({ responseId: rows[0]!.responseId, findText: 'source-linked' }, 'test'); assert.match(JSON.stringify(page), /Source-linked/);
   assert.throws(() => web.retrieve({ responseId: rows[0]!.responseId }, 'other'), /different session/);
-  assert.equal(guardTool('background_web_result', { responseId: rows[0]!.responseId }, root, writer, undefined, info('background_web_result'), registry), undefined);
-  assert.match(guardTool('background_web_search', { query: 'safe' }, root, writer, undefined, { ...info('background_web_search'), sourceInfo: { path: 'spoof' } } as ToolInfo, registry)!, /unknown/);
+  assert.equal(guardTool('background_web_result', { responseId: rows[0]!.responseId }, root, own, info('background_web_result'), registry), undefined);
+  assert.match(guardTool('background_web_search', { query: 'safe' }, root, own, { ...info('background_web_search'), sourceInfo: { path: 'spoof' } } as ToolInfo, registry)!, /Read-only/);
   // No disk cache exists to alias, chmod, prune or evict. Synthetic malicious cache
   // files are untouched, rather than passed through the installed unsafe storage.
   const outside = join(root, 'outside'); await fs.writeFile(outside, 'synthetic outside', { mode: 0o644 }); await fs.link(outside, join(root, 'collision.json')); await fs.symlink(root, join(root, 'ancestor'));

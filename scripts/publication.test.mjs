@@ -8,10 +8,8 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repository = 'git+https://github.com/rcsaquino/pi-extensions.git';
 const identities = new Map([
-  ['pi-auto-learn', 'pi-auto-learn'],
   ['pi-background-tasks', '@rcsaquino/pi-background-tasks'],
   ['pi-idle-compaction', 'pi-idle-compaction'],
-  ['pi-latency-analytics', 'pi-latency-analytics'],
   ['pi-memoria', 'pi-memoria'],
   ['pi-telegram', '@rcsaquino/pi-telegram'],
 ]);
@@ -69,7 +67,7 @@ test('root stays private and publication checks join shared verification', () =>
   assert.equal(data.scripts['check:publication'], 'node --test scripts/publication.test.mjs');
 });
 
-test('six independent identities use the scoped names only where needed', () => {
+test('four independent identities use the scoped names only where needed', () => {
   const directories = readdirSync(join(root, 'packages'), { withFileTypes: true })
     .filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   assert.deepEqual(directories, [...identities.keys()].sort());
@@ -80,12 +78,10 @@ test('six independent identities use the scoped names only where needed', () => 
   }
 });
 
-test('memoria advances the public 0.3.1 baseline and auto-learn accepts Pi 1.x', () => {
+test('memoria advances the public 0.3.1 baseline', () => {
   const memory = packages.find(pkg => pkg.directory === 'pi-memoria').data;
   const [major, minor, patch] = memory.version.split('.').map(Number);
   assert.ok(major > 0 || minor > 3 || (minor === 3 && patch > 1), 'Do not regress the public memoria release');
-  const learner = packages.find(pkg => pkg.directory === 'pi-auto-learn').data;
-  assert.equal(learner.peerDependencies['@earendil-works/pi-coding-agent'], '^0.99.2 || ^1.0.0');
 });
 
 test('packages are public, MIT-licensed and point to the correct monorepo directory', () => {
@@ -188,7 +184,7 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /working-directory: packages\/pi-memoria/);
   assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);
-  for (const other of ['pi-telegram', 'pi-auto-learn', 'pi-background-tasks', 'pi-idle-compaction', 'pi-latency-analytics']) {
+  for (const other of ['pi-telegram', 'pi-background-tasks', 'pi-idle-compaction']) {
     assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
   }
 });

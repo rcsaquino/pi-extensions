@@ -16,7 +16,7 @@ A standalone extension using Node built-ins and the public Pi API. No runtime np
 - Pi coding-agent peer **`^0.99.2 || ^1.0.0`**.
 - Maintained offline baseline: Linux x64, Node 26.10.0, Pi 1.0.0. Other platforms and future APIs require their own checks.
 
-Production does not need a package-local `node_modules` directory. Development tests need their tools and the neighboring auto-learn source for a lease-protocol compatibility test.
+Production does not need a package-local `node_modules` directory. Development tests need only this package's tools and the Pi host.
 
 ## Installation
 
@@ -57,16 +57,6 @@ On/off is session-local and in memory. A fresh extension runtime defaults to ena
 
 ## Background coordination
 
-### Auto-learn admission
-
-The guard uses `--auto-learn-state` when registered and configured, otherwise `<Pi agent directory>/auto-learn`. A registered `auto_learn_status` tool makes missing coordination state unsafe. Existing state is also checked when that tool is absent, to cooperate with other instances sharing the root.
-
-Immediately before native compaction, it exclusively acquires auto-learn's **worker and writer leases**, retaining both until completion, error, or shutdown. This closes the admission race for that cooperating worker. The protocol uses private `locks/<name>/owner.json` files with PID, random token, and creation metadata.
-
-It does not import/install auto-learn, pause it, edit its config or skills, or clear evidence. It creates/removes only its own transient leases. Existing, malformed, or apparently stale leases are not stolen. Symlinks and unsafe owner files fail closed. Release validates ownership and frees writer before worker; cleanup uncertainty disables further admission rather than deleting someone else's lock.
-
-Auto-learn's own dead-PID recovery can reclaim a lease after a process dies. Unregistered writers that ignore this protocol are outside its exclusion boundary.
-
 ### Optional subagents and providers
 
 When legacy `subagent`, `subagents_enable`, `subagent_supervisor`, or `bg_wait` tools are present, their same-session ping/fleet-idle RPC must be healthy. Missing/error replies remain unsafe. If those tools are absent, no subagent RPC is required or called.
@@ -78,7 +68,7 @@ Other extensions can explicitly use `registerBackgroundWorkProvider()` from `bac
 > [!IMPORTANT]
 > This is not an OS-wide job supervisor. Arbitrary shell processes, remote jobs, and private extension state are invisible. Co-installing a background-capable package, including `@rcsaquino/pi-background-tasks`, does not automatically register a provider or prove that its work is covered. Review status and admission integration before relying on coordination.
 
-Provider snapshots are observations, not universal exclusion leases. Auto-learn's explicit worker/writer admission is the stronger exclusion mechanism for that specific integration.
+Provider snapshots are observations, not exclusion leases. They are rechecked after asynchronous RPC admission, but cannot prevent unregistered or newly starting work.
 
 ## Development
 
@@ -96,9 +86,9 @@ Runtime modules:
 
 - `index.ts`: Pi lifecycle/command adapter and optional RPC.
 - `controller.mjs`: timers, thresholds, history invalidation, and lease lifetime.
-- `background.mjs`: bounded provider snapshots and auto-learn leases.
+- `background.mjs`: bounded provider snapshots and optional RPC admission, without foreign runtime files.
 
-Tests use fake timers/compaction, private local fixtures, and the actual Pi loader. A test-only preload forbids network operations. The isolated loader check requires no runtime `node_modules` or subagent package. Lease compatibility tests use sibling `pi-auto-learn` source without introducing a runtime dependency.
+Tests use fake timers/compaction, private local fixtures, and the actual Pi loader. A test-only preload forbids network operations. The isolated loader check requires no runtime `node_modules` or subagent package.
 
 Read [AGENTS.md](AGENTS.md) for race/recovery regression requirements. Passing tests does not prove a paid compaction, a real 60-minute idle soak, or activation in a running host.
 

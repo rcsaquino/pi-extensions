@@ -291,6 +291,27 @@ test("same-chat follow-ups steer the active run without waiting for settlement",
   assert.deepEqual(h.server.texts().map(item => [item.chat_id, item.text]), [[123, "Corrected final."]]);
 });
 
+test("a steered intermediate final is preserved and sent before the corrected final", async t => {
+  const h = await fixture(t);
+  h.server.feed(message(1, "Initial task"));
+  await until(() => h.submissions.length === 1);
+  // First assistant message is already user-visible when the follow-up steers
+  // the run mid-settlement; both finals must reach Telegram in order.
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "First answer." }], stopReason: "stop" });
+  h.server.feed(message(2, "Axillary follow-up"));
+  await until(() => h.submissions.length === 2);
+  assert.equal(h.deliveries[1], "steer");
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Corrected answer." }], stopReason: "stop" });
+  h.setIdle(true);
+  await h.bridge.settled();
+  assert.deepEqual(h.server.texts().map(item => [item.chat_id, item.text]), [[123, "First answer."], [123, "Corrected answer."]]);
+  const records = await ledgerRecords(h);
+  const sent = records.filter(record => record.operation === "reply" && record.phase === "sent");
+  assert.equal(sent.length, 2);
+  assert.equal(new Set(sent.map(record => record.delivery)).size, 2);
+  assert.ok(sent.every(record => record.reply === sent[0].reply));
+});
+
 test("a queued different chat cannot block or capture the current owner's steering", async t => {
   const h = await fixture(t);
   h.server.feed(message(1, "Initial task", 123));

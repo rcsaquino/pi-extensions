@@ -37,6 +37,7 @@ interface Reply {
   revision?: number;
   settling?: boolean;
   final?: string;
+  pendingFinals?: { text: string; revision: number }[];
   outcome: AgentActivityOutcome;
   spoke?: boolean;
   delivered?: boolean;
@@ -524,6 +525,13 @@ export class TelegramBridge {
     const consumed = this.humanInput?.consume(message.content, this.ctx.sessionManager.getSessionId(), this.active);
     if (!consumed) { this.cancel(this.active, "unowned_user_start"); return; }
     if (consumed.steering) {
+      // A generated final is already user-visible in the TUI. Preserve it for
+      // ordered delivery instead of dropping it when the correction steers.
+      // Voice trailing text stays suppressed: an explicit voice send is the reply.
+      const superseded = this.active.final?.trim();
+      if (superseded && !this.active.spoke && this.active.outcome === "completed") {
+        (this.active.pendingFinals ||= []).push({ text: superseded, revision: this.active.revision || 0 });
+      }
       this.active.revision = (this.active.revision || 0) + 1;
       this.active.settling = false;
       // Only a consumed correction supersedes the old final/voice-only state.
@@ -585,17 +593,58 @@ export class TelegramBridge {
         return;
       }
       if (request.outcome !== "completed") {
+        // Steered intermediate finals were already user-visible; deliver them
+        // in order before reporting the terminal outcome.
+        const queued = request.pendingFinals?.splice(0) ?? [];
+        request.pendingFinals = [];
+        request.final = undefined;
+        const finals = queued.filter((item, index) => index === 0 || item.text !== queued[index - 1].text);
+        for (const item of finals) {
+          await this.text(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
+        }
         await this.text(chat, request.outcome === "aborted" ? "Pi request was cancelled." : "Pi could not complete this request. Check the TUI for details.", request.controller.signal, this.correlation(request, "warning", delivery.delivery));
       } else if (request.spoke) {
+        // A steered intermediate text final is still user-visible, but trailing
+        // text after an explicit voice send stays suppressed.
+        const queued = request.pendingFinals?.splice(0) ?? [];
+        request.pendingFinals = [];
+        request.final = undefined;
+        const finals = queued.filter((item, index) => index === 0 || item.text !== queued[index - 1].text);
+        for (const item of finals) {
+          this.diagnostic(request, "send_attempt");
+          await this.text(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
+          this.diagnostic(request, "sent");
+        }
         // An explicit voice message is the complete reply, even if the model says 'Sent' afterward.
         this.record({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "voice_only" });
         return;
-      } else if (request.final) {
-        // Input format does not opt the user into speech. Only explicit tool sends produce voice.
-        this.diagnostic(request, "send_attempt");
-        await this.text(chat, request.final, request.controller.signal, delivery);
-        this.diagnostic(request, "sent");
-      } else this.record({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "empty_final" });
+      } else {
+        // Move already-generated finals to local state before any await, so a
+        // correction steering mid-send cannot re-queue the final being sent.
+        const queued = request.pendingFinals?.splice(0) ?? [];
+        request.pendingFinals = [];
+        const currentText = request.final?.trim();
+        const currentRevision = request.revision || 0;
+        request.final = undefined;
+        const ordered = [...queued];
+        if (currentText) ordered.push({ text: currentText, revision: currentRevision });
+        // True retries/continuations repeat content; send repeated text once.
+        const finals = ordered.filter((item, index) => index === 0 || item.text !== ordered[index - 1].text);
+        if (!finals.length) {
+          this.record({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "empty_final" });
+        } else if (finals.length === 1 && !queued.length) {
+          // Input format does not opt the user into speech. Only explicit tool sends produce voice.
+          this.diagnostic(request, "send_attempt");
+          await this.text(chat, finals[0].text, request.controller.signal, delivery);
+          this.diagnostic(request, "sent");
+        } else for (const item of finals) {
+          // Steered intermediate finals keep their own revision and delivery
+          // identity under the same reply, parented to this settlement.
+          this.diagnostic(request, "send_attempt");
+          await this.text(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
+          this.diagnostic(request, "sent");
+        }
+      }
       // A successful empty final or attachment-only reply intentionally sends no chat.
     } catch (error) {
       this.diagnostic(request, "send_failed", request.controller.signal.aborted ? "context_revoked" : "outcome_unknown");

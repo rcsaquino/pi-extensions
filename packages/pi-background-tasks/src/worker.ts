@@ -3,7 +3,7 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import type { AgentMessage, AgentTool, StreamFn } from '@earendil-works/pi-agent-core';
 import { getCurrentSystemMessage } from '@earendil-works/pi-ai';
 import type { AssistantMessage } from '@earendil-works/pi-ai';
-import { buildSessionContext, convertToLlm, estimateTokens, generateSummaryWithUsage } from '@earendil-works/pi-coding-agent';
+import { buildSessionContext, convertToLlm, estimateTokens, generateSummaryWithUsage, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Job, NormalizedDispatch, Profile } from './types.ts';
 import { addUsage } from './types.ts';
@@ -18,6 +18,10 @@ export function createWorker(pi: ExtensionAPI, job: Job, profile: Profile, dispa
   const ctx = job.ctx!;
   const progress = job.progress = { lastPhase: 'preparing', pendingTools: new Set<string>(), abortedTools: new Set<string>() } as NonNullable<Job['progress']>;
   const settings = structuredClone(pi.getSettings());
+  // Resolve Pi's numeric/"disabled" timeout settings without touching disk or other inherited settings.
+  const timeoutSettings = SettingsManager.inMemory(settings);
+  const httpIdleTimeoutMs = timeoutSettings.getHttpIdleTimeoutMs();
+  const websocketConnectTimeoutMs = timeoutSettings.getWebSocketConnectTimeoutMs() ?? 15_000;
   const snapshot = job.contextSnapshot ?? contextMessages(dispatch, () => buildSessionContext(ctx.sessionManager.getBranch()).messages);
   // Execute through the ORIGINAL host tool pipeline, not directly through an unguarded execute function.
   // This also preserves extension/MCP tools and their live runtime without starting another Telegram poller.
@@ -77,8 +81,8 @@ export function createWorker(pi: ExtensionAPI, job: Job, profile: Profile, dispa
           await options?.onResponse?.(response, requestModel);
         },
         thinkingBudgets: options?.thinkingBudgets ?? settings.thinkingBudgets,
-        timeoutMs: settings.retry?.provider?.timeoutMs ?? (settings.httpIdleTimeoutMs === 0 ? 2147483647 : settings.httpIdleTimeoutMs ?? 300_000),
-        websocketConnectTimeoutMs: settings.websocketConnectTimeoutMs ?? 15_000,
+        timeoutMs: settings.retry?.provider?.timeoutMs ?? (httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs),
+        websocketConnectTimeoutMs,
         maxRetries: settings.retry?.provider?.maxRetries ?? 0,
         maxRetryDelayMs: settings.retry?.provider?.maxRetryDelayMs ?? 60_000,
       });

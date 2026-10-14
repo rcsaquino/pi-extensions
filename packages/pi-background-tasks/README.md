@@ -17,7 +17,7 @@ Runs independent in-process workers while the main chat remains available. Each 
 - **Node.js 22.19+** and **Pi 1.x**, as declared by this package.
 - A long-lived **TUI or RPC** session. Print/JSON mode refuses background starts that would die at exit.
 - A writable private runtime directory and the current public Pi nested-tool/model APIs.
-- **Linux with procfs** for this unreleased descriptor-safe file/staging/configuration implementation. Unsupported platforms fail closed. The maintained offline environment is Node 26.10.0 and Pi 1.0.0.
+- **Linux with procfs** for this unreleased descriptor-safe file/staging/configuration implementation. Unsupported platforms fail closed. The maintained offline environment is Node 26.11.1 and Pi 1.2.0.
 
 There are no runtime npm dependencies. Pi supplies the declared host peers. Virtual model routers are rejected in this version; select a physical model rather than relying on an undocumented substitution.
 
@@ -81,7 +81,7 @@ Workers inherit effective system/project/memory instructions, skill descriptions
 
 Provider calls use the parent's model registry and request-time authentication. Direct compatibility tools use public `ctx.executeTool`, retaining validation, permission hooks, dynamic enablement, and redaction. Staged built-in file declarations route through the owner-checked `background_stage_file` broker, not tools bound to the parent's cwd. Permission policies must explicitly authorize that broker's operation and declared path contract; a policy matching only the built-in name `write` must not assume it also approves the broker. Extensions are not loaded again, so no duplicate pollers, learners, or services are created. A running worker keeps its dispatch profile when the main chat changes models.
 
-Deliberate exclusions include foreground `model-only`/hidden tools, recursive worker-spawning controls, and Telegram delivery. The main chat reviews results and sends requested attachments. Provider/header/context lifecycle behavior and AgentSession recovery are not a bit-for-bit clone of another foreground session.
+Deliberate exclusions include foreground `model-only`/hidden tools, recursive worker-spawning controls, and Telegram delivery. The main chat reviews results and sends requested attachments. Inherited HTTP/WebSocket timeout settings are normalized through Pi's public settings API: numeric zero and `"disabled"` remain disabled, and provider request-timeout overrides retain precedence. Other captured settings, including disabled compaction, are unchanged. Provider/header/context lifecycle behavior and AgentSession recovery are not a bit-for-bit clone of another foreground session.
 
 ## Safety and lifecycle
 

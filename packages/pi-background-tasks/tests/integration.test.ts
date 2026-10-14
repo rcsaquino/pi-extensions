@@ -20,9 +20,9 @@ async function eventually<T>(fn: () => Promise<T> | T, predicate: (value: T) => 
   const end = Date.now() + timeout;
   for (;;) { const value = await fn(); if (predicate(value)) return value; if (Date.now() > end) throw new Error('Timed out waiting for test condition.'); await new Promise(r => setTimeout(r, 10)); }
 }
-interface Call { worker: boolean; model: string; reasoning?: string; budgets: unknown; system: string; tools: string[]; text: string; lastRole: string; transcript: string }
+interface Call { worker: boolean; model: string; reasoning?: string; budgets: unknown; system: string; tools: string[]; text: string; lastRole: string; transcript: string; timeoutMs?: number; websocketConnectTimeoutMs?: number; transport?: SimpleStreamOptions['transport']; maxRetries?: number; maxRetryDelayMs?: number }
 interface Metadata { type?: string; taskId?: string; requestId?: string; rootCallId?: string; usage?: { totalTokens?: number; output?: number } }
-async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', forcedPrompt?: string, sourceLoader = false) {
+async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', forcedPrompt?: string, sourceLoader = false, settingsOverrides: Parameters<typeof SettingsManager.inMemory>[0] = {}) {
   const root = await scratch('bg-sdk-test-');
   const agentDir = join(root, 'agent'); await fs.mkdir(agentDir);
   const previous = process.env.PI_CODING_AGENT_DIR, offline = process.env.PI_OFFLINE;
@@ -59,7 +59,7 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
         const worker = options?.sessionId?.startsWith('background-') ?? false;
         const last = context.messages.filter(message => message.role !== 'system').at(-1)!;
         const text = textOf(context);
-        calls.push({ worker, model: m.id, reasoning: options?.reasoning, budgets: options?.thinkingBudgets, system: getCurrentSystemPrompt(context.messages), tools: getCurrentTools(context.messages).map(t => t.name), text, lastRole: last.role, transcript: JSON.stringify(context.messages) });
+        calls.push({ worker, model: m.id, reasoning: options?.reasoning, budgets: options?.thinkingBudgets, system: getCurrentSystemPrompt(context.messages), tools: getCurrentTools(context.messages).map(t => t.name), text, lastRole: last.role, transcript: JSON.stringify(context.messages), timeoutMs: options?.timeoutMs, websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs, transport: options?.transport, maxRetries: options?.maxRetries, maxRetryDelayMs: options?.maxRetryDelayMs });
         const produce = async () => {
           await options?.onPayload?.({ private: 'SDK_TELEMETRY_PRIVATE_PAYLOAD' }, m);
           await options?.onResponse?.({ status: 200, headers: { private: 'SDK_TELEMETRY_PRIVATE_HEADERS' } }, m);
@@ -159,7 +159,7 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
     });
     pi.on('tool_call', event => { hooks.push(event.toolName); if (event.toolName === 'background_start_check' && mutateStart) (event.input.stage as { outputs: string[] }).outputs.push('injected.txt'); if (event.toolName === 'background_start_check' && denyStart) return { block: true, reason: 'Synthetic permission revalidation denied.' }; if (event.toolName === 'read' && event.input.path === '/denied') return { block: true, reason: 'Inherited permission guard.' }; });
   };
-  const settings = SettingsManager.inMemory({ defaultTools: ['read', 'bash', 'edit', 'write'], defaultProvider: provider, defaultModel: model.id, defaultThinkingLevel: 'high', thinkingBudgets: { medium: 1000, high: 9000 }, retry: { enabled: false }, cacheWarming: 'off', enableAnalytics: false, enableInstallTelemetry: false });
+  const settings = SettingsManager.inMemory({ defaultTools: ['read', 'bash', 'edit', 'write'], defaultProvider: provider, defaultModel: model.id, defaultThinkingLevel: 'high', thinkingBudgets: { medium: 1000, high: 9000 }, cacheWarming: 'off', enableAnalytics: false, enableInstallTelemetry: false, ...settingsOverrides, retry: { enabled: false, ...settingsOverrides?.retry } });
   const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager: settings, noContextFiles: true, noPromptTemplates: true, noThemes: true, appendSystemPrompt: ['Inherited identity and workspace rules.'],
     extensionFactories: sourceLoader ? [fake] : [fake, extension],
     ...(sourceLoader ? { additionalExtensionPaths: [fileURLToPath(new URL('../index.ts', import.meta.url))] } : {}),
@@ -268,6 +268,41 @@ test('real Pi SDK: default worker stays responsive and inherits capabilities, bu
   assert.equal(output, 'Verified delegated result.'); assert.doesNotMatch(output, /PRIVATE_REASONING/);
   assert.deepEqual(f.errors, []);
 });
+test('real Pi SDK: worker normalizes inherited timeouts without resetting request settings or disabled compaction', async t => {
+  const cases: { name: string; settings: Parameters<typeof SettingsManager.inMemory>[0]; http: number; websocket: number }[] = [
+    { name: 'defaults', settings: {}, http: 300_000, websocket: 15_000 },
+    { name: 'numeric', settings: { httpIdleTimeoutMs: 42_000, websocketConnectTimeoutMs: 7_000 }, http: 42_000, websocket: 7_000 },
+    { name: 'disabled sentinels', settings: { httpIdleTimeoutMs: 'disabled', websocketConnectTimeoutMs: 'disabled' }, http: 2_147_483_647, websocket: 0 },
+    { name: 'numeric zero', settings: { httpIdleTimeoutMs: 0, websocketConnectTimeoutMs: 0 }, http: 2_147_483_647, websocket: 0 },
+    { name: 'disabled HTTP only', settings: { httpIdleTimeoutMs: 'disabled', websocketConnectTimeoutMs: 7_000 }, http: 2_147_483_647, websocket: 7_000 },
+    { name: 'provider timeout wins', settings: { httpIdleTimeoutMs: 'disabled', websocketConnectTimeoutMs: 'disabled', retry: { provider: { timeoutMs: 9_000 } } }, http: 9_000, websocket: 0 },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async subtest => {
+    const f = await fixture(subtest, 'rpc', undefined, false, {
+      transport: 'sse', ...scenario.settings,
+      retry: { provider: { maxRetries: 2, maxRetryDelayMs: 12_000, ...scenario.settings?.retry?.provider } },
+      // This threshold would compact even an indivisible first worker turn if enabled.
+      compaction: { enabled: false, modelOverrides: { 'background-offline-fixture/main': { reserveTokens: 200_000, keepRecentTokens: 1 } } },
+    });
+    f.setBehavior('plain');
+    await f.session.prompt('DELEGATE');
+    const records = await eventually(f.records, rows => rows[0]?.status === 'completed');
+    await f.waitSettled(records[0]!.id);
+    const child = f.calls.find(call => call.worker)!;
+    assert.equal(child.timeoutMs, scenario.http);
+    assert.equal(child.websocketConnectTimeoutMs, scenario.websocket);
+    assert.equal(child.transport, 'sse');
+    assert.equal(child.maxRetries, 2);
+    assert.equal(child.maxRetryDelayMs, 12_000);
+    assert.equal(child.model, 'main');
+    assert.equal(child.reasoning, 'high');
+    assert.deepEqual(child.budgets, { medium: 1000, high: 9000 });
+    assert.equal(f.calls.filter(call => call.worker).length, 1, 'disabled compaction must not issue a summary request');
+    assert.equal(f.metadata.some(event => event.type === 'model-start' && 'purpose' in event && event.purpose === 'compaction'), false);
+    assert.deepEqual(f.errors, []);
+  });
+});
+
 test('real Pi SDK: selected context transmits supplied facts only, without copying irrelevant conversation', async t => {
   const f = await fixture(t);
   await f.session.prompt('PARENT_PRIVATE_IRRELEVANT_MARKER');

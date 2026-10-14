@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { TObject } from "typebox";
 import { DefaultResourceLoader, ExtensionRunner, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, type BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
+import { MEMORY_GUIDANCE } from "../index.ts";
 import { ExpectedError } from "../src/errors.ts";
 import { toolError } from "../src/results.ts";
 import { temporary } from "./helpers.ts";
@@ -83,20 +84,24 @@ async function harness(t: TestContext) {
     const text = result.content.map((part) => part.type === "text" ? part.text : "").join("");
     return { result, details: result.details as Record<string, any>, text };
   };
-  const prompt = () => ({ systemPrompt: "base prompt", systemPromptOptions: { sections: { other: "preserve me" } as Record<string, string>, forceSystemPrompt: undefined as string | undefined } });
-  const section = (event: ReturnType<typeof prompt>) => (event.systemPromptOptions.sections as Record<string, string>).pi_memoria!;
-  const renderPrompt = async (forceSystemPrompt?: string) => {
+  const section = (prompt: Awaited<ReturnType<typeof renderPrompt>>) => prompt.options.sections.pi_memoria!;
+  const renderPrompt = async (forceSystemPrompt?: string, trigger: Parameters<typeof runner.emitBeforeAgentStart>[0] = { messageType: "user", prompt: "Fixture prompt" }) => {
     let rendered = "";
+    let observed: BeforeAgentStartEvent | undefined;
+    const errors: string[] = [];
+    const unsubscribe = runner.onError((error) => errors.push(error.error));
     const handlers = extension.handlers.get("before_agent_start")!;
-    handlers.push(async (event) => { rendered = (event as BeforeAgentStartEvent).systemPrompt; });
+    handlers.push(async (event) => { observed = event as BeforeAgentStartEvent; rendered = observed.systemPrompt; });
     try {
-      const result = await runner.emitBeforeAgentStart("Fixture prompt", undefined, {
+      const result = await runner.emitBeforeAgentStart(trigger, {
         cwd: directory, appendSystemPrompt: "Eve addendum fixture.", sections: { other: "preserve me" }, forceSystemPrompt,
       });
-      return { rendered, options: result.systemPromptOptions };
-    } finally { handlers.pop(); }
+      assert.deepEqual(errors, [], "prompt handlers must not silently fail inside the runner");
+      assert.ok(observed, "the real runner must dispatch before_agent_start");
+      return { rendered, options: result.systemPromptOptions, event: observed };
+    } finally { handlers.pop(); unsubscribe(); }
   };
-  return { directory, agentDir, memoryDir, root, sessionFile, extension, dispatch, call, prompt, section, renderPrompt };
+  return { directory, agentDir, memoryDir, root, sessionFile, extension, dispatch, call, section, renderPrompt };
 }
 
 test("Pi loads the package, executes all five tools, injects fresh global memory, and closes/reopens cleanly", async (t) => {
@@ -115,12 +120,11 @@ test("Pi loads the package, executes all five tools, injects fresh global memory
   assert.match(JSON.stringify(h.extension.tools.get("memoria_search")!.definition.parameters), /SQLite m_… memory ID only/u);
   await assert.rejects(h.call("memoria_search", { id: added.details.memory.id }), (error: Error) => /\[invalid_input\]/u.test(error.message) && /injected MEMORY\.md/u.test(error.message));
   const id = added.details.memory.id;
-  const event = h.prompt();
-  await h.dispatch("before_agent_start", event);
+  const event = await h.renderPrompt();
   assert.match(h.section(event), /Start every sentence with beep_boop/u);
   assert.match(h.section(event), /Before saving a durable fact, search SQLite with memoria_search/u);
   assert.match(h.extension.tools.get("memoria_add")!.definition.promptGuidelines!.join(" "), /same fact is already stored, do not add it again/u);
-  assert.equal(event.systemPromptOptions.sections.other, "preserve me");
+  assert.equal(event.options.sections.other, "preserve me");
   const fact = await h.call("memoria_add", { content: "The user likes apples.", tags: ["fruit"] });
   assert.equal(fact.details.created, true);
   assert.equal((await h.call("memoria_search", { query: "fruit" })).details.results[0].id, fact.details.memory.id);
@@ -145,14 +149,11 @@ test("Pi loads the package, executes all five tools, injects fresh global memory
   await assert.rejects(h.call("memoria_edit", { id, tags: ["style"] }), /content or priority/u);
   await assert.rejects(h.call("memoria_edit", { id, content: "must not persist", expected_revision: 1 }), /expected_content/u);
   await assert.rejects(h.call("memoria_edit", { id, content: "must not persist", expected_content: "stale content" }), /changed/u);
-  const changed = h.prompt();
-  await h.dispatch("before_agent_start", changed);
+  const changed = await h.renderPrompt();
   assert.match(h.section(changed), /beep_boop twice/u);
-  const opaque = h.prompt();
-  opaque.systemPromptOptions.forceSystemPrompt = "base prompt";
-  const forced = await h.dispatch("before_agent_start", opaque) as { systemPrompt: string };
-  assert.ok(forced.systemPrompt.startsWith("base prompt"));
-  assert.match(forced.systemPrompt, /beep_boop twice/u);
+  const forced = await h.renderPrompt("base prompt");
+  assert.ok(forced.rendered.startsWith("base prompt"));
+  assert.match(forced.rendered, /beep_boop twice/u);
   await h.dispatch("session_shutdown");
   await h.dispatch("session_shutdown");
   await h.dispatch("session_start");
@@ -207,6 +208,7 @@ test("structured and forced prompts separate instructions from fresh hot memory 
   const memory = block(fresh.rendered, "pi_memoria");
   assert.equal(memory, fresh.options.sections.pi_memoria);
   const instructions = block(memory, "instructions");
+  assert.equal(instructions, MEMORY_GUIDANCE, "the prompt must contain the exact standing memory guidance");
   assert.match(instructions, /standing instructions.*not merely quoted reference material/u);
   assert.match(instructions, /subject to higher-priority instructions/u);
   assert.match(instructions, /Resolve conflicting memories from current user instructions and original evidence/u);
@@ -226,6 +228,42 @@ test("structured and forced prompts separate instructions from fresh hot memory 
   assert.match(block(forced.rendered, "hot_memory"), /Changed standing instruction/u);
   assert.doesNotMatch(forced.rendered, /Fresh standing instruction/u);
   assert.equal(block(forced.rendered, "addendum"), "Eve addendum fixture.");
+});
+
+test("current user and custom start events refresh exact memory guidance in structured and forced prompts", async (t) => {
+  const h = await harness(t);
+  await h.dispatch("session_start");
+  const triggers: Parameters<ExtensionRunner["emitBeforeAgentStart"]>[0][] = [
+    { messageType: "user", prompt: "Synthetic transport user prompt", images: [{ type: "image", data: "Zml4dHVyZQ==", mimeType: "image/png" }] },
+    { messageType: "custom", message: { role: "custom", customType: "fixture-notice", content: "Synthetic in-run notification", display: false, details: { fixture: true }, timestamp: 1 } },
+  ];
+  for (const trigger of triggers) for (const force of [undefined, "Opaque fixture prompt."]) {
+    const rule = `${trigger.messageType} ${force ? "forced" : "structured"} fresh rule`;
+    const manual = `- [h_current00000000] [p=90] ${rule}.\n`;
+    await writeFile(join(h.memoryDir, "MEMORY.md"), manual);
+    const rendered = await h.renderPrompt(force, trigger);
+    assert.equal(rendered.event.type, "before_agent_start");
+    assert.equal(rendered.event.messageType, trigger.messageType);
+    if (rendered.event.messageType === "user" && trigger.messageType === "user") {
+      assert.equal(rendered.event.prompt, trigger.prompt);
+      assert.deepEqual(rendered.event.images, trigger.images);
+      assert.equal("message" in rendered.event, false);
+    } else if (rendered.event.messageType === "custom" && trigger.messageType === "custom") {
+      assert.deepEqual(rendered.event.message, trigger.message);
+      assert.equal("prompt" in rendered.event, false);
+      assert.equal("images" in rendered.event, false);
+    } else assert.fail("the runner must preserve the starting message discriminant");
+    const memory = block(rendered.rendered, "pi_memoria");
+    assert.equal(memory, h.section(rendered));
+    assert.equal(block(memory, "instructions"), MEMORY_GUIDANCE);
+    assert.equal(block(memory, "hot_memory"), `Global MEMORY.md (${manual.length}/5000 characters; ${join(h.memoryDir, "MEMORY.md")}):\n${manual}`);
+    assert.doesNotMatch(memory, /Synthetic transport|Synthetic in-run/u);
+    if (force) assert.ok(rendered.rendered.startsWith(`${force}\n\n<pi_memoria>`));
+    else {
+      assert.equal(block(rendered.rendered, "addendum"), "Eve addendum fixture.");
+      assert.equal(block(rendered.rendered, "other"), "preserve me");
+    }
+  }
 });
 
 test("failed hot loads report status without fabricating empty or valid hot memory, and recover on the next read", async (t) => {
@@ -287,15 +325,12 @@ test("valid hot memory loads and hot-only operations work when SQLite cannot ope
   await h.call("memoria_delete", { id: direct.details.memory.id });
 
   await h.dispatch("session_start");
-  const injected = h.prompt();
-  await h.dispatch("before_agent_start", injected);
+  const injected = await h.renderPrompt();
   assert.match(h.section(injected), /Startup rule from manual memory\./u);
   assert.match(h.section(injected), /SQLITE LONG-TERM MEMORY UNAVAILABLE/u);
   assert.doesNotMatch(h.section(injected), /Hot instructions were not loaded/u);
-  const opaque = h.prompt();
-  opaque.systemPromptOptions.forceSystemPrompt = "base prompt";
-  const forced = await h.dispatch("before_agent_start", opaque) as { systemPrompt: string };
-  assert.match(forced.systemPrompt, /Startup rule from manual memory\./u);
+  const forced = await h.renderPrompt("base prompt");
+  assert.match(forced.rendered, /Startup rule from manual memory\./u);
 
   await assert.rejects(h.call("memoria_add", { content: "A long-term fact." }), (error: Error) => /\[store_unavailable\]/u.test(error.message) && /memoria\.sqlite/u.test(error.message));
   const fallback = await h.call("memoria_sessions", { query: "fruit preference" });
@@ -309,8 +344,7 @@ test("valid hot memory loads and hot-only operations work when SQLite cannot ope
   const recovered = await h.call("memoria_add", { content: "A long-term fact after recovery." });
   assert.equal(recovered.details.created, true);
   assert.equal((await h.call("memoria_search", { query: "recovery" })).details.results[0].id, recovered.details.memory.id);
-  const clean = h.prompt();
-  await h.dispatch("before_agent_start", clean);
+  const clean = await h.renderPrompt();
   assert.doesNotMatch(h.section(clean), /SQLITE LONG-TERM MEMORY UNAVAILABLE/u);
   await h.dispatch("session_shutdown");
   await h.dispatch("session_shutdown");
@@ -329,8 +363,7 @@ test("archive-requiring hot failures leave the live file byte-for-byte unchanged
   // Oversized manual repair also fails without replacing the live file.
   const manual = `- ${"first".repeat(650)}\n- ${"second".repeat(650)}\n`;
   await writeFile(join(h.memoryDir, "MEMORY.md"), manual);
-  const event = h.prompt();
-  await h.dispatch("before_agent_start", event);
+  const event = await h.renderPrompt();
   assert.match(block(h.section(event), "status"), /MEMORY UNAVAILABLE/u);
   assert.doesNotMatch(h.section(event), /<hot_memory>|\(empty\)|Hot memory above remains valid/u);
   assert.equal(await readFile(join(h.memoryDir, "MEMORY.md"), "utf8"), manual);
@@ -487,8 +520,7 @@ test("retired terminology configuration is ignored and shorthand survives as ord
   });
   assert.doesNotMatch(reopened.text, /warning:/u);
   assert.equal(await readFile(retiredPath, "utf8"), "{not valid JSON", "retired files are neither managed nor modified");
-  const prompt = h.prompt();
-  await h.dispatch("before_agent_start", prompt);
+  const prompt = await h.renderPrompt();
   assert.match(h.section(prompt), /Save personal shorthand as ordinary SQLite facts/u);
 });
 

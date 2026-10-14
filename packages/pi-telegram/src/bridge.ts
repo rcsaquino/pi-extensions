@@ -477,6 +477,17 @@ export class TelegramBridge {
     return Boolean(this.active && this.humanInput?.prepare(prompt, images, this.ctx.sessionManager.getSessionId(), this.active));
   }
 
+  /** A custom message starting an idle run is not adjunct context in the owned run. */
+  beforeCustomStart(message: { customType: string; details?: unknown }): boolean {
+    const id = (message.details as { telegramNoticeId?: unknown } | undefined)?.telegramNoticeId;
+    if (this.running && this.report && !this.report.started && !this.report.controller.signal.aborted &&
+      this.report.sessionId === this.ctx.sessionManager.getSessionId() &&
+      message.customType === "background-notice" && id === this.report.noticeId) return true;
+    this.cancel(this.active, "custom_interruption"); this.cancel(this.report, "custom_interruption");
+    this.foregroundOwner = undefined;
+    return false;
+  }
+
   input(event: InputEvent): void {
     // One-use admission, never ambient text equality or a last-chat fallback.
     if (this.active && this.humanInput?.admit(event, this.ctx.sessionManager.getSessionId(), this.active)) return;
@@ -486,6 +497,14 @@ export class TelegramBridge {
 
   userStart(message: { role: string; content?: unknown; customType?: string; details?: unknown }): void {
     if (message.role === "custom") {
+      const owner = this.reply();
+      // message_start also fires for tool/extension context in an existing run
+      // (e.g. web-search-content-ready), not just a new custom-origin request.
+      // Preserve only the already-admitted owner; context never creates authority.
+      // beforeCustomStart revokes it when an unrelated custom message starts a run.
+      if (message.customType !== "background-notice" && this.foregroundRunning && owner?.started && !owner.settling &&
+        !owner.controller.signal.aborted && this.foregroundOwner === owner &&
+        owner.sessionId === this.ctx.sessionManager.getSessionId()) return;
       const id = (message.details as { telegramNoticeId?: unknown } | undefined)?.telegramNoticeId;
       this.foregroundOwner = undefined;
       if (this.running && this.report && this.report.sessionId === this.ctx.sessionManager.getSessionId() &&

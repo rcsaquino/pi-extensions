@@ -104,6 +104,8 @@ Report admission also waits for the bridge's foreground settlement observation, 
 
 Authenticated incoming submissions use one-use, async-scoped reply admission and the submitting run's consumed-message lifecycle. Pi's trusted initial image resize, conversion and omission hints do not revoke that owner. Queued steering consumes its admitted original native content once within the authenticated run; an intervening local/RPC/generic input still cancels delivery, even when it repeats the prompt. Pending admission is bounded and expires after ten minutes. This does not change Pi's `extension` input source, enable guests, or add a transcript marker. Generic extension input remains unauthenticated; executable extensions themselves are trusted peers.
 
+Custom context messages arriving inside an admitted run (for example web content-ready notifications, tool follow-ups or prompt-hook context) preserve its existing reply owner. They do not grant a recipient or reset the final/voice state. An unrelated custom message that starts a new run is distinguished at `before_agent_start` and remains unowned; only a pending, matching bridge-generated report can open its own route. Forged/repeated background-notice markers and local/RPC user interventions still revoke ownership.
+
 Only the final answer after `agent_settled` is forwarded. Thinking, intermediate commentary, tool results, retry output, and streaming deltas are not delivered. Markdown becomes plain text plus native Telegram entities, not raw Markdown or `parse_mode`. Formatting handles UTF-16 offsets, emoji-safe splitting, non-overlapping code entities, and Telegram's 4,096-unit text limit. Tables become labeled rows; raw HTML stays literal.
 
 ## Media and voice

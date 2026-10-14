@@ -64,7 +64,10 @@ test("real SDK image normalization preserves admitted reply ownership, queues, s
         harness = bridge as unknown as Harness; harness.running = harness.connected = true; harness.listen();
       });
       pi.on("input", event => bridge.input(event));
-      pi.on("before_agent_start", event => { bridge.beforeStart(event.prompt, event.images); });
+      pi.on("before_agent_start", event => {
+        if (event.messageType === "custom") bridge.beforeCustomStart(event.message);
+        else bridge.beforeStart(event.prompt, event.images);
+      });
       pi.on("agent_start", () => bridge.agentStart());
       pi.on("message_start", event => {
         bridge.userStart(event.message);

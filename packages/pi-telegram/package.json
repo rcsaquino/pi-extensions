@@ -1,6 +1,6 @@
 {
   "name": "@rcsaquino/pi-telegram",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Minimal, final-only Telegram transport for Pi with media and voice.",
   "type": "module",
   "license": "MIT",

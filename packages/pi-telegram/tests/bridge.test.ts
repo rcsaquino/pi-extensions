@@ -94,7 +94,11 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
   const reports: any[] = [];
   const pi = { events, sendMessage: (msg: any) => {
     reports.push(msg); idle = false;
-    if (options.consumeReports !== false) bridge.userStart({ role: "custom", ...msg });
+    if (options.consumeReports !== false) {
+      bridge.beforeCustomStart(msg);
+      bridge.agentStart();
+      bridge.userStart({ role: "custom", ...msg });
+    }
   }, sendUserMessage: (content: (TextContent | ImageContent)[], opts: any) => {
     assert.equal(opts.expandPromptTemplates, false);
     deliveries.push(opts.deliverAs);
@@ -119,7 +123,11 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
     consume: (index: number) => consumers[index](),
     setIdle: (value: boolean) => { idle = value; }, getAborts: () => aborts,
     setSessionId: (value: string) => { sessionId = value; },
-    startReport: (index = reports.length - 1) => bridge.userStart({ role: "custom", ...reports[index] }),
+    startReport: (index = reports.length - 1) => {
+      bridge.beforeCustomStart(reports[index]);
+      bridge.agentStart();
+      bridge.userStart({ role: "custom", ...reports[index] });
+    },
     finish: async (text = "Final reply.", stopReason = "stop") => {
       bridge.assistantEnd({ role: "assistant", content: [{ type: "thinking", thinking: "private" }, { type: "text", text }], stopReason });
       idle = true;
@@ -206,6 +214,41 @@ test("inbound text has only a leading second-only host-local sent timestamp; pla
   assert.equal(h.server.texts().length, 1);
   assert.equal(h.server.texts()[0].text, "Final reply.");
   assert.ok(!h.server.texts()[0].text.includes("private"));
+});
+
+test("custom context preserves an admitted reply, attachments and task routing without gaining new authority", async t => {
+  const h = await fixture(t);
+  h.server.feed(message()); await until(() => h.submissions.length === 1);
+  h.bridge.userStart({ role: "custom", customType: "web-search-content-ready", content: "Synthetic availability context" });
+  assert.ok(captureRoute(h), "adjunct context retains the existing authenticated task route");
+  const path = resolve(h.dir, "context.txt"); await writeFile(path, "Synthetic artifact");
+  await h.bridge.send({ path });
+  await h.finish("Contextual final.");
+  assert.equal(h.server.texts()[0].text, "Contextual final.");
+  assert.equal(h.server.calls.filter(call => call.method === "sendDocument").length, 1);
+  assert.equal((await ledgerRecords(h)).some(record => record.reason === "custom_interruption"), false);
+});
+
+test("owned report context preserves its route and final; unowned context never grants one", async t => {
+  const h = await ownedReport(t);
+  h.bridge.userStart({ role: "custom", customType: "web-search-content-ready", content: "Synthetic report context" });
+  assert.ok(captureRoute(h)); await h.finish("Contextual report final.");
+  assert.equal(h.server.texts().at(-1)!.text, "Contextual report final.");
+  h.bridge.userStart({ role: "custom", customType: "web-search-content-ready", content: "Unowned context" });
+  assert.equal(captureRoute(h), undefined);
+  await h.finish("Unowned final."); assert.equal(h.server.texts().length, 2);
+});
+
+for (const owner of ["human", "pending-human", "report", "pending-report"] as const) test(`unrelated custom-origin run revokes ${owner} ownership even with the same context type`, async t => {
+  const h = owner.includes("report") ? await ownedReport(t, owner === "pending-report") : await fixture(t, { consume: owner !== "pending-human" });
+  if (!owner.includes("report")) { h.server.feed(message()); await until(() => h.submissions.length === 1); }
+  const before = h.server.texts().length;
+  const custom = { role: "custom", customType: "web-search-content-ready", content: "Starts a different run" };
+  assert.equal(h.bridge.beforeCustomStart(custom), false);
+  h.bridge.agentStart(); h.bridge.userStart(custom);
+  assert.equal(captureRoute(h), undefined);
+  await assert.rejects(h.bridge.send({ path: "never-upload" }), /TG_CONTEXT_CANCELLED/);
+  await h.finish("Must remain TUI-only."); assert.equal(h.server.texts().length, before);
 });
 
 test("automatic retries/continuations replace intermediate replies without duplicate sends", async t => {

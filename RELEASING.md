@@ -11,7 +11,7 @@ Prepared versions are independent and are not claims of publication:
 - `packages/pi-background-tasks`: `@rcsaquino/pi-background-tasks` **0.1.0**.
 - `packages/pi-idle-compaction`: `pi-idle-compaction` **0.1.0**.
 - `packages/pi-memoria`: `pi-memoria` **0.4.2**, retaining 0.4.0's dedicated terminology-expansion removal and 0.4.1's verification-gate synchronization, with security-preserving concurrent SQLite startup corrections for companion unlink races and WAL-selection contention.
-- `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.0**.
+- `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.1**, preserving authenticated reply ownership through in-run custom context while keeping unrelated custom-origin runs unowned.
 
 The scoped identities avoid unrelated unscoped npm packages. The source folder, Pi entry point, tool/command names, and private runtime paths do not change with an npm scope. All packages declare public publication access; the root remains private.
 
@@ -71,7 +71,7 @@ If the workflow fails after a successful publish (for example during the confirm
 After Git has deliberately been initialized, review the intended diff and commit only authorized source files. Use package-specific tags, for example:
 
 - `pi-memoria-v0.4.2`
-- `pi-telegram-v0.2.0`
+- `pi-telegram-v0.2.1`
 - `pi-background-tasks-v0.1.0`
 
 The folder identifier keeps tag names distinct even for scoped npm packages. Do not create an ambiguous root `vX.Y.Z` tag for independently versioned packages. Do not recreate deleted Git history automatically.

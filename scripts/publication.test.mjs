@@ -12,6 +12,7 @@ const identities = new Map([
   ['pi-idle-compaction', 'pi-idle-compaction'],
   ['pi-memoria', 'pi-memoria'],
   ['pi-telegram', '@rcsaquino/pi-telegram'],
+  ['pi-image', '@rcsaquino/pi-image'],
 ]);
 const read = path => readFileSync(path, 'utf8');
 const manifest = path => JSON.parse(read(path));
@@ -67,7 +68,7 @@ test('root stays private and publication checks join shared verification', () =>
   assert.equal(data.scripts['check:publication'], 'node --test scripts/publication.test.mjs');
 });
 
-test('four independent identities use the scoped names only where needed', () => {
+test('five independent identities use the scoped names only where needed', () => {
   const directories = readdirSync(join(root, 'packages'), { withFileTypes: true })
     .filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   assert.deepEqual(directories, [...identities.keys()].sort());
@@ -153,7 +154,7 @@ test('package documentation local links also resolve without the monorepo', () =
 test('environment example is inert and interrupted test scratch stays ignored', () => {
   const example = read(join(root, 'packages/pi-telegram/.env.example'));
   const fields = Object.fromEntries(example.split('\n').filter(line => /^[A-Z_]+=/.test(line)).map(line => line.split('=')));
-  assert.deepEqual(fields, { TELEGRAM_BOT_TOKEN: '', TELEGRAM_ALLOWED_ID: '', GROQ_API_KEY: '',
+  assert.deepEqual(fields, { TELEGRAM_BOT_TOKEN: '', TELEGRAM_ALLOWED_ID: '',
     ELEVENLABS_API_KEY: '', ELEVENLABS_VOICE_ID: '', ELEVENLABS_MODEL_ID: 'eleven_v4' });
   const ignore = read(join(root, '.gitignore')).split('\n');
   for (const pattern of ['node_modules/', '.env', '.env.*', '!.env.example', '.test-tmp/', '.tmp/',

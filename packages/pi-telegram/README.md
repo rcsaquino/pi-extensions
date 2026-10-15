@@ -49,12 +49,11 @@ Only known fields are read. Configuration uses the first existing file:
 2. Otherwise `<Pi working directory>/.env`.
 3. Otherwise `<Pi agent directory>/.env`.
 
-File values override inherited environment values, including explicitly empty values. Missing fields can come from the process environment. The generated `pi-telegram/` data directory is never searched for credentials.
+File values override inherited environment values, including explicitly empty values. Missing fields can come from the process environment. The generated `pi-telegram/` data directory is never searched for credentials. Groq transcription uses only the groq key stored via Pi `/login` in `<Pi agent directory>/auth.json`.
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=your-bot-token
 TELEGRAM_ALLOWED_ID=123456789
-GROQ_API_KEY=your-optional-groq-key
 ELEVENLABS_API_KEY=your-optional-elevenlabs-key
 ELEVENLABS_VOICE_ID=your-selected-voice
 ELEVENLABS_MODEL_ID=eleven_v4
@@ -67,7 +66,7 @@ Keep real values private and out of the repository. On Unix, protect configurati
 `TELEGRAM_ALLOWED_ID` accepts one positive numeric user ID, delimited IDs, or a JSON array. Empty values, wildcards, malformed IDs, groups, and bot senders are rejected. Authentication happens before downloading, transcribing, typing, or dispatching a request.
 
 - Telegram token and allowlist: required for chat.
-- Groq key: required only for incoming voice/audio transcription.
+- Groq login: required only for incoming voice/audio transcription. Run `/login` for groq.
 - ElevenLabs key, voice, and model: required only for synthesized replies. The exact configured voice/model is retained; it is never silently downgraded.
 
 ## Message behavior

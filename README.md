@@ -11,12 +11,13 @@
 
 </div>
 
-One repository, four separately versioned Pi packages. Install only the extensions you need. The root is a private npm development workspace, not an all-in-one Pi extension or a published npm package.
+One repository, five separately versioned Pi packages. Install only the extensions you need. The root is a private npm development workspace, not an all-in-one Pi extension or a published npm package.
 
 ## Packages
 
 - **[pi-memoria](packages/pi-memoria/README.md)**: global startup rules, SQLite fact recall, and cited search across past conversations.
 - **[@rcsaquino/pi-telegram](packages/pi-telegram/README.md)**: Telegram transport for the existing Pi conversation, with attachments, steering, and explicitly requested voice replies.
+- **[@rcsaquino/pi-image](packages/pi-image/README.md)**: text-to-image and image-to-image generation via the OpenRouter Images API, using the stored OpenRouter login.
 - **[pi-idle-compaction](packages/pi-idle-compaction/README.md)**: native compaction after an eligible idle period, with conservative background-work checks.
 - **[@rcsaquino/pi-background-tasks](packages/pi-background-tasks/README.md)**: non-blocking same-model workers with compact task briefs, realistic duration estimates and capacity-only scheduling, without workspace/resource read-write locks. Authorized concurrent edits can overwrite one another.
 
@@ -37,7 +38,7 @@ For all packages and the complete test suite:
 
 ## Installation
 
-Package folders retain their unscoped names; the two scoped npm names distinguish these implementations from unrelated public packages. After the corresponding release is published, npm installation uses its manifest name, for example `pi install npm:@rcsaquino/pi-telegram`. Prepared source is not a claim of an existing npm release.
+Package folders retain their unscoped names; the three scoped npm names distinguish these implementations from unrelated public packages. After the corresponding release is published, npm installation uses its manifest name, for example `pi install npm:@rcsaquino/pi-telegram`. Prepared source is not a claim of an existing npm release.
 
 From a reviewed local checkout, install a specific package:
 
@@ -60,7 +61,7 @@ pi remove /absolute/path/to/pi-extensions/packages/pi-background-tasks
 Removal does not erase that extension's runtime data.
 
 > [!IMPORTANT]
-> Do not install the repository root expecting all four extensions to load. Do not register a package and a copied extension-directory entry for the same implementation. Cloning or editing files is not activation, and a service restart needs separate approval.
+> Do not install the repository root expecting all five extensions to load. Do not register a package and a copied extension-directory entry for the same implementation. Cloning or editing files is not activation, and a service restart needs separate approval.
 
 ## Development
 

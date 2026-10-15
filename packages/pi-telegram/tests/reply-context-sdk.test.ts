@@ -28,7 +28,8 @@ function userText(content: unknown): string {
 test("real file-loader/poll/prepare/submission/SDK path includes bounded reference data through voice, FIFO, steering, retry and persisted context", async t => {
   const root = await mkdtemp(resolve(workspace, "telegram-reply-sdk-"));
   const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=OFFLINE-REPLY-TOKEN\nTELEGRAM_ALLOWED_ID=123,456\nGROQ_API_KEY=OFFLINE-GROQ\n", { mode: 0o600 });
+  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=OFFLINE-REPLY-TOKEN\nTELEGRAM_ALLOWED_ID=123,456\n", { mode: 0o600 });
+  await writeFile(resolve(agentDir, "auth.json"), JSON.stringify({ groq: { type: "api_key", key: "OFFLINE-GROQ" } }), { mode: 0o600 });
   const old = { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_OFFLINE: process.env.PI_OFFLINE, TELEGRAM_ENV_FILE: process.env.TELEGRAM_ENV_FILE };
   process.env.PI_CODING_AGENT_DIR = agentDir; process.env.PI_OFFLINE = "1"; delete process.env.TELEGRAM_ENV_FILE;
   const originalFetch = globalThis.fetch;

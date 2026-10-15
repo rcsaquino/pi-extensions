@@ -261,7 +261,7 @@ export class TelegramApi {
   }
 
   async transcribe(data: Buffer, filename: string, signal: AbortSignal): Promise<string> {
-    if (!this.config.groqKey) throw new SafeError("GROQ_API_KEY is missing; voice transcription is unavailable.");
+    if (!this.config.groqKey) throw new SafeError("Groq login is missing (run /login for groq); voice transcription is unavailable.");
     const upload = audioUpload(data, filename);
     const form = new FormData();
     form.set("file", new Blob([new Uint8Array(data)], { type: upload.mime }), upload.filename);

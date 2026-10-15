@@ -24,7 +24,7 @@ async function fixture(t: test.TestContext, options: { failWorker?: boolean; wor
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(resolve(scratch, "report-sdk-"));
   const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=REPORT-OFFLINE\nTELEGRAM_ALLOWED_ID=123,456\nGROQ_API_KEY=\nELEVENLABS_API_KEY=\nELEVENLABS_VOICE_ID=\nELEVENLABS_MODEL_ID=\n", { mode: 0o600 });
+  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=REPORT-OFFLINE\nTELEGRAM_ALLOWED_ID=123,456\nELEVENLABS_API_KEY=\nELEVENLABS_VOICE_ID=\nELEVENLABS_MODEL_ID=\n", { mode: 0o600 });
   await writeFile(resolve(root, "artifact.txt"), "Synthetic requested artifact");
   const old = { PI_OFFLINE: process.env.PI_OFFLINE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, TELEGRAM_ENV_FILE: process.env.TELEGRAM_ENV_FILE };
   process.env.PI_OFFLINE = "1"; process.env.PI_CODING_AGENT_DIR = agentDir; delete process.env.TELEGRAM_ENV_FILE;

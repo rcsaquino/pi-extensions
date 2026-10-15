@@ -19,7 +19,7 @@ test("telegram_send success results distinguish attachments from voice and prese
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(resolve(scratch, "send-result-"));
   const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=SEND-RESULT-OFFLINE\nTELEGRAM_ALLOWED_ID=123\nGROQ_API_KEY=OFFLINE-GROQ\nELEVENLABS_API_KEY=OFFLINE-ELEVEN\nELEVENLABS_VOICE_ID=fixture-voice\nELEVENLABS_MODEL_ID=eleven_v4\n", { mode: 0o600 });
+  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=SEND-RESULT-OFFLINE\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=OFFLINE-ELEVEN\nELEVENLABS_VOICE_ID=fixture-voice\nELEVENLABS_MODEL_ID=eleven_v4\n", { mode: 0o600 });
   for (const name of ["report.txt", "second.txt", "photo.jpg", "video.mp4"]) await writeFile(resolve(root, name), "Synthetic attachment");
   await writeFile(resolve(root, "voice.ogg"), "OggS---OpusHead synthetic voice");
   const oldFetch = globalThis.fetch;

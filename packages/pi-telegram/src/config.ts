@@ -78,6 +78,21 @@ export function parseAllowed(value: string): Set<string> {
   return new Set(ids.map(String));
 }
 
+/** /login fallback: read the stored groq API key without surfacing secrets in errors. */
+async function authFileGroqKey(agentDir: string): Promise<string | undefined> {
+  try {
+    const data = JSON.parse(await readFile(resolve(agentDir, "auth.json"), "utf8")) as Record<string, unknown>;
+    const entry = data["groq"];
+    if (entry && typeof entry === "object") {
+      const key = (entry as Record<string, unknown>)["key"];
+      if (typeof key === "string" && key.trim()) return key.trim();
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<Config> {
   // Read only known fields. Never inject .env contents into Pi's process or model context.
   const agentDir = env.PI_CODING_AGENT_DIR || resolve(homedir(), ".pi", "agent");
@@ -94,14 +109,16 @@ export async function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.e
       if (env.TELEGRAM_ENV_FILE) throw new SafeError("TELEGRAM_ENV_FILE does not exist.");
     }
   }
-  // Explicit .env values beat stale inherited credentials, including explicitly empty values.
+  // Explicit .env values beat inherited environment values, including explicitly empty values.
   const get = (key: string) => (file[key] ?? env[key])?.trim() || undefined;
   const token = get("TELEGRAM_BOT_TOKEN");
   if (!token) throw new SafeError("TELEGRAM_BOT_TOKEN is missing; Telegram is disconnected.");
+  // Groq uses only the key stored via Pi /login. Env file and environment values are ignored.
+  const groqKey = await authFileGroqKey(agentDir);
   return {
     token,
     allowed: parseAllowed(get("TELEGRAM_ALLOWED_ID") || ""),
-    groqKey: get("GROQ_API_KEY"),
+    groqKey,
     elevenKey: get("ELEVENLABS_API_KEY"),
     voiceId: get("ELEVENLABS_VOICE_ID"),
     modelId: get("ELEVENLABS_MODEL_ID"),

@@ -41,7 +41,8 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
   const root = await mkdtemp(resolve(workspace, "telegram-sdk-"));
   const agentDir = resolve(root, "agent");
   await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=OFFLINE-TEST-TOKEN\nTELEGRAM_ALLOWED_ID=123\nGROQ_API_KEY=OFFLINE-GROQ\nELEVENLABS_API_KEY=OFFLINE-ELEVEN\nELEVENLABS_VOICE_ID=fixture-voice\nELEVENLABS_MODEL_ID=eleven_v4\n", { mode: 0o600 });
+  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=OFFLINE-TEST-TOKEN\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=OFFLINE-ELEVEN\nELEVENLABS_VOICE_ID=fixture-voice\nELEVENLABS_MODEL_ID=eleven_v4\n", { mode: 0o600 });
+  await writeFile(resolve(agentDir, "auth.json"), JSON.stringify({ groq: { type: "api_key", key: "OFFLINE-GROQ" } }), { mode: 0o600 });
   await writeFile(resolve(root, "attachment.txt"), "Test");
   const originalFetch = globalThis.fetch;
   const previousOffline = process.env.PI_OFFLINE;

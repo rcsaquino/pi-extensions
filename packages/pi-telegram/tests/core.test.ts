@@ -23,9 +23,9 @@ test("allowlist fails closed for empty, wildcards, malformed and unsafe IDs", ()
 test(".env takes precedence, supports quotes and does not mutate process.env", async () => {
   const dir = await mkdtemp(resolve(workspace, "telegram-config-"));
   try {
-    await writeFile(resolve(dir, ".env"), 'TELEGRAM_BOT_TOKEN="file-token"\nTELEGRAM_ALLOWED_ID="123,456"\nGROQ_API_KEY=\nELEVENLABS_MODEL_ID=configured-v4\n');
+    await writeFile(resolve(dir, ".env"), 'TELEGRAM_BOT_TOKEN="file-token"\nTELEGRAM_ALLOWED_ID="123,456"\nELEVENLABS_MODEL_ID=configured-v4\n');
     const before = process.env.TELEGRAM_BOT_TOKEN;
-    const cfg = await loadConfig(dir, { PI_CODING_AGENT_DIR: resolve(dir, "agent"), TELEGRAM_BOT_TOKEN: "stale-token", TELEGRAM_ALLOWED_ID: "789", GROQ_API_KEY: "stale-key" });
+    const cfg = await loadConfig(dir, { PI_CODING_AGENT_DIR: resolve(dir, "agent"), TELEGRAM_BOT_TOKEN: "stale-token", TELEGRAM_ALLOWED_ID: "789" });
     assert.equal(cfg.token, "file-token");
     assert.equal(cfg.groqKey, undefined);
     assert.equal(cfg.modelId, "configured-v4");
@@ -38,11 +38,11 @@ test("agent .env is used without reading configuration from the generated-data h
   const agent = resolve(dir, "agent");
   try {
     await mkdir(resolve(agent, "pi-telegram"), { recursive: true });
-    await writeFile(resolve(agent, ".env"), 'TELEGRAM_BOT_TOKEN=agent-token\nTELEGRAM_ALLOWED_ID=123\nGROQ_API_KEY=agent-groq\n');
+    await writeFile(resolve(agent, ".env"), 'TELEGRAM_BOT_TOKEN=agent-token\nTELEGRAM_ALLOWED_ID=123\n');
     await writeFile(resolve(agent, "pi-telegram", ".env"), 'TELEGRAM_BOT_TOKEN=wrong-data-home-token\nTELEGRAM_ALLOWED_ID=456\n');
     const cfg = await loadConfig(dir, { PI_CODING_AGENT_DIR: agent, TELEGRAM_BOT_TOKEN: "stale-token", TELEGRAM_ALLOWED_ID: "789" });
     assert.equal(cfg.token, "agent-token");
-    assert.equal(cfg.groqKey, "agent-groq");
+    assert.equal(cfg.groqKey, undefined);
     assert.deepEqual([...cfg.allowed], ["123"]);
     assert.equal(cfg.dataDir, resolve(agent, "pi-telegram", "downloads"));
     assert.equal(cfg.stateDir, resolve(agent, "pi-telegram", "state"));
@@ -57,6 +57,23 @@ test("agent .env is used without reading configuration from the generated-data h
 
 test("explicit .env path fails closed if missing", async () => {
   await assert.rejects(loadConfig(workspace, { TELEGRAM_ENV_FILE: "missing-telegram-test.env", TELEGRAM_BOT_TOKEN: "fallback", TELEGRAM_ALLOWED_ID: "123" }), SafeError);
+});
+
+test("groq key comes only from /login auth.json", async () => {
+  const dir = await mkdtemp(resolve(workspace, "telegram-groq-login-"));
+  const agent = resolve(dir, "agent");
+  try {
+    await mkdir(agent, { recursive: true });
+    await writeFile(resolve(agent, "auth.json"), JSON.stringify({ groq: { type: "api_key", key: "login-groq-key" } }));
+    await writeFile(resolve(agent, ".env"), "TELEGRAM_BOT_TOKEN=agent-token\nTELEGRAM_ALLOWED_ID=123\n");
+    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent })).groqKey, "login-groq-key");
+    await writeFile(resolve(agent, ".env"), "TELEGRAM_BOT_TOKEN=agent-token\nTELEGRAM_ALLOWED_ID=123\nGROQ_API_KEY=file-groq\n");
+    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent, GROQ_API_KEY: "env-groq-key" })).groqKey, "login-groq-key");
+    await writeFile(resolve(agent, "auth.json"), "not json");
+    await writeFile(resolve(agent, ".env"), "TELEGRAM_BOT_TOKEN=agent-token\nTELEGRAM_ALLOWED_ID=123\n");
+    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent, GROQ_API_KEY: "env-groq-key" })).groqKey, undefined);
+    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent })).groqKey, undefined);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("errors and redaction never include network URLs or configured keys", () => {
@@ -159,7 +176,7 @@ test("Groq receives actual audio multipart and configured key; transcript is red
 });
 
 test("missing Groq key and empty transcript produce useful safe errors", async () => {
-  await assert.rejects(new TelegramApi({ ...config, groqKey: undefined }).transcribe(Buffer.from("x"), "voice.ogg", signal), /GROQ_API_KEY/);
+  await assert.rejects(new TelegramApi({ ...config, groqKey: undefined }).transcribe(Buffer.from("x"), "voice.ogg", signal), /\/login/);
   await assert.rejects(new TelegramApi(config, async () => Response.json({ text: "" })).transcribe(Buffer.from("x"), "voice.ogg", signal), /no usable text/);
 });
 

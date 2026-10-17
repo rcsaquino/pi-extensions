@@ -27,7 +27,7 @@ export function references(input: string) {
     const truncations = Object.fromEntries([...xml.matchAll(/<truncation field="([a-z_]+)" original_utf16_units="(\d+)" \/>/g)].map(item => [item[1], Number(item[2])]));
     return { xml, sender: field("sender"), body: field("body"), caption: field("caption"),
       quote: quote ? { text: decode(quote[3]), position_utf16: quote[1] ? Number(quote[1]) : undefined, is_manual: quote[2] === "true" } : undefined,
-      media: xml.includes("<media>") ? { type: field("type"), file_name: field("file_name"), mime_type: field("mime_type"), file_size: field("file_size"), content: field("content") } : undefined,
+      media: xml.includes("<media>") ? { type: field("type"), file_name: field("file_name"), mime_type: field("mime_type"), file_size: field("file_size"), local_path: field("local_path"), content: field("content") } : undefined,
       statuses: [...xml.matchAll(/<status>([^<]*)<\/status>/g)].map(item => decode(item[1])), truncations };
   });
 }

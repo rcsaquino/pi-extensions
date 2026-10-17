@@ -13,7 +13,8 @@ Read this with [the monorepo instructions](https://github.com/rcsaquino/pi-exten
 - `src/delivery-ledger.ts`: bounded metadata-only JSONL facade, strict records/read projection, allowlisted own-data transport causes and explicit operator-only offline migration export. No delivery authority, replay or global lock.
 - `src/delivery-ledger-storage.ts`: Linux/procfs descriptor-safe append/read, permanent private inherited-FD kernel flock, atomic bounded compaction and guarded exact-slot offline conversion. Readers never mutate; live writers refuse legacy slots.
 - `src/format.ts`: Markdown to native entities and safe text splitting.
-- `src/reply-context.ts`: authenticated same-chat, one-level, bounded XML reply/quote reference data; escaped fields, internal IDs, no old media/history reads or additional delivery authority. Trusted reference-only guidance belongs in the ownership-scoped `before_agent_start` prompt guidelines, not inside the reference.
+- `src/reply-context.ts`: authenticated same-chat, one-level, bounded XML reply/quote reference data; escaped fields, internal IDs, no old-media re-fetch, download or transcription and no additional delivery authority. A bounded `<local_path>` names an already-held local copy only when this bridge indexed it; its contents are never read into context. Trusted reference-only guidance belongs in the ownership-scoped `before_agent_start` prompt guidelines, not inside the reference.
+- `src/sent-media.ts`: best-effort bounded private message-id -> local-path index for media this bridge sent or downloaded; chat/message/path/kind/source metadata only, atomic `0600` persistence, and swallowed failures so transport results never depend on it.
 - `src/voice.ts`: Groq transcription, exact ElevenLabs voice/model, audio tags, chunking, and Opus assembly.
 - `tests/`: fake-transport regression tests and isolated real Pi loader/SDK checks.
 
@@ -56,7 +57,8 @@ Add regression cases in the corresponding suite:
 - `format-voice.test.ts`: native entities, chunking, formats, tags, and long-audio assembly.
 - `sdk.test.ts`: actual loader registration and synthetic end-to-end Pi behavior.
 - `cross-package-sdk.test.ts`: actual file-loaded Telegram/background manager claim integration, including parent-report-to-child/grandchild continuations, normal parent settlement, independent once-only report/ledger/API correlation, unrelated-chat isolation and navigation revocation.
-- `reply-context.test.ts` / `reply-context-sdk.test.ts`: reference bounds/escaping, identity and external-chat safety; actual loader/poll/prepare/submission/model input, current voice, FIFO/steering, automatic retry and persisted context reconstruction.
+- `reply-context.test.ts` / `reply-context-sdk.test.ts`: reference bounds/escaping, identity and external-chat safety, resolved local paths and unchanged unresolved output; actual loader/poll/prepare/submission/model input, current voice, FIFO/steering, automatic retry and persisted context reconstruction.
+- `sent-media.test.ts`: registry validation, 90-day/1024-entry retention, corrupt/missing/unreadable tolerance, swallowed write failures and private `0600` persistence.
 
 Mocks must inspect the intended API payload/ordering, not merely assert a fabricated success. Test resource shutdown, reload/session replacement, late network completion, and ambiguous send failures when changing asynchronous paths. Use synthetic audio and fake provider transports; live polls or paid STT/TTS calls are separate operator-approved checks.
 

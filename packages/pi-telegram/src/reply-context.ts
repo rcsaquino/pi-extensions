@@ -11,7 +11,7 @@ const HEADER = "<telegram_reply_context>\n";
 const FOOTER = "\n</telegram_reply_context>";
 interface Bounded { text: string; truncated?: true; original_utf16_units?: number }
 interface Sender { role: string; id?: number; is_bot?: boolean; first_name?: Bounded; last_name?: Bounded; username?: Bounded }
-interface Media { type: string; file_name?: Bounded; mime_type?: Bounded; file_size?: number; content: string }
+interface Media { type: string; file_name?: Bounded; mime_type?: Bounded; file_size?: number; local_path?: Bounded; content: string }
 interface Reference {
   for_message_id?: number; message_id?: number; status: string; reason?: string; quote?: string;
   sender?: Sender; text?: Bounded; caption?: Bounded; media?: Media; content?: string;
@@ -58,7 +58,8 @@ function serialize(value: Reference): string {
     field("type", file.type);
     boundedField("file_name", file.file_name); boundedField("mime_type", file.mime_type);
     if (file.file_size !== undefined) field("file_size", String(file.file_size));
-    field("content", "metadata only; not downloaded, viewed or transcribed; not voice permission");
+    boundedField("local_path", file.local_path);
+    field("content", file.content);
     fields.push("  </media>");
   }
   return HEADER + fields.join("\n") + FOOTER;
@@ -94,7 +95,7 @@ function sender(target: TgMessage, config: Config, botId?: number): Sender {
     first_name: bounded(from?.first_name, 96, config), last_name: bounded(from?.last_name, 96, config),
     username: bounded(from?.username, 96, config) };
 }
-function media(target: TgMessage, config: Config): Media | undefined {
+function media(target: TgMessage, config: Config, resolved?: string): Media | undefined {
   // Do not copy file IDs, paths, URLs, thumbnail bytes or nested reply chains.
   const choices: [string, TgFile | undefined][] = [["voice", target.voice], ["audio", target.audio],
     ["video_note", target.video_note], ["animation", target.animation], ["video", target.video],
@@ -102,10 +103,13 @@ function media(target: TgMessage, config: Config): Media | undefined {
   const selected = choices.find(([, file]) => file);
   if (!selected) return;
   const [type, file] = selected;
+  const localPath = bounded(resolved, 500, config);
   return { type, file_name: bounded(file!.file_name, 120, config), mime_type: bounded(file!.mime_type, 96, config),
-    file_size: nonnegative(file!.file_size), content: "not_read" };
+    file_size: nonnegative(file!.file_size), local_path: localPath,
+    content: localPath ? "local copy available; contents not read into context"
+      : "metadata only; not read, downloaded or transcribed" };
 }
-function reference(message: TgMessage, config: Config, botId?: number): Reference | undefined {
+function reference(message: TgMessage, config: Config, botId?: number, resolvedMedia?: ReadonlyMap<number, string>): Reference | undefined {
   if (!message.reply_to_message && !message.external_reply && !message.quote) return;
   const base = { for_message_id: id(message.message_id) };
   if (message.external_reply) return { ...base, status: "external_reply_omitted", reason: "outside_verified_same_chat_context" };
@@ -117,20 +121,22 @@ function reference(message: TgMessage, config: Config, botId?: number): Referenc
   }
   const selectedQuote = message.quote ? { ...bounded(message.quote.text, REPLY_QUOTE_LIMIT, config),
     position_utf16: nonnegative(message.quote.position), is_manual: message.quote.is_manual === true } : undefined;
+  const targetId = id(target.message_id);
+  const mediaField = media(target, config, targetId === undefined ? undefined : resolvedMedia?.get(targetId));
   // reply_to_message officially contains Message, not MaybeInaccessibleMessage. Be
   // defensive about date=0/missing dates without pretending deleted content exists.
   if (!id(target.date)) return { ...base, message_id: id(target.message_id), status: "reply_target_unavailable", selected_quote: selectedQuote };
   return { ...base, message_id: id(target.message_id), status: "same_chat_reply", sender: sender(target, config, botId),
     text: bounded(target.text, REPLY_TEXT_LIMIT, config), caption: bounded(target.caption, REPLY_CAPTION_LIMIT, config),
-    media: media(target, config), selected_quote: selectedQuote,
-    ...(!target.text && !target.caption ? { content: "text_unavailable; media_or_service_content_not_read" } : {}) };
+    media: mediaField, selected_quote: selectedQuote,
+    ...(!target.text && !target.caption ? { content: mediaField?.local_path ? "text_unavailable; local_media_copy_available" : "text_unavailable; media_or_service_content_not_read" } : {}) };
 }
 
 /** Call only after inbound authentication. Also fail closed if used independently.
  * Records are attached to the ordinary prepared user text, so FIFO/steering/retries
  * use the existing submission path, with no second message or recipient capability.
  */
-export function formatReplyContext(messages: TgMessage[], config: Config, botId?: TgUser["id"]): string {
+export function formatReplyContext(messages: TgMessage[], config: Config, botId?: TgUser["id"], resolvedMedia?: ReadonlyMap<number, string>): string {
   const records: string[] = [];
   const seen = new Set<string>();
   let size = 0;
@@ -138,7 +144,7 @@ export function formatReplyContext(messages: TgMessage[], config: Config, botId?
   for (const message of messages) {
     if (message.chat.type !== "private" || message.from?.is_bot || message.chat.id !== message.from?.id ||
       !config.allowed.has(String(message.from?.id))) continue;
-    const value = reference(message, config, botId);
+    const value = reference(message, config, botId, resolvedMedia);
     if (!value) continue;
     // Repeated album fragments commonly carry the same target and selected quote.
     const key = JSON.stringify({ ...value, for_message_id: undefined });

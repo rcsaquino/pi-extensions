@@ -89,7 +89,7 @@ test("cancellation before descriptor reads cleans up, and unsupported platforms 
 test("ordinary files, in-root symlink targets and downloaded attachments retain byte/type/name policy", async t => {
   const f = await fixture(t);
   await fs.symlink(f.path, join(f.cwd, "link.txt"));
-  assert.deepEqual(await outboundFile(f.cwd, "link.txt"), { data: Buffer.from("approved"), filename: "report.txt", kind: "document" });
+  assert.deepEqual(await outboundFile(f.cwd, "link.txt"), { data: Buffer.from("approved"), filename: "report.txt", kind: "document", path: await fs.realpath(f.path) });
   const downloads = join(f.outside, "downloads"); await fs.mkdir(downloads);
   const download = join(downloads, "photo.png"); await fs.writeFile(download, "synthetic image");
   assert.equal((await outboundFile(f.cwd, download, undefined, downloads)).kind, "photo");

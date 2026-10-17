@@ -10,8 +10,8 @@ const message = (id: number, text = "Current request", user = 123): TgMessage =>
   chat: { id: user, type: "private" }, from: { id: user, is_bot: false, first_name: "Synthetic user" }, text });
 const assistant = (id = 200, text = "A previous answer"): TgMessage => ({ ...message(id, text),
   from: { id: 999, is_bot: true, first_name: "Eve", username: "fixture_bot" } });
-function context(target: TgMessage, extra: Partial<TgMessage> = {}) {
-  return formatReplyContext([{ ...message(1), reply_to_message: target, ...extra }], config, 999);
+function context(target: TgMessage, extra: Partial<TgMessage> = {}, resolved?: ReadonlyMap<number, string>) {
+  return formatReplyContext([{ ...message(1), reply_to_message: target, ...extra }], config, 999, resolved);
 }
 
 test("ordinary inputs remain unchanged; simple sender/body labels use verified identity without routine IDs", () => {
@@ -39,7 +39,7 @@ test("captions and bounded media metadata describe content without reading old f
     const file = { file_id: "private-file-id", file_name: "Synthetic & file.ogg", mime_type: "audio/ogg", file_size: 1234 };
     const target = { ...assistant(), text: undefined, [type]: type === "photo" ? [file] : file };
     const record = references(context(target))[0];
-    assert.equal(record.media?.type, type); assert.match(record.media!.content!, /metadata only; not downloaded, viewed or transcribed; not voice permission/);
+    assert.equal(record.media?.type, type); assert.match(record.media!.content!, /metadata only; not read, downloaded or transcribed/);
     assert.equal(record.media!.file_name, "Synthetic & file.ogg"); assert.equal(record.media!.file_size, "1234");
     assert.ok(record.statuses.includes("text_unavailable; media_or_service_content_not_read"));
     assert.equal(record.body, undefined); assert.ok(!record.xml.includes("private-file-id"));
@@ -133,4 +133,64 @@ test("invalid XML controls and lone surrogates are replaced while valid newlines
   const output = context({ ...assistant(200, "A\u0000\u000B\uFFFE\uFFFF\uD800x\uDC00\t\n\r😀"), from: { id: 999, is_bot: true, username: "fixture&bot" } });
   assert.equal(references(output)[0].body, "A�����x�\t\n\r😀");
   assert.equal(references(output)[0].sender, "@fixture&bot");
+});
+
+test("resolved reply media emits the exact local path and the local-media status", () => {
+  const path = "/tmp/downloads/123-7-Synthetic report.txt";
+  const target = { ...assistant(), text: undefined, document: { file_id: "private-file-id", file_name: "Synthetic report.txt", mime_type: "text/plain", file_size: 1234 } };
+  const record = references(context(target, {}, new Map([[target.message_id, path]])))[0];
+  assert.equal(record.media?.local_path, path);
+  assert.equal(record.media?.content, "local copy available; contents not read into context");
+  assert.deepEqual(record.statuses, ["text_unavailable; local_media_copy_available"]);
+  assert.equal(record.media?.file_name, "Synthetic report.txt"); assert.equal(record.media?.file_size, "1234");
+  assert.ok(!record.xml.includes("private-file-id"));
+  const captioned = references(context({ ...target, caption: "Caption stays" }, {}, new Map([[target.message_id, path]])))[0];
+  assert.equal(captioned.body, "Caption stays"); assert.equal(captioned.media?.local_path, path);
+  assert.equal(captioned.media?.content, "local copy available; contents not read into context");
+  assert.ok(!captioned.statuses.includes("text_unavailable; local_media_copy_available"), "captioned targets keep their body status");
+  const voiced = references(context({ ...target, document: undefined, voice: { file_id: "voice" } }, {}, new Map([[target.message_id, path]])))[0];
+  assert.equal(voiced.media?.type, "voice"); assert.equal(voiced.media?.local_path, path);
+});
+
+test("unresolved media reproduces today's metadata-only reference byte for byte", () => {
+  const target = { ...assistant(), text: undefined, photo: [{ file_id: "unread-file-id", file_name: "cat.jpg", mime_type: "image/jpeg", file_size: 42 }] };
+  const today = context(target);
+  assert.equal(context(target, {}, new Map()), today);
+  assert.equal(context(target, {}, new Map([[1, "/tmp/other.jpg"]])), today, "unrelated message ids do not resolve");
+  const record = references(today)[0];
+  assert.equal(record.media?.local_path, undefined);
+  assert.equal(record.media?.content, "metadata only; not read, downloaded or transcribed");
+  assert.ok(record.statuses.includes("text_unavailable; media_or_service_content_not_read"));
+  assert.ok(!today.includes("local_path"));
+});
+
+test("text-only and non-media reply targets ignore a resolved media map", () => {
+  assert.equal(context(assistant(200), {}, new Map([[200, "/tmp/not-media.jpg"]])), context(assistant(200)));
+  const service = references(context({ ...assistant(201), text: undefined }, {}, new Map([[201, "/tmp/not-media.jpg"]])))[0];
+  assert.ok(service.statuses.includes("text_unavailable; media_or_service_content_not_read"));
+  assert.ok(!service.xml.includes("local_path"));
+});
+
+test("resolved local paths are escaped, redacted, bounded and marked without slicing tags", () => {
+  const target = { ...assistant(), text: undefined, document: { file_id: "unread", file_name: "report.txt", mime_type: "text/plain", file_size: 7 } };
+  const escapedPath = `/tmp/${'&'.repeat(10)}/<photo>.jpg`;
+  assert.equal(references(context(target, {}, new Map([[target.message_id, escapedPath]])))[0].media?.local_path, escapedPath);
+  assert.equal(references(context(target, {}, new Map([[target.message_id, `/tmp/${config.token}/file.jpg`]])))[0].media?.local_path, "/tmp/[REDACTED]/file.jpg");
+  const long = `/tmp/${'&'.repeat(120)}.jpg`;
+  const truncated = references(context(target, {}, new Map([[target.message_id, long]])))[0];
+  assert.equal(truncated.truncations.local_path, long.length);
+  assert.equal(truncated.media?.local_path, `/tmp/${'&'.repeat(99)}`);
+  assert.ok(truncated.xml.includes('<truncation field="local_path"'));
+  assert.ok(context(target, {}, new Map([[target.message_id, long]])).length <= REPLY_CONTEXT_LIMIT);
+});
+
+test("resolved media keeps the aggregate 8192 budget, album dedupe and omission records intact", () => {
+  const album = Array.from({ length: 20 }, (_, index) => ({ ...message(index + 1), reply_to_message: { ...assistant(index + 200), text: undefined, document: { file_id: "unread" } } }));
+  const resolved = new Map(album.map((item, index): [number, string] => [item.reply_to_message.message_id, `/tmp/${'p'.repeat(480)}-${index}.jpg`]));
+  const output = formatReplyContext(album, config, 999, resolved);
+  assert.ok(output.length <= REPLY_CONTEXT_LIMIT);
+  assert.ok(references(output).some(record => record.statuses.includes("additional_reply_context_omitted")));
+  for (const record of references(output)) if (record.media?.local_path) assert.ok(record.media.local_path.length <= 500);
+  const duplicate = formatReplyContext([{ ...message(1), reply_to_message: album[0].reply_to_message }, { ...message(2), reply_to_message: album[0].reply_to_message }], config, 999, resolved);
+  assert.equal(references(duplicate).length, 1, "album dedupe still collapses identical targets");
 });

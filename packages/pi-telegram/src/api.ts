@@ -117,11 +117,12 @@ export class TelegramApi {
     } catch { /* A hostile local refusal/observer must not replace the original thrown value. */ }
     return { outcome: outgoing ? "suppressed" : "not_applicable", reason: "local_failure" };
   }
-  private async delivery(context: DeliveryContext, run: () => Promise<void>): Promise<void> {
+  private async delivery<T>(context: DeliveryContext, run: () => Promise<T>): Promise<T> {
     this.observe({ ...context, phase: "send_attempt", outcome: "pending" });
     try {
-      await run();
+      const result = await run();
       this.observe({ ...context, phase: "sent", outcome: "acknowledged" });
+      return result;
     } catch (error) {
       this.observe({ ...context, phase: "send_failed", ...this.failure(error, true) });
       throw error;
@@ -216,19 +217,19 @@ export class TelegramApi {
     return new Blob([new Uint8Array(data)], { type: mime });
   }
 
-  async sendMedia(chat: number, kind: MediaKind, data: Buffer, filename: string, signal: AbortSignal, beforeUpload?: () => void, context?: DeliveryContext): Promise<void> {
+  async sendMedia(chat: number, kind: MediaKind, data: Buffer, filename: string, signal: AbortSignal, beforeUpload?: () => void, context?: DeliveryContext): Promise<TgMessage> {
     this.validateMedia(kind, data);
     const form = new FormData();
     form.set("chat_id", String(chat));
     form.set(kind, this.mediaBlob(kind, data, filename), safeFilename(filename));
     if (kind === "video") form.set("supports_streaming", "true");
     const delivery = this.context(context);
-    await this.delivery(delivery, () => this.call<void>(`send${kind[0].toUpperCase()}${kind.slice(1)}`, form, signal, 120_000, beforeUpload, delivery));
+    return this.delivery(delivery, () => this.call<TgMessage>(`send${kind[0].toUpperCase()}${kind.slice(1)}`, form, signal, 120_000, beforeUpload, delivery));
   }
 
   /** A single Telegram album, not a series of independent sendPhoto/sendDocument calls. */
-  async sendGroup(chat: number, files: OutgoingFile[], signal: AbortSignal, beforeUpload?: () => void, context?: DeliveryContext): Promise<void> {
-    if (files.length === 1) return this.sendMedia(chat, files[0].kind, files[0].data, files[0].filename, signal, beforeUpload, context);
+  async sendGroup(chat: number, files: OutgoingFile[], signal: AbortSignal, beforeUpload?: () => void, context?: DeliveryContext): Promise<TgMessage[]> {
+    if (files.length === 1) return [await this.sendMedia(chat, files[0].kind, files[0].data, files[0].filename, signal, beforeUpload, context)];
     if (files.length < 2 || files.length > 10) throw new SafeError("Telegram albums require 2–10 attachments.");
     if (files.some(file => file.kind === "voice")) throw new SafeError("Telegram cannot group voice notes into an album; send one voice note separately.");
     if (files.some(file => file.kind === "document") && !files.every(file => file.kind === "document")) {
@@ -240,7 +241,7 @@ export class TelegramApi {
     form.set("media", JSON.stringify(files.map((file, index) => ({ type: file.kind, media: `attach://file${index}` }))));
     files.forEach((file, index) => form.set(`file${index}`, this.mediaBlob(file.kind, file.data, file.filename), safeFilename(file.filename)));
     const delivery = this.context(context);
-    await this.delivery(delivery, () => this.call<void>("sendMediaGroup", form, signal, 120_000, beforeUpload, delivery, undefined, undefined, files.length));
+    return this.delivery(delivery, () => this.call<TgMessage[]>("sendMediaGroup", form, signal, 120_000, beforeUpload, delivery, undefined, undefined, files.length));
   }
 
   /** Remove the bot's advertised slash-command menu; there are no extension command handlers. */
@@ -308,7 +309,7 @@ export class TelegramApi {
   }
 }
 
-export interface OutgoingFile { data: Buffer; filename: string; kind: MediaKind }
+export interface OutgoingFile { data: Buffer; filename: string; kind: MediaKind; path: string }
 
 /** Normalize Telegram's .oga/.opus naming without altering the supported OGG bytes. */
 export function audioUpload(data: Buffer, filename: string): { filename: string; mime: string } {
@@ -340,5 +341,5 @@ export async function outboundFile(cwd: string, path: string, kind?: MediaKind, 
   const extension = extname(resolved).toLowerCase();
   kind ??= [".jpg", ".jpeg", ".png"].includes(extension) && data.length <= 10 * 1024 * 1024 ? "photo"
     : extension === ".mp4" ? "video" : [".ogg", ".opus"].includes(extension) ? "voice" : "document";
-  return { data, filename: basename(resolved), kind };
+  return { data, filename: basename(resolved), kind, path: resolved };
 }

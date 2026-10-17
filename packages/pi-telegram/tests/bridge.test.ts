@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { AsyncResource } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
@@ -913,6 +913,65 @@ test("downloaded attachments may be returned from the dedicated non-cwd download
   assert.equal(h.server.texts().length, 0);
 });
 
+test("outbound attachments are indexed by acknowledged message id and resolve on a later reply until the local copy changes", async t => {
+  const h = await fixture(t);
+  h.server.feed(message());
+  await until(() => h.submissions.length === 1);
+  await writeFile(resolve(h.dir, "one.jpg"), h.server.file);
+  await h.bridge.send({ path: "one.jpg", kind: "photo" });
+  await h.finish("");
+  const local = await realpath(resolve(h.dir, "one.jpg"));
+  const media = (h.bridge as unknown as { media: { lookup(chat: number, message: number): { path: string; kind: string; source: string; at: number } | undefined } }).media;
+  const entry = media.lookup(123, 200);
+  assert.equal(entry?.path, local); assert.equal(entry?.kind, "photo"); assert.equal(entry?.source, "outbound");
+  assert.ok(Number.isSafeInteger(entry?.at) && entry!.at > 0);
+  const index = resolve(h.dir, "state", createHash("sha256").update(config.token).digest("hex").slice(0, 16), "media-index.json");
+  const persisted = JSON.parse(await readFile(index, "utf8")) as { version: number; entries: Record<string, unknown>[] };
+  assert.equal(persisted.version, 1); assert.equal(persisted.entries.length, 1);
+  assert.equal(persisted.entries[0].path, local); assert.equal((await stat(index)).mode & 0o777, 0o600);
+  const target = { ...message(200), text: undefined, photo: [{ file_id: "sent-photo" }] };
+  h.server.feed({ ...message(2, "What was that?"), reply_to_message: target });
+  await until(() => h.submissions.length === 2);
+  const ref = references((h.submissions[1][0] as TextContent).text)[0];
+  assert.equal(ref.media?.local_path, local);
+  assert.equal(ref.media?.content, "local copy available; contents not read into context");
+  assert.ok(ref.statuses.includes("text_unavailable; local_media_copy_available"));
+  assert.deepEqual(h.server.calls.filter(call => call.method === "getFile"), [], "a resolved local copy is never re-fetched from Telegram");
+  await h.finish("");
+  await rm(resolve(h.dir, "one.jpg"));
+  h.server.feed({ ...message(3, "And now?"), reply_to_message: target });
+  await until(() => h.submissions.length === 3);
+  const missing = references((h.submissions[2][0] as TextContent).text)[0];
+  assert.equal(missing.media?.local_path, undefined);
+  assert.equal(missing.media?.content, "metadata only; not read, downloaded or transcribed");
+  await h.finish("");
+  await writeFile(resolve(h.dir, "elsewhere.jpg"), "Synthetic elsewhere");
+  await symlink(resolve(h.dir, "elsewhere.jpg"), resolve(h.dir, "one.jpg"));
+  h.server.feed({ ...message(4, "And now?"), reply_to_message: target });
+  await until(() => h.submissions.length === 4);
+  assert.equal(references((h.submissions[3][0] as TextContent).text)[0].media?.local_path, undefined, "a symlink swap to another file is not followed");
+  await h.finish("");
+});
+
+test("inbound downloaded media is indexed and resolvable on a later reply without re-fetching", async t => {
+  const h = await fixture(t);
+  h.server.feed({ ...message(1, ""), text: undefined, photo: [{ file_id: "incoming-photo", file_name: "cat.jpg" }] });
+  await until(() => h.submissions.length === 1);
+  const path = attachmentPaths((h.submissions[0][0] as TextContent).text)[0];
+  await h.finish("");
+  const media = (h.bridge as unknown as { media: { lookup(chat: number, message: number): { path: string; kind: string; source: string } | undefined } }).media;
+  const entry = media.lookup(123, 1);
+  assert.equal(entry?.path, await realpath(path)); assert.equal(entry?.kind, "photo"); assert.equal(entry?.source, "inbound");
+  h.server.feed({ ...message(2, "What was that photo?"), reply_to_message: { ...message(1), text: undefined, photo: [{ file_id: "incoming-photo" }] } });
+  await until(() => h.submissions.length === 2);
+  const ref = references((h.submissions[1][0] as TextContent).text)[0];
+  assert.equal(ref.media?.local_path, await realpath(path));
+  assert.equal(ref.media?.content, "local copy available; contents not read into context");
+  assert.ok(ref.statuses.includes("text_unavailable; local_media_copy_available"));
+  await h.finish("");
+  assert.deepEqual(h.server.calls.filter(call => call.method === "getFile").map(call => call.args.file_id), ["incoming-photo"]);
+});
+
 test("legacy cursor is migrated to persistent state only under ownership, retaining the newest offset", async t => {
   const h = await fixture(t, { start: false });
   const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
@@ -1226,8 +1285,9 @@ test("a serial attachment wait revalidates its captured context and never sends 
   const sendGroup = h.bridge.api.sendGroup.bind(h.bridge.api);
   let reached = false, release: (() => void) | undefined;
   h.bridge.api.sendGroup = async (...args) => {
-    await sendGroup(...args); reached = true;
+    const sent = await sendGroup(...args); reached = true;
     await new Promise<void>(done => { release = done; });
+    return sent;
   };
   const first = h.bridge.send({ path: "one.txt" }); await until(() => reached);
   const second = h.bridge.send({ path: "two.txt" });

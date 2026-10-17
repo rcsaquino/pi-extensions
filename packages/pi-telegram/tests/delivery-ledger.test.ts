@@ -60,7 +60,7 @@ test("durable API acknowledgments and partial chunks survive a fresh reader with
 test("complete multipart/album acknowledgment is one operation without captions or filenames in the ledger", async t => {
   const f = await fixture(t); const forms: FormData[] = [];
   const api = f.api(async (_url, init) => { forms.push(init!.body as FormData); return ok([]); });
-  await api.sendGroup(123, [1, 2].map(n => ({ kind: "document", filename: `PRIVATE-${n}.txt`, data: Buffer.from("PRIVATE BODY") })), new AbortController().signal, undefined, { operation: "attachment", reply: event.reply });
+  await api.sendGroup(123, [1, 2].map(n => ({ kind: "document", filename: `PRIVATE-${n}.txt`, data: Buffer.from("PRIVATE BODY"), path: `/unused/${n}.txt` })), new AbortController().signal, undefined, { operation: "attachment", reply: event.reply });
   assert.equal(forms.length, 1); assert.equal(forms[0].get("caption"), null);
   const records = await f.read();
   assert.deepEqual(records.map(r => r.phase), ["send_attempt", "api_attempt", "api_ack", "sent"]);

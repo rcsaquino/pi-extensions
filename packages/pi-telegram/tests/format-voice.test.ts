@@ -69,7 +69,7 @@ test("Telegram text API gets entities, never a fragile parse_mode", async () => 
 test("multiple photos/videos are one captionless sendMediaGroup operation", async () => {
   const sent: { url: string; form: FormData }[] = [];
   const api = new TelegramApi(config, async (url, init) => { sent.push({ url: String(url), form: init!.body as FormData }); return ok([]); });
-  const files: OutgoingFile[] = [{ data: Buffer.from("photo"), filename: "one.jpg", kind: "photo" }, { data: Buffer.from("video"), filename: "two.mp4", kind: "video" }];
+  const files: OutgoingFile[] = [{ data: Buffer.from("photo"), filename: "one.jpg", kind: "photo", path: "/unused/one.jpg" }, { data: Buffer.from("video"), filename: "two.mp4", kind: "video", path: "/unused/two.mp4" }];
   await api.sendGroup(123, files, signal);
   assert.equal(sent.length, 1);
   assert.ok(sent[0].url.endsWith("/sendMediaGroup"));
@@ -81,8 +81,8 @@ test("multiple photos/videos are one captionless sendMediaGroup operation", asyn
 
 test("albums validate all files before sending, including credentials, size and type restrictions", async () => {
   const api = new TelegramApi(config, async () => { assert.fail("Invalid albums must not touch the network"); });
-  const photo: OutgoingFile = { data: Buffer.from("photo"), filename: "p.jpg", kind: "photo" };
-  const document: OutgoingFile = { data: Buffer.from("doc"), filename: "d.txt", kind: "document" };
+  const photo: OutgoingFile = { data: Buffer.from("photo"), filename: "p.jpg", kind: "photo", path: "/unused/p.jpg" };
+  const document: OutgoingFile = { data: Buffer.from("doc"), filename: "d.txt", kind: "document", path: "/unused/d.txt" };
   await assert.rejects(api.sendGroup(123, [photo, document], signal), /cannot mix/);
   await assert.rejects(api.sendGroup(123, [photo, { ...photo, kind: "voice" }], signal), /voice notes/);
   await assert.rejects(api.sendGroup(123, Array.from({ length: 11 }, () => photo), signal), /2–10/);

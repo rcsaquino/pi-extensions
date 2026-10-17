@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { AgentActivityOutcome, ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
-import { ApiError, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type TgMessage, type TgUpdate, type TgUser } from "./api.ts";
+import { ApiError, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type OutgoingFile, type TgMessage, type TgUpdate, type TgUser } from "./api.ts";
 import { type Config, DeliveryRefusal, type DeliveryRefusalCode, SafeError, redact, safeError, stamp } from "./config.ts";
 import { ConnectionLease } from "./connection-lease.ts";
 import { HumanInputScope } from "./human-input.ts";
 import { formatReplyContext } from "./reply-context.ts";
+import { SentMediaRegistry, type SentMediaRecord } from "./sent-media.ts";
 import { DeliveryLedger, type DeliveryContext, type DeliveryEvent, type DeliveryRecord } from "./delivery-ledger.ts";
 
 const ALBUM_WAIT_MS = 1000;
@@ -82,6 +83,7 @@ export class TelegramBridge {
   private lease?: ConnectionLease;
   private startTask?: Promise<void>;
   private stopTask?: Promise<void>;
+  private media?: SentMediaRegistry;
   private lastStamp?: { sessionId: string; at: number };
 
   constructor(private pi: ExtensionAPI, private ctx: ExtensionContext, readonly config: Config, fetcher?: Fetch) {
@@ -197,6 +199,8 @@ export class TelegramBridge {
       this.controller.signal.throwIfAborted();
       await mkdir(this.directory, { recursive: true, mode: 0o700 });
       await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
+      this.media = new SentMediaRegistry(resolve(this.stateDirectory, "media-index.json"));
+      await this.media.load();
       const path = resolve(this.stateDirectory, "cursor.json");
       const legacy = resolve(this.directory, "cursor.json");
       const positions = [await this.cursor(path)];
@@ -231,6 +235,7 @@ export class TelegramBridge {
     this.invalidate();
     this.humanInput?.close(); this.offOwner?.();
     this.humanInput = this.offOwner = undefined;
+    this.media?.clear();
     if (this.worker) clearInterval(this.worker);
     if (this.typing) clearInterval(this.typing);
     this.worker = this.typing = undefined;
@@ -374,6 +379,9 @@ export class TelegramBridge {
       const path = resolve(this.directory, `${message.message_id}-${randomUUID()}-${filename}`);
       await writeFile(path, data, { mode: 0o600, flag: "wx" });
       paths.push(path);
+      const kind = photo ? "photo" : message.document ? "document" : message.video ? "video" : message.animation ? "animation"
+        : message.video_note ? "video_note" : message.voice ? "voice" : "audio";
+      await this.indexInbound(message, path, kind);
       const isVideo = Boolean(message.video || message.video_note || message.animation);
       const mime = imageMime(data);
       if (mime && !isVideo) content.push({ type: "image", data: data.toString("base64"), mimeType: mime });
@@ -381,12 +389,37 @@ export class TelegramBridge {
     }
     if (paths.length) parts.push(`<attachments>\n${paths.map((path, index) => `${index + 1}. ${path}`).join("\n")}\n</attachments>`);
     const date = new Date(Math.min(...request.messages.map(message => message.date)) * 1000);
-    const reference = formatReplyContext(request.messages, this.config, this.botId);
+    const reference = formatReplyContext(request.messages, this.config, this.botId, await this.replyMedia(request.messages));
     const body = redact(parts.join("\n\n"), this.config);
     // The element is always the final field: after text, transcription and attachment blocks.
     const current = this.shouldStamp(request.sessionId, date) ? stamp(body, date) : body;
     content.unshift({ type: "text", text: reference ? `${reference}\n\n${current}` : current });
     return content;
+  }
+
+  /** Best-effort inbound indexing: store the realpath'd copy that was actually written. */
+  private async indexInbound(message: TgMessage, path: string, kind: string): Promise<void> {
+    try {
+      await this.media?.record([{ chat: message.chat.id, message: message.message_id, path: await realpath(path), kind, source: "inbound" }]);
+    } catch { /* Indexing never fails an admitted download or transcription. */ }
+  }
+
+  /** Replied-to media resolves only when the indexed local copy still exists at exactly that path. */
+  private async replyMedia(messages: TgMessage[]): Promise<Map<number, string>> {
+    const resolved = new Map<number, string>();
+    for (const message of messages) {
+      const target = message.reply_to_message;
+      const targetId = target && Number.isSafeInteger(target.message_id) && target.message_id > 0 ? target.message_id : undefined;
+      if (!target || targetId === undefined || resolved.has(targetId)) continue;
+      if (!target.photo?.length && !target.document && !target.video && !target.animation && !target.video_note && !target.voice && !target.audio && !target.sticker) continue;
+      const entry = this.media?.lookup(message.chat.id, targetId);
+      if (!entry) continue;
+      try {
+        // realpath also rejects a symlink swap that no longer points at the stored copy.
+        if (await realpath(entry.path) === entry.path) resolved.set(targetId, entry.path);
+      } catch { /* Missing, unreadable or replaced local copies are omitted. */ }
+    }
+    return resolved;
   }
 
   private async steer(request: Request, followUp: QueuedRequest): Promise<void> {
@@ -705,6 +738,19 @@ export class TelegramBridge {
     if (signal?.aborted) refuse("TG_CALL_CANCELLED");
   }
 
+  /** Best-effort outbound indexing of the acknowledged message id per sent file. */
+  private async indexOutbound(chat: number, files: OutgoingFile[], sent: unknown): Promise<void> {
+    try {
+      if (!Array.isArray(sent)) return;
+      const entries = files.flatMap((file, index): SentMediaRecord[] => {
+        const messageId = (sent[index] as TgMessage | undefined)?.message_id;
+        if (typeof messageId !== "number" || !Number.isSafeInteger(messageId) || messageId <= 0) return [];
+        return [{ chat, message: messageId, path: file.path, kind: file.kind, source: "outbound" }];
+      });
+      if (entries.length) await this.media?.record(entries);
+    } catch { /* A malformed transport result or an index failure never changes send semantics. */ }
+  }
+
   async send(params: SendParams, signal?: AbortSignal): Promise<void> {
     const request = this.reply();
     this.assertDelivery(request, signal);
@@ -724,7 +770,9 @@ export class TelegramBridge {
       } else {
         const files = await Promise.all((params.paths || [params.path!]).map(path => outboundFile(this.ctx.cwd, path, params.kind, this.config.dataDir, combined)));
         beforeUpload();
-        await this.api.sendGroup(this.chat(request), files, combined, beforeUpload, { ...context, operation: files.some(file => file.kind === "voice") ? "voice" : "attachment" });
+        const chat = this.chat(request);
+        const sent = await this.api.sendGroup(chat, files, combined, beforeUpload, { ...context, operation: files.some(file => file.kind === "voice") ? "voice" : "attachment" });
+        await this.indexOutbound(chat, files, sent);
         request.delivered = true;
         if (files.some(file => file.kind === "voice")) request.spoke = true;
       }

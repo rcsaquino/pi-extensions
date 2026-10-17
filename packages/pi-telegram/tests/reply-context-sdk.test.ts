@@ -138,6 +138,7 @@ test("real file-loader/poll/prepare/submission/SDK path includes bounded referen
     assert.ok(!input.includes(referenceRule), "rule is not inside user reference data");
     assert.ok(systems.at(-1)!.includes("after any reply context"));
     assert.ok(systems.at(-1)!.includes("Receiving a voice message or audio attachment is not a request for a voice reply"));
+    assert.ok(systems.at(-1)!.includes("If a replied-to media block includes <local_path>"), "the trusted local-copy rule reaches the actual model prompt");
   });
   await t.test("ordinary no-reply input inside the active timestamp window carries no metadata", async () => {
     feed(incoming(2, "Ordinary request")); await finish(2);
@@ -154,7 +155,7 @@ test("real file-loader/poll/prepare/submission/SDK path includes bounded referen
   await t.test("unread voice target supplies metadata only; unsafe external context never reaches model", async () => {
     feed({ ...incoming(4, "What can you see?"), reply_to_message: { ...target(202), text: undefined,
       voice: { file_id: "old-voice-never-fetch", mime_type: "audio/ogg" } } });
-    await finish(4); assert.match(references(requests.at(-1)!)[0].media!.content!, /not downloaded, viewed or transcribed; not voice permission/);
+    await finish(4); assert.match(references(requests.at(-1)!)[0].media!.content!, /metadata only; not read, downloaded or transcribed/);
     feed({ ...incoming(5), external_reply: { origin: { type: "hidden_user", sender_user_name: "Foreign private name" } },
       quote: { text: "Foreign private quote", position: 0 } });
     await finish(5); assert.ok(references(requests.at(-1)!)[0].statuses.includes("external_reply_omitted"));

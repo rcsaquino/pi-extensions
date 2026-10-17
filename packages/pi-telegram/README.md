@@ -71,9 +71,36 @@ Keep real values private and out of the repository. On Unix, protect configurati
 
 ## Message behavior
 
-Incoming text receives one `[ISO_8601]` timestamp immediately before the current message, representing Telegram's original instant in the host timezone, with seconds and an explicit offset but no fractional seconds. With no reply, the format remains `[2026-10-06T21:59:21+08:00] Message`. There is no current-user label or trailing timestamp. Attachments appear in one `[Attachment/s]` path list; images also enter Pi as native image blocks. Voice/audio is transcribed under `[Transcription]`.
+Incoming text may end with one multi-line `<current_time>` element appended as the final field of the prepared content, representing Telegram's original instant in the host timezone, with seconds and an explicit offset but no fractional seconds. The element is emitted at most once every 30 minutes per session: a message at least 30 minutes after the last emitted stamp starts a new element, later unstamped messages are newer than the last stamped time, and a different session stamps immediately. With no reply and a stamped message, the input ends with:
 
-When Telegram supplies `reply_to_message` in the same authorized private chat, the prepared input adds a compact XML reference before the timestamped current message:
+```text
+Okay cool
+
+<current_time>
+2026-10-06T22:09:42+08:00
+</current_time>
+```
+
+The element is always final: it follows `<transcription>` blocks and the single `<attachments>` path list. There is no current-user label or leading timestamp. Images also enter Pi as native image blocks.
+
+Incoming voice is transcribed into a `<transcription>` block, and every downloaded attachment path is listed once in a numbered `<attachments>` block after the text and transcriptions, in path order:
+
+```text
+<transcription>
+Summarize this recording.
+</transcription>
+
+<attachments>
+1. /path/to/downloads/11-voice.ogg
+2. /path/to/downloads/12-photo.jpg
+</attachments>
+
+<current_time>
+2026-10-06T22:09:42+08:00
+</current_time>
+```
+
+When Telegram supplies `reply_to_message` in the same authorized private chat, the prepared input adds a compact XML reference before the message content, with any timestamp element still last:
 
 ```xml
 <telegram_reply_context>
@@ -81,7 +108,11 @@ When Telegram supplies `reply_to_message` in the same authorized private chat, t
   <body>A previous answer.</body>
 </telegram_reply_context>
 
-[2026-10-06T22:09:42+08:00] Okay cool
+Okay cool
+
+<current_time>
+2026-10-06T22:09:42+08:00
+</current_time>
 ```
 
 Sender names come from bounded Telegram metadata, not a fixed name. Only the bot ID verified by the existing `getMe` handshake uses its name without a role suffix, for example `Eve`; other bots/users have distinct labels, and unavailable names are marked rather than invented. Names are reference labels, never authentication. Message/sender IDs remain internal. The body uses original text or caption; optional `<quote>` preserves selected text with its approximate UTF-16 position/manual flag, `<media>` supplies unread type/filename/MIME/size metadata, and status/truncation fields describe unavailable, omitted or bounded content.

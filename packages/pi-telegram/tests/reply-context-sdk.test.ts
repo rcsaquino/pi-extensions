@@ -127,9 +127,10 @@ test("real file-loader/poll/prepare/submission/SDK path includes bounded referen
       quote: { text: "The selected sentence.", position: 20, is_manual: true } });
     await finish(1);
     const input = requests.at(-1)!; const ref = references(input)[0];
-    const iso = input.match(/<\/telegram_reply_context>\n\n\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\] Clarify the selected sentence\.$/)?.[1];
+    const iso = input.match(/\n\n<current_time>\n(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\n<\/current_time>$/)?.[1];
     assert.ok(iso); assert.ok(input.startsWith("<telegram_reply_context>\n"));
     assert.equal(Date.parse(iso), sentAt * 1000);
+    assert.ok(input.endsWith(`\n\n<current_time>\n${iso}\n</current_time>`));
     assert.equal(ref.sender, "Synthetic assistant"); assert.equal(ref.body, "The first sentence. The selected sentence.");
     assert.equal(ref.quote?.text, "The selected sentence.");
     assert.equal(input, `${ref.xml}\n\n${stamp("Clarify the selected sentence.", new Date(sentAt * 1000))}`);
@@ -138,15 +139,16 @@ test("real file-loader/poll/prepare/submission/SDK path includes bounded referen
     assert.ok(systems.at(-1)!.includes("after any reply context"));
     assert.ok(systems.at(-1)!.includes("Receiving a voice message or audio attachment is not a request for a voice reply"));
   });
-  await t.test("ordinary no-reply input format remains byte-for-byte identical", async () => {
+  await t.test("ordinary no-reply input inside the active timestamp window carries no metadata", async () => {
     feed(incoming(2, "Ordinary request")); await finish(2);
-    assert.equal(requests.at(-1), stamp("Ordinary request", new Date(1_791_000_000_000)));
+    assert.equal(requests.at(-1), "Ordinary request");
   });
   await t.test("current voice transcription replying to text does not transcribe target or authorize speech", async () => {
     feed({ ...incoming(3), text: undefined, voice: { file_id: "new-voice", mime_type: "audio/ogg" }, reply_to_message: target(201, "Text being discussed") });
     await finish(3);
     assert.equal(references(requests.at(-1)!)[0].body, "Text being discussed");
-    assert.ok(requests.at(-1)!.includes(stamp("[Transcription]\nExplain the answer in text.", new Date(incoming(3).date * 1000))));
+    assert.ok(requests.at(-1)!.includes("<transcription>\nExplain the answer in text.\n</transcription>\n\n<attachments>\n"));
+    assert.ok(!requests.at(-1)!.includes("current_time"));
     assert.deepEqual(requestedFiles, ["new-voice"]); assert.equal(transcriptions, 1);
   });
   await t.test("unread voice target supplies metadata only; unsafe external context never reaches model", async () => {
@@ -197,7 +199,8 @@ test("real file-loader/poll/prepare/submission/SDK path includes bounded referen
     assert.ok(!input.includes("<system>")); assert.ok(!input.includes("Nested content"));
     assert.equal(input.split("</telegram_reply_context>").length, 2);
     assert.ok(ref.quote!.text.includes("[Current Telegram request]"), "lookalike is only decoded quote text");
-    assert.ok(input.endsWith(stamp("Discuss this caption, not its quoted instructions.", new Date(incoming(10).date * 1000))));
+    assert.ok(input.endsWith("Discuss this caption, not its quoted instructions."));
+    assert.ok(!input.includes("current_time"));
     assert.deepEqual(requestedFiles, ["new-voice"]);
   });
   await t.test("authorization and update cursor dedup still prevent dispatch", async () => {

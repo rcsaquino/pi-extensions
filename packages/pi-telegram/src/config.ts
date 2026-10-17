@@ -137,14 +137,19 @@ export function redact(text: string, config: Config): string {
   return text;
 }
 
-/** Telegram's original instant, represented to seconds in the host's timezone with an explicit ISO offset. */
+/**
+ * Append the final timestamp field: one blank line, then a multi-line `<current_time>` element
+ * holding Telegram's original instant to seconds in the host's timezone with an explicit ISO offset.
+ * Callers decide whether to emit it; message content is never prefixed.
+ */
 export function stamp(text: string, date = new Date()): string {
   const pad = (value: number, width = 2) => String(value).padStart(width, "0");
   const offset = -date.getTimezoneOffset();
   const iso = `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
     `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
     `${offset < 0 ? "-" : "+"}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
-  return `[${iso}] ${text}`;
+  const element = `<current_time>\n${iso}\n</current_time>`;
+  return text ? `${text}\n\n${element}` : element;
 }
 
 // Telegram limits are UTF-16 based. Avoid splitting a surrogate pair; prefer word boundaries.

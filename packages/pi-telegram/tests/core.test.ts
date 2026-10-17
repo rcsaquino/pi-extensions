@@ -82,7 +82,7 @@ test("errors and redaction never include network URLs or configured keys", () =>
   assert.equal(text, "[REDACTED] [REDACTED] [REDACTED]");
 });
 
-test("incoming timestamps are one leading second-only ISO 8601 field in the host timezone", () => {
+test("incoming timestamps are one final multi-line second-only ISO 8601 element in the host timezone", () => {
   const previous = process.env.TZ;
   try {
     for (const [zone, date, expected] of [
@@ -97,9 +97,10 @@ test("incoming timestamps are one leading second-only ISO 8601 field in the host
       ["Asia/Manila", "2026-12-31T23:59:59.999Z", "2027-01-01T07:59:59+08:00"],
     ]) {
       process.env.TZ = zone;
-      assert.equal(stamp("hello", new Date(date)), `[${expected}] hello`);
-      assert.equal(stamp("multi\nline 😀  ", new Date(date)), `[${expected}] multi\nline 😀  `);
-      assert.equal(stamp("", new Date(date)), `[${expected}] `);
+      const element = `<current_time>\n${expected}\n</current_time>`;
+      assert.equal(stamp("hello", new Date(date)), `hello\n\n${element}`);
+      assert.equal(stamp("multi\nline 😀  ", new Date(date)), `multi\nline 😀  \n\n${element}`);
+      assert.equal(stamp("", new Date(date)), element);
       assert.equal(Date.parse(expected), Math.floor(Date.parse(date) / 1000) * 1000);
     }
   } finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }

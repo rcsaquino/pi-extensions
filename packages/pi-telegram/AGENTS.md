@@ -5,8 +5,8 @@ Read this with [the monorepo instructions](https://github.com/rcsaquino/pi-exten
 ## Architecture
 
 - `index.ts`: distributable entry point.
-- `src/bridge.ts`: lifecycle, polling, FIFO reply ownership, steering, final delivery, and `telegram_send`.
-- `src/config.ts`: known-field environment loading, allowlist, safe errors, redaction, and input timestamps.
+- `src/bridge.ts`: lifecycle, polling, FIFO reply ownership, steering, at most one final multi-line `<current_time>` input element per session every 30 minutes, final delivery, and `telegram_send`.
+- `src/config.ts`: known-field environment loading, allowlist, safe errors, redaction, and the final `<current_time>` ISO 8601 input element.
 - `src/api.ts`: Telegram requests, downloads/uploads, and audio upload identification.
 - `src/attachment.ts`: Linux/procfs descriptor-anchored no-follow attachment reads, actual byte bounds, cancellation and identity checks.
 - `src/connection-lease.ts`: local kernel-backed bot ownership.

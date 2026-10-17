@@ -12,6 +12,8 @@ import { formatReplyContext } from "./reply-context.ts";
 import { DeliveryLedger, type DeliveryContext, type DeliveryEvent, type DeliveryRecord } from "./delivery-ledger.ts";
 
 const ALBUM_WAIT_MS = 1000;
+/** Timestamp metadata is emitted at most once per session in any 30-minute window. */
+const STAMP_INTERVAL_MS = 30 * 60_000;
 function noticeMetadata(value: unknown): Pick<Notice, "kind" | "status"> {
   try {
     const fields = value && typeof value === "object" ? Object.getOwnPropertyDescriptors(value) : {};
@@ -80,6 +82,7 @@ export class TelegramBridge {
   private lease?: ConnectionLease;
   private startTask?: Promise<void>;
   private stopTask?: Promise<void>;
+  private lastStamp?: { sessionId: string; at: number };
 
   constructor(private pi: ExtensionAPI, private ctx: ExtensionContext, readonly config: Config, fetcher?: Fetch) {
     this.ledger = new DeliveryLedger(config.diagnosticsDir || resolve(config.stateDir || config.dataDir, "diagnostics"));
@@ -348,6 +351,14 @@ export class TelegramBridge {
       .then(() => {}).finally(() => { this.typingTask = undefined; });
   }
 
+  /** Emits the final timestamp element only on a new session or 30+ minutes after the last emitted one. */
+  private shouldStamp(sessionId: string, date: Date): boolean {
+    const previous = this.lastStamp;
+    if (previous && previous.sessionId === sessionId && date.getTime() - previous.at < STAMP_INTERVAL_MS) return false;
+    this.lastStamp = { sessionId, at: date.getTime() };
+    return true;
+  }
+
   private async prepare(request: Request): Promise<(TextContent | ImageContent)[]> {
     const signal = AbortSignal.any([this.controller.signal, request.controller.signal]);
     const parts: string[] = [];
@@ -366,12 +377,14 @@ export class TelegramBridge {
       const isVideo = Boolean(message.video || message.video_note || message.animation);
       const mime = imageMime(data);
       if (mime && !isVideo) content.push({ type: "image", data: data.toString("base64"), mimeType: mime });
-      if (message.voice || message.audio) parts.push(`[Transcription]\n${await this.api.transcribe(data, filename, signal)}`);
+      if (message.voice || message.audio) parts.push(`<transcription>\n${await this.api.transcribe(data, filename, signal)}\n</transcription>`);
     }
-    if (paths.length) parts.push(`[Attachment/s]\n${paths.join("\n")}`);
+    if (paths.length) parts.push(`<attachments>\n${paths.map((path, index) => `${index + 1}. ${path}`).join("\n")}\n</attachments>`);
     const date = new Date(Math.min(...request.messages.map(message => message.date)) * 1000);
     const reference = formatReplyContext(request.messages, this.config, this.botId);
-    const current = stamp(redact(parts.join("\n\n"), this.config), date);
+    const body = redact(parts.join("\n\n"), this.config);
+    // The element is always the final field: after text, transcription and attachment blocks.
+    const current = this.shouldStamp(request.sessionId, date) ? stamp(body, date) : body;
     content.unshift({ type: "text", text: reference ? `${reference}\n\n${current}` : current });
     return content;
   }

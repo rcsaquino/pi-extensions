@@ -193,7 +193,8 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
   assert.equal(sent[0].chat_id, 123);
   assert.equal(sent[0].text, "Verified final reply.");
   const user = session.messages.find(item => item.role === "user")!;
-  assert.ok(JSON.stringify(user).includes(stamp("Please verify", new Date(1_791_000_000_000))));
+  // JSON.stringify escapes the multi-line element, so compare the serialized form.
+  assert.ok(JSON.stringify(user).includes(JSON.stringify(stamp("Please verify", new Date(1_791_000_000_000))).slice(1, -1)));
   assert.ok(!JSON.stringify(user).includes("Telegram user"));
   assert.ok(telegramContextSeen);
   assert.deepEqual(errors, []);

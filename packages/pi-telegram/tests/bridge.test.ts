@@ -28,6 +28,17 @@ async function until(predicate: () => boolean, timeout = 3000): Promise<void> {
   }
 }
 
+/** Ordered `<attachments>` paths from prepared content, ignoring a final timestamp element. */
+function attachmentPaths(text: string): string[] {
+  const section = text.split("<attachments>\n")[1] ?? "";
+  return section.split("\n</attachments>")[0].split("\n").map(line => line.replace(/^\d+\.\s+/, ""));
+}
+
+/** Rendered `<attachments>` block with 1-based numbering for the given paths. */
+function attachmentsBlock(paths: string[]): string {
+  return `<attachments>\n${paths.map((path, index) => `${index + 1}. ${path}`).join("\n")}\n</attachments>`;
+}
+
 class Server {
   calls: { method: string; args: any }[] = [];
   updates: TgUpdate[][] = [];
@@ -197,15 +208,16 @@ test("authenticate before replying, downloading, STT or Pi dispatch; reject grou
   assert.ok(!h.server.calls.some(call => call.method === "getFile"));
 });
 
-test("inbound text has only a leading second-only host-local sent timestamp; plain final only after settlement", async t => {
+test("inbound text ends with only one multi-line second-only host-local current_time element; plain final only after settlement", async t => {
   const h = await fixture(t);
   h.server.feed(message());
   await until(() => h.submissions.length === 1);
   const text = (h.submissions[0][0] as TextContent).text;
   assert.equal(text, stamp("Hello", new Date(message().date * 1000)));
-  const iso = text.match(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\] Hello$/)?.[1];
+  const iso = text.match(/\n\n<current_time>\n(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\n<\/current_time>$/)?.[1];
   assert.ok(iso);
   assert.equal(Date.parse(iso), message().date * 1000);
+  assert.deepEqual(text.split("\n").slice(-4), ["", "<current_time>", iso, "</current_time>"]);
   assert.ok(!text.includes("Telegram user"));
   h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Working..." }, { type: "toolCall", name: "bash" }], stopReason: "toolUse" });
   h.bridge.assistantEnd({ role: "toolResult", content: [{ type: "text", text: "tool output" }] });
@@ -214,6 +226,69 @@ test("inbound text has only a leading second-only host-local sent timestamp; pla
   assert.equal(h.server.texts().length, 1);
   assert.equal(h.server.texts()[0].text, "Final reply.");
   assert.ok(!h.server.texts()[0].text.includes("private"));
+});
+
+test("current_time is emitted at most once per session every 30 minutes and advances only when emitted", async t => {
+  const h = await fixture(t);
+  const base = message().date;
+  h.server.feed(message(1, "First"));
+  await until(() => h.submissions.length === 1);
+  assert.equal((h.submissions[0][0] as TextContent).text, stamp("First", new Date(base * 1000)));
+  await h.finish("");
+
+  // Inside the 30-minute window: no element and no window extension.
+  h.server.feed({ ...message(2, "Within window"), date: base + 29 * 60 });
+  await until(() => h.submissions.length === 2);
+  assert.equal((h.submissions[1][0] as TextContent).text, "Within window");
+  await h.finish("");
+
+  // Exactly 30 minutes after the emitted stamp: the element returns with this message's instant.
+  h.server.feed({ ...message(3, "At the boundary"), date: base + 30 * 60 });
+  await until(() => h.submissions.length === 3);
+  assert.equal((h.submissions[2][0] as TextContent).text, stamp("At the boundary", new Date((base + 30 * 60) * 1000)));
+  await h.finish("");
+
+  // A later suppressed message does not move the window established by the emitted stamp.
+  h.server.feed({ ...message(4, "Still suppressed"), date: base + 45 * 60 });
+  await until(() => h.submissions.length === 4);
+  assert.equal((h.submissions[3][0] as TextContent).text, "Still suppressed");
+  await h.finish("");
+
+  // A different session stamps immediately even inside the window.
+  h.setSessionId("other-session");
+  h.server.feed({ ...message(5, "New session"), date: base + 46 * 60 });
+  await until(() => h.submissions.length === 5);
+  assert.equal((h.submissions[4][0] as TextContent).text, stamp("New session", new Date((base + 46 * 60) * 1000)));
+  await h.finish("");
+});
+
+test("current_time stays final after reply context, transcription and attachments, and suppression keeps reply context whole", async t => {
+  const h = await fixture(t);
+  h.server.file = Buffer.from("voice audio");
+  h.server.transcript = "First spoken request.";
+  const prior = (id: number, body: string) => ({ ...message(id, body), from: { id: 999, is_bot: true, first_name: "Eve" } });
+  h.server.feed({ ...message(1, ""), text: undefined, voice: { file_id: "voice", mime_type: "audio/ogg" }, reply_to_message: prior(50, "First prior answer") });
+  await until(() => h.submissions.length === 1);
+  const stamped = (h.submissions[0][0] as TextContent).text;
+  assert.ok(stamped.startsWith("<telegram_reply_context>\n"));
+  assert.equal(stamped.split("</telegram_reply_context>").length, 2);
+  assert.equal(references(stamped)[0].body, "First prior answer");
+  const body = stamped.slice(stamped.indexOf("</telegram_reply_context>") + "</telegram_reply_context>".length + 2);
+  assert.ok(body.startsWith("<transcription>\nFirst spoken request.\n</transcription>\n\n<attachments>\n"));
+  assert.equal(attachmentPaths(body).length, 1);
+  assert.equal(body, stamp(`<transcription>\nFirst spoken request.\n</transcription>\n\n${attachmentsBlock([attachmentPaths(body)[0]])}`, new Date(message().date * 1000)));
+  await h.finish("");
+
+  // The same session inside the window appends nothing while keeping the full reply context.
+  h.server.feed({ ...message(2, "Second request"), reply_to_message: prior(51, "Second prior answer") });
+  await until(() => h.submissions.length === 2);
+  const suppressed = (h.submissions[1][0] as TextContent).text;
+  assert.ok(suppressed.startsWith("<telegram_reply_context>\n"));
+  assert.equal(suppressed.split("</telegram_reply_context>").length, 2);
+  assert.equal(references(suppressed)[0].body, "Second prior answer");
+  assert.ok(!suppressed.includes("current_time"));
+  assert.ok(suppressed.endsWith("Second request"));
+  await h.finish("");
 });
 
 test("custom context preserves an admitted reply, attachments and task routing without gaining new authority", async t => {
@@ -338,7 +413,7 @@ test("steering albums retain debounce, native images, and one prompt", async t =
   await until(() => h.submissions.length === 2);
   assert.equal(h.deliveries[1], "steer");
   assert.equal(h.submissions[1].filter(block => block.type === "image").length, 2);
-  assert.equal((h.submissions[1][0] as TextContent).text.split("[Attachment/s]\n")[1].split("\n").length, 2);
+  assert.equal(attachmentPaths((h.submissions[1][0] as TextContent).text).length, 2);
   await h.finish("Updated with both images.");
   await delay(200);
   assert.equal(h.submissions.length, 2);
@@ -354,7 +429,7 @@ test("voice follow-ups are transcribed and steered without automatic speech", as
   h.server.feed({ ...message(2), text: undefined, voice: { file_id: "voice", mime_type: "audio/ogg" } });
   await until(() => h.submissions.length === 2);
   assert.equal(h.deliveries[1], "steer");
-  assert.match((h.submissions[1][0] as TextContent).text, /\[Transcription\]\nUse the revised instructions\./);
+  assert.match((h.submissions[1][0] as TextContent).text, /<transcription>\nUse the revised instructions\./);
   await h.finish("Revised text reply.");
   assert.equal(h.server.texts()[0].text, "Revised text reply.");
   assert.equal(h.server.calls.filter(call => call.method === "sendVoice").length, 0);
@@ -524,8 +599,8 @@ test("photos are saved privately and supplied as native image content", async t 
   assert.deepEqual(Buffer.from(image.data, "base64"), h.server.file);
   const text = (h.submissions[0][0] as TextContent).text;
   assert.match(text, /Describe this/);
-  assert.match(text, /\[Attachment\/s\]\n/);
-  const path = text.split("[Attachment/s]\n")[1];
+  assert.match(text, /<attachments>\n/);
+  const path = attachmentPaths(text)[0];
   assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
 
@@ -535,7 +610,7 @@ test("documents and videos are saved and forwarded as paths, not fictitious vide
   h.server.feed({ ...message(), text: undefined, video: { file_id: "vid", file_name: "../../clip.mp4" } });
   await until(() => h.submissions.length === 1);
   assert.equal(h.submissions[0].length, 1);
-  assert.match((h.submissions[0][0] as TextContent).text, /\[Attachment\/s\]\n.*clip\.mp4/);
+  assert.match((h.submissions[0][0] as TextContent).text, /<attachments>\n.*clip\.mp4/);
   await h.finish();
   h.server.feed({ ...message(2), text: undefined, document: { file_id: "doc", file_name: "report.pdf" } });
   await until(() => h.submissions.length === 2);
@@ -547,7 +622,7 @@ test("voice input is transcribed through Groq but defaults to text without TTS",
   h.server.file = Buffer.from("voice audio");
   h.server.feed({ ...message(), text: undefined, voice: { file_id: "voice", mime_type: "audio/ogg" } });
   await until(() => h.submissions.length === 1);
-  assert.match((h.submissions[0][0] as TextContent).text, /\[Transcription\]\nA spoken request\./);
+  assert.match((h.submissions[0][0] as TextContent).text, /<transcription>\nA spoken request\./);
   await h.finish("Text final.");
   assert.equal(h.server.texts().length, 1);
   assert.equal(h.server.texts()[0].text, "Text final.");
@@ -560,7 +635,7 @@ test("audio attachments also default to text without TTS", async t => {
   h.server.file = Buffer.from("audio bytes");
   h.server.feed({ ...message(), text: undefined, audio: { file_id: "audio", file_name: "audio.ogg" } });
   await until(() => h.submissions.length === 1);
-  assert.match((h.submissions[0][0] as TextContent).text, /\[Transcription\]\nA spoken request\./);
+  assert.match((h.submissions[0][0] as TextContent).text, /<transcription>\nA spoken request\./);
   await h.finish("Audio answered in text.");
   assert.equal(h.server.texts()[0].text, "Audio answered in text.");
   assert.equal(h.server.calls.filter(call => call.method === "sendVoice").length, 0);
@@ -587,7 +662,8 @@ test("all former Telegram slash commands are ordinary Pi input, not transport co
   for (const [index, command] of ["/start", "/help", "/voice off", "/voice on", "/stop", "/telegram disconnect"].entries()) {
     h.server.feed(message(index + 1, command));
     await until(() => h.submissions.length === index + 1);
-    assert.ok((h.submissions[index][0] as TextContent).text.endsWith(command));
+    // Same session and instant: only the first command carries the final element.
+    assert.equal((h.submissions[index][0] as TextContent).text, index === 0 ? stamp(command, new Date(message().date * 1000)) : command);
     await h.finish("");
   }
   assert.equal(h.server.texts().length, 0);
@@ -760,14 +836,15 @@ test("incoming albums across separate polls retain the earliest sent second, one
   h.server.feed({ ...message(11), date: earliest, text: undefined, media_group_id: "album-a", photo: [{ file_id: "second" }] });
   await until(() => h.submissions.length === 1);
   const text = (h.submissions[0][0] as TextContent).text;
-  const paths = text.split("[Attachment/s]\n")[1].split("\n");
+  const paths = attachmentPaths(text);
   assert.equal(paths.length, 2);
   assert.ok(paths[0].includes("10-") && paths[1].includes("11-"));
   assert.equal(h.submissions[0].filter(block => block.type === "image").length, 2);
-  assert.equal((text.match(/\[Attachment\/s\]/g) || []).length, 1);
-  const iso = text.match(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\] Describe both/)?.[1];
+  assert.equal((text.match(/<attachments>/g) || []).length, 1);
+  const iso = text.match(/\n\n<current_time>\n(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\n<\/current_time>$/)?.[1];
   assert.ok(iso);
   assert.equal(Date.parse(iso), earliest * 1000);
+  assert.equal(text, stamp(`Describe both\n\n${attachmentsBlock(paths)}`, new Date(earliest * 1000)));
   assert.ok(!text.includes("saved at:") && !text.includes("Telegram photo"));
   await h.finish("Both cats.");
   await delay(250);
@@ -775,7 +852,7 @@ test("incoming albums across separate polls retain the earliest sent second, one
   assert.equal(h.server.texts().length, 1);
 });
 
-test("reply-bearing albums keep deduplicated XML before the earliest current timestamp and native attachments", async t => {
+test("reply-bearing albums keep deduplicated XML first and the earliest final timestamp after native attachments", async t => {
   const h = await fixture(t);
   const earliest = message().date - 45;
   const reply_to_message = { ...message(200, "A prior answer & detail"), from: { id: 999, is_bot: true, first_name: "Eve" } };
@@ -787,9 +864,9 @@ test("reply-bearing albums keep deduplicated XML before the earliest current tim
   const refs = references(text); assert.equal(refs.length, 1); assert.equal(refs[0].sender, "Eve");
   assert.equal(refs[0].body, "A prior answer & detail");
   const current = text.slice(refs[0].xml.length + 2);
-  assert.ok(current.startsWith(stamp("Describe both", new Date(earliest * 1000))));
+  assert.equal(current, stamp(`Describe both\n\n${attachmentsBlock(attachmentPaths(current))}`, new Date(earliest * 1000)));
   assert.ok(text.startsWith("<telegram_reply_context>\n")); assert.ok(!text.includes("[Current Telegram request]"));
-  assert.equal(current.split("[Attachment/s]\n")[1].split("\n").length, 2);
+  assert.equal(attachmentPaths(current).length, 2);
   assert.equal(h.submissions[0].filter(block => block.type === "image").length, 2);
   assert.deepEqual(h.server.calls.filter(call => call.method === "getFile").map(call => call.args.file_id), ["first", "second"]);
   await h.finish(); assert.equal(h.server.texts().length, 1);
@@ -829,7 +906,7 @@ test("downloaded attachments may be returned from the dedicated non-cwd download
   const h = await fixture(t);
   h.server.feed({ ...message(), text: undefined, document: { file_id: "doc", file_name: "received.txt" } });
   await until(() => h.submissions.length === 1);
-  const path = (h.submissions[0][0] as TextContent).text.split("[Attachment/s]\n")[1];
+  const path = attachmentPaths((h.submissions[0][0] as TextContent).text)[0];
   await h.bridge.send({ path, kind: "document" });
   await h.finish("");
   assert.equal(h.server.calls.filter(call => call.method === "sendDocument").length, 1);

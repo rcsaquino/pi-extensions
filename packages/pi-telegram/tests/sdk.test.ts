@@ -8,7 +8,7 @@ import { createAssistantMessageEventStream, Type, type Api, type AssistantMessag
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stamp } from "../src/config.ts";
 
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(workspace, { recursive: true });
 async function until(predicate: () => boolean, timeout = 5000) {
   const start = Date.now();

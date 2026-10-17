@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 
-const scratch = process.env.PI_IMAGE_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const scratch = process.env.PI_IMAGE_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-image-tests");
 await mkdir(scratch, { recursive: true });
 
 const PNG = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(2040)]);

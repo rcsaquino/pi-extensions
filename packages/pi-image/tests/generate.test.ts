@@ -9,7 +9,7 @@ import { redactKey, safeError, SafeError } from "../src/errors.ts";
 import { detectSavedMime, saveImage, slugify } from "../src/files.ts";
 import { readReferenceImages, resolveOutputPath, validateModel, validatePrompt, validateSize } from "../src/validate.ts";
 
-const scratch = process.env.PI_IMAGE_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const scratch = process.env.PI_IMAGE_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-image-tests");
 await mkdir(scratch, { recursive: true });
 
 const PNG_MAGIC = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);

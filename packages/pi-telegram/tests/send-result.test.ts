@@ -15,7 +15,7 @@ async function until(predicate: () => boolean) {
 }
 
 test("telegram_send success results distinguish attachments from voice and preserve SDK follow-up behavior", async t => {
-  const scratch = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+  const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(resolve(scratch, "send-result-"));
   const agentDir = resolve(root, "agent"); await mkdir(agentDir);

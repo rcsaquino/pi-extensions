@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { ConnectionLease } from "../src/connection-lease.ts";
 
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(workspace, { recursive: true });
 const signal = new AbortController().signal;
 

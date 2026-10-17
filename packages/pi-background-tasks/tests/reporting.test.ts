@@ -31,7 +31,7 @@ async function fixture(t: TestContext, options: Options = {}) {
   let toolStarted!: () => void; const toolRunning = new Promise<void>(r => { toolStarted = r; });
   let releaseTool!: () => void; const toolGate = new Promise<void>(r => { releaseTool = r; });
   const pi = {
-    getFlag: (name: string) => name === 'background-timeout-minutes' ? options.timeoutMinutes : undefined,
+    getFlag: (name: string) => name === 'background-timeout-minutes' ? options.timeoutMinutes : name === 'background-dir' ? join(root, 'state') : undefined,
     getSettings: () => options.scenario === 'compaction-stream-error' ? { compaction: { reserveTokens: 1, keepRecentTokens: 1 } } : {},
     getAllTools: () => {
       metadataReads++;

@@ -10,8 +10,8 @@ if (!['check', 'test', 'verify'].includes(mode)) {
   process.exit(2);
 }
 
-// One local scratch root keeps all generated test data out of the user's agent stores.
-const scratch = resolve(process.env.PI_EXTENSIONS_TEST_ROOT ?? join(root, 'temp_files', 'tests'));
+// One disposable scratch root keeps all generated test data out of the user's agent stores.
+const scratch = resolve(process.env.PI_EXTENSIONS_TEST_ROOT ?? join(process.env.TMPDIR ?? '/tmp', 'pi-extensions-tests'));
 mkdirSync(scratch, { recursive: true });
 const env = {
   ...process.env,

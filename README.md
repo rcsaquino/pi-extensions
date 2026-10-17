@@ -89,7 +89,7 @@ npm test
 npm run verify
 ```
 
-The runner invokes each package's `check` or `typecheck` and `test` scripts sequentially. Root checks also run `npm run check:publication`, an offline regression suite for names, release metadata, distributable files, and documentation links. It sets `PI_OFFLINE=1`, `TMPDIR`, `PI_BACKGROUND_TEST_ROOT`, and `TELEGRAM_TEST_DIR` for isolated tests. Shared scratch defaults to ignored `temp_files/tests/`; override it with `PI_EXTENSIONS_TEST_ROOT`.
+The runner invokes each package's `check` or `typecheck` and `test` scripts sequentially. Root checks also run `npm run check:publication`, an offline regression suite for names, release metadata, distributable files, and documentation links. It sets `PI_OFFLINE=1`, `TMPDIR`, `PI_BACKGROUND_TEST_ROOT`, and `TELEGRAM_TEST_DIR` for isolated tests. Shared scratch defaults to disposable `/tmp/pi-extensions-tests`; override it with `PI_EXTENSIONS_TEST_ROOT`.
 
 To focus on one package:
 

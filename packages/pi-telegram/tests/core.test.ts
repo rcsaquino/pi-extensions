@@ -5,7 +5,7 @@ import test from "node:test";
 import { ApiError, DOWNLOAD_LIMIT, TelegramApi, imageMime, outboundFile, readLimited, safeFilename, type Fetch } from "../src/api.ts";
 import { type Config, SafeError, loadConfig, parseAllowed, redact, safeError, splitText, stamp } from "../src/config.ts";
 
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(workspace, { recursive: true });
 const config: Config = { token: "TEST-BOT-SECRET", allowed: new Set(["123"]), groqKey: "TEST-GROQ-SECRET", elevenKey: "TEST-ELEVEN-SECRET", voiceId: "chosen-voice", modelId: "configured-model", dataDir: workspace };
 const signal = new AbortController().signal;

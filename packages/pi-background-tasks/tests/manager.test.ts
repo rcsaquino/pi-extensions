@@ -13,7 +13,7 @@ import { scratch } from './helpers.ts';
 async function fixture(t: TestContext) {
   const root = await scratch('bg-manager-test-');
   const notices: string[] = [], entries: unknown[] = [], storageErrors: string[] = [];
-  const pi = { getFlag: () => undefined, getAllTools: () => [], getSettings: () => ({}), events: { emit: () => {} },
+  const pi = { getFlag: (name: string) => name === 'background-dir' ? join(root, 'state') : undefined, getAllTools: () => [], getSettings: () => ({}), events: { emit: () => {} },
     appendEntry: (_kind: string, data: unknown) => entries.push(data),
     sendMessage: (message: { content: string }, options: { deliverAs: string; triggerTurn: boolean }) => { assert.equal(options.deliverAs, 'followUp'); assert.equal(options.triggerTurn, true); notices.push(message.content); },
   } as unknown as ExtensionAPI;

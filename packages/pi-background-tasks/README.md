@@ -152,7 +152,7 @@ Results are projected/redacted and bounded in private session/worker **memory**,
 Defaults:
 
 ```text
-<cwd>/temp_files/pi-background-tasks/
+~/.pi/agent/background-tasks/
 └── sessions/<parent-session-hash>/
 │   ├── bg-012345abcdef.json
 │   ├── bg-012345abcdef.md
@@ -170,7 +170,7 @@ Output is saved before completion notification reservation. If output/metadata s
 - `--background-max-workers <N>`: default 2; allowed range 1–8.
 - `--background-timeout-minutes <N>`: default 240; ETA changes do not extend this safety timeout.
 
-Workers also have a 200-model-turn ceiling. Worker capacity limits enter the bounded observable queue; overflow rejects clearly without acceptance. `--background-max-queued <N>` selects 1–128 waiting tasks, default 32. Use durable approved artifact paths for requested deliverables, not disposable task scratch. Where `temp_files` is cleaned periodically, saved results are not permanent archives.
+Workers also have a 200-model-turn ceiling. Worker capacity limits enter the bounded observable queue; overflow rejects clearly without acceptance. `--background-max-queued <N>` selects 1–128 waiting tasks, default 32. Use durable approved artifact paths for requested deliverables, not disposable task scratch. Runtime storage is not a permanent archive; retrieve saved results before they are pruned.
 
 ## Safe activation, smoke and rollback
 

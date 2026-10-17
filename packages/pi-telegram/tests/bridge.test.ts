@@ -14,7 +14,7 @@ import { DeliveryRefusal, stamp, type Config } from "../src/config.ts";
 import { readDeliveryLedger } from "../src/delivery-ledger.ts";
 import { references } from "./reply-context-fixture.ts";
 
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(workspace, { recursive: true });
 const config: Config = { token: "TEST-BOT-TOKEN", allowed: new Set(["123", "456"]), groqKey: "TEST-GROQ", elevenKey: "TEST-ELEVEN", voiceId: "voice-id", modelId: "exact-model-id", dataDir: workspace };
 const ok = (result: unknown) => Response.json({ ok: true, result });

@@ -13,7 +13,7 @@ import { guardTool, workerToolAllowed } from "../../pi-background-tasks/src/poli
 import type { RecordData } from "../../pi-background-tasks/src/types.ts";
 import { readDeliveryLedger } from "../src/delivery-ledger.ts";
 
-const scratch = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 async function until(predicate: () => boolean, label: string) {
   const deadline = Date.now() + 6000;
   while (!predicate()) { assert.ok(Date.now() < deadline, `Timeout: ${label}`); await delay(10); }

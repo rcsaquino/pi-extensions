@@ -9,7 +9,7 @@ import { ApiError, TelegramApi, type Fetch } from "../src/api.ts";
 import { TransportFailure, type Config } from "../src/config.ts";
 import { DeliveryLedger, LEDGER_RECORD_BYTES, LEDGER_RETENTION_MS, LEDGER_SLOTS, migrateDeliveryLedger, readDeliveryLedger, transportCause, type DeliveryEvent } from "../src/delivery-ledger.ts";
 
-const scratch = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(scratch, { recursive: true });
 const event: DeliveryEvent = { phase: "api_attempt", operation: "reply", outcome: "pending", reply: randomUUID(), delivery: randomUUID() };
 const ok = (result: unknown = {}) => Response.json({ ok: true, result });

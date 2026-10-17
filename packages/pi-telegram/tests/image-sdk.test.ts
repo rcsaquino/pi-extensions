@@ -9,7 +9,7 @@ import { createAssistantMessageEventStream, Type, type Api, type AssistantMessag
 import { TelegramBridge } from "../src/bridge.ts";
 import type { TgMessage } from "../src/api.ts";
 
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(workspace, { recursive: true });
 // Solid-color PNG built entirely from synthetic bytes, no patient or external fixture.
 function png(width: number, height: number): Buffer {

@@ -41,7 +41,7 @@ npm test
 npm run verify
 ```
 
-The runner finds all package directories and uses `check` or `typecheck` plus `test`. Root `check`, `test`, and `verify` also run `check:publication`; use `npm run check:publication` for just the offline publication regressions. It runs sequentially, sets `PI_OFFLINE=1`, and points shared temporary directories to ignored `temp_files/tests/`. Set `PI_EXTENSIONS_TEST_ROOT` to an approved isolated directory when needed. Some packages also have ignored package-local fixtures.
+The runner finds all package directories and uses `check` or `typecheck` plus `test`. Root `check`, `test`, and `verify` also run `check:publication`; use `npm run check:publication` for just the offline publication regressions. It runs sequentially, sets `PI_OFFLINE=1`, and points shared temporary directories to disposable `/tmp/pi-extensions-tests`. Set `PI_EXTENSIONS_TEST_ROOT` to an approved isolated directory when needed. Some packages also have ignored package-local fixtures.
 
 Targeted examples:
 

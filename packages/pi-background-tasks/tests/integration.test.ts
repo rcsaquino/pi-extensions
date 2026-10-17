@@ -39,7 +39,7 @@ async function fixture(t: TestContext, mode: ExtensionContext['mode'] = 'rpc', f
   let slowStarted = false, slowAborted = false;
   let p: Dispatch = { task: 'Do the delegated fixture work and verify it.', title: 'Fixture', eta_seconds: 300, eta_max_seconds: 480, estimate_reason: 'Several tool/model rounds, implementation and verification.', mode: 'manual', access: 'write' };
   let sessionId = '';
-  const store = () => new Store(join(root, 'temp_files', 'pi-background-tasks'), sessionId);
+  const store = () => new Store(join(agentDir, 'background-tasks'), sessionId);
   const toolCall = (name: string, args: JsonObject, id = `${name}-${calls.length}`) => ({ type: 'toolCall' as const, id, name, arguments: args });
   const response = (m: Model<Api>, content: AssistantMessage['content'], stopReason: AssistantMessage['stopReason'] = content.some(c => c.type === 'toolCall') ? 'toolUse' : 'stop'): AssistantMessage => ({
     role: 'assistant', content, provider: m.provider, model: m.id, api: m.api, timestamp: Date.now(), stopReason,

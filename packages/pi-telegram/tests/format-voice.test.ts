@@ -8,7 +8,7 @@ import { loadConfig, type Config } from "../src/config.ts";
 import { formattedChunks, telegramFormat } from "../src/format.ts";
 import { isOpus, joinSpeech, speechChunks } from "../src/voice.ts";
 
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(workspace, { recursive: true });
 const config: Config = { token: "TEST-TOKEN", allowed: new Set(["123"]), groqKey: "TEST-GROQ", elevenKey: "TEST-ELEVEN", voiceId: "chosen-voice", modelId: "eleven_v4", dataDir: workspace };
 const signal = new AbortController().signal;

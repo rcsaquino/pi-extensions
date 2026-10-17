@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
@@ -76,7 +77,8 @@ export class BackgroundManager {
   }
   private async initialize(ctx: ExtensionContext): Promise<void> {
     const configured = this.pi.getFlag('background-dir');
-    const root = typeof configured === 'string' && configured.trim() ? resolve(ctx.cwd, configured) : join(ctx.cwd, 'temp_files', 'pi-background-tasks');
+    const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
+    const root = typeof configured === 'string' && configured.trim() ? resolve(ctx.cwd, configured) : join(agentDir, 'background-tasks');
     this.store = new Store(root, ctx.sessionManager.getSessionId());
     await this.store.init();
     this.admission = new Admission(this.maxWorkers());

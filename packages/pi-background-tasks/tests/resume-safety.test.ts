@@ -16,7 +16,7 @@ import { scratch } from './helpers.ts';
 
 async function fixture(t: test.TestContext) {
   const root = await scratch('resume-safety-');
-  const pi = { getFlag: () => undefined, getAllTools: () => [...['read', 'write', 'bash'].map(name => ({ name, exposure: 'direct', sourceInfo: { path: `builtin:${name}` } })), { name: 'background_stage_file', exposure: 'codemode', sourceInfo: { path: '/synthetic/source' } }], events: { emit: () => {} }, appendEntry: () => {}, sendMessage: () => {} } as unknown as ExtensionAPI;
+  const pi = { getFlag: (name: string) => name === 'background-dir' ? join(root, 'state') : undefined, getAllTools: () => [...['read', 'write', 'bash'].map(name => ({ name, exposure: 'direct', sourceInfo: { path: `builtin:${name}` } })), { name: 'background_stage_file', exposure: 'codemode', sourceInfo: { path: '/synthetic/source' } }], events: { emit: () => {} }, appendEntry: () => {}, sendMessage: () => {} } as unknown as ExtensionAPI;
   const ctx = { cwd: join(root, 'parent'), mode: 'rpc', hasUI: false, isIdle: () => false, hasPendingMessages: () => false, sessionManager: { getSessionId: () => 'synthetic', getBranch: () => [] }, ui: { notify: () => {} } } as unknown as ExtensionContext;
   await fs.mkdir(ctx.cwd);
   const manager = new BackgroundManager(pi); await manager.init(ctx);

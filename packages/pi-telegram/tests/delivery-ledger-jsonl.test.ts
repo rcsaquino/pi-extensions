@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { DeliveryLedger, LEDGER_BYTES, LEDGER_RECORD_BYTES, LEDGER_RETENTION_MS, LEDGER_SLOTS, migrateDeliveryLedger, readDeliveryLedger, type DeliveryRecord } from "../src/delivery-ledger.ts";
 
-const scratch = process.env.TELEGRAM_TEST_DIR || resolve(import.meta.dirname, "../temp_files");
+const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(scratch, { recursive: true });
 const source = resolve(import.meta.dirname, "../src/delivery-ledger.ts");
 const pending = { phase: "api_attempt", operation: "reply", outcome: "pending" } as const;

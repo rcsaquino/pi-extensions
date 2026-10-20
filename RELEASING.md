@@ -9,7 +9,7 @@ The only automated publication path is `pi-memoria` through `.github/workflows/p
 Prepared versions are independent and are not claims of publication:
 
 - `packages/pi-idle-compaction`: `pi-idle-compaction` **0.1.0**.
-- `packages/pi-memoria`: `pi-memoria` **0.4.2**, retaining 0.4.0's dedicated terminology-expansion removal and 0.4.1's verification-gate synchronization, with security-preserving concurrent SQLite startup corrections for companion unlink races and WAL-selection contention.
+- `packages/pi-memoria`: `pi-memoria` **0.4.3**, retaining 0.4.2's security-preserving concurrent SQLite startup corrections and adding bounded companion revalidation for cold openers that observe a companion before the main database, plus tighter model guidance.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.1**, preserving authenticated reply ownership through in-run custom context while keeping unrelated custom-origin runs unowned.
 - `packages/pi-image`: `@rcsaquino/pi-image` **0.1.0**, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-subagents`: `@rcsaquino/pi-subagents` **0.1.0**, supervised headless Pi workers with steerable runs, session-scoped notices and reports.
@@ -71,7 +71,7 @@ If the workflow fails after a successful publish (for example during the confirm
 
 After Git has deliberately been initialized, review the intended diff and commit only authorized source files. Use package-specific tags, for example:
 
-- `pi-memoria-v0.4.2`
+- `pi-memoria-v0.4.3`
 - `pi-telegram-v0.2.1`
 - `pi-image-v0.1.0`
 - `pi-subagents-v0.1.0`
@@ -97,7 +97,7 @@ Public access is explicit for the scoped packages. Do not use a root `npm publis
 After publication, confirm the exact version, dist-tag, and downloadable tarball from the public registry. For memoria, for example:
 
 ```sh
-npm view pi-memoria@0.4.2 version dist.tarball
+npm view pi-memoria@0.4.3 version dist.tarball
 npm view pi-memoria dist-tags
 ```
 

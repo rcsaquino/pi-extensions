@@ -14,7 +14,7 @@ A transport, not a second agent. It uses the active Pi model and conversation, f
 
 ## Requirements
 
-- Node.js **22.6+**, as declared by this package; the maintained offline suite uses Node 26.10.0 and Pi 1.0.0.
+- Node.js **22.6+**, as declared by this package; the maintained offline suite uses Node 26.10.0 and Pi 1.2.0.
 - A Node-based Pi host using the `@earendil-works` namespace.
 - On Linux, util-linux-compatible **`flock --no-fork`** for exclusive bot ownership.
 - **Linux with procfs** for secure outgoing file attachments and diagnostics. Diagnostics also require util-linux-compatible **`/usr/bin/flock`** supporting inherited numeric file descriptors, and a shared local filesystem supporting kernel flock, atomic same-directory rename and sync. Other platforms fail closed; there is no insecure pathname fallback.

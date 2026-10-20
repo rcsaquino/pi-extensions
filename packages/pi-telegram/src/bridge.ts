@@ -10,32 +10,23 @@ import { ConnectionLease } from "./connection-lease.ts";
 import { HumanInputScope } from "./human-input.ts";
 import { formatReplyContext } from "./reply-context.ts";
 import { SentMediaRegistry, type SentMediaRecord } from "./sent-media.ts";
-import { DeliveryLedger, type DeliveryContext, type DeliveryEvent, type DeliveryRecord } from "./delivery-ledger.ts";
+import { DeliveryLedger, type DeliveryContext, type DeliveryEvent } from "./delivery-ledger.ts";
 
 const ALBUM_WAIT_MS = 1000;
 /** Timestamp metadata is emitted at most once per session in any 30-minute window. */
 const STAMP_INTERVAL_MS = 30 * 60_000;
-function noticeMetadata(value: unknown): Pick<Notice, "kind" | "status"> {
-  try {
-    const fields = value && typeof value === "object" ? Object.getOwnPropertyDescriptors(value) : {};
-    const kind = fields.kind && "value" in fields.kind ? fields.kind.value : undefined;
-    const status = fields.status && "value" in fields.status ? fields.status.value : undefined;
-    return { kind: ["eta", "overdue", "settled"].includes(kind) ? kind : "unknown",
-      status: ["completed", "failed", "cancelled", "interrupted"].includes(status) ? status : undefined };
-  } catch { return { kind: "unknown" }; }
-}
+
 interface QueuedRequest { messages: TgMessage[]; readyAt: number; content?: (TextContent | ImageContent)[] }
+/** One observed Pi run. Telegram requests carry their messages; every other run is mirrored. */
 interface Reply {
   sessionId: string;
+  chat: number;
   controller: AbortController;
   started: boolean;
   submittedAt?: number;
   prompt?: string;
   diagnosticId?: string;
   taskId?: string;
-  ledgerNotice?: string;
-  noticeKind?: DeliveryRecord["kind"];
-  taskStatus?: DeliveryRecord["status"];
   cancellation?: "foreign_input" | "unowned_user_start" | "custom_interruption";
   revision?: number;
   settling?: boolean;
@@ -45,28 +36,21 @@ interface Reply {
   spoke?: boolean;
   delivered?: boolean;
 }
-interface Request extends QueuedRequest, Reply {}
-interface Report extends Reply { chat: number; noticeId: string }
-interface Notice { chat: number; sessionId: string; generation: number; id: string; content: string;
-  replyId: string; noticeId: string; taskId?: string; kind: DeliveryRecord["kind"]; status?: DeliveryRecord["status"]; origin?: Report }
+interface Request extends Reply { messages: TgMessage[]; content?: (TextContent | ImageContent)[] }
 type DiagnosticReason = NonNullable<Reply["cancellation"]> | "context_revoked" | "owner_session_or_allowlist_changed" | "outcome_unknown";
 export interface SendParams { path?: string; paths?: string[]; kind?: MediaKind; speech?: string }
 
-/** One Pi conversation and reply owner. Same-chat follow-ups steer; other chats wait. */
+/** One Pi session and one destination chat. Inbound requests reply to their chat; every other settled turn is mirrored. */
 export class TelegramBridge {
   readonly api: TelegramApi;
   readonly ledger: DeliveryLedger;
   private controller = new AbortController();
   private queue: QueuedRequest[] = [];
   private active?: Request;
-  private report?: Report;
-  private foregroundOwner?: Request | Report;
+  private run?: Reply;
   private foregroundRunning = false;
-  private notices: Notice[] = [];
-  private noticeIds = new Set<string>();
   private generation = 0;
   private humanInput?: HumanInputScope;
-  private offOwner?: () => void;
   private directory: string;
   private stateDirectory: string;
   private offset?: number;
@@ -85,6 +69,7 @@ export class TelegramBridge {
   private stopTask?: Promise<void>;
   private media?: SentMediaRegistry;
   private lastStamp?: { sessionId: string; at: number };
+  private readonly destination: number;
 
   constructor(private pi: ExtensionAPI, private ctx: ExtensionContext, readonly config: Config, fetcher?: Fetch) {
     this.ledger = new DeliveryLedger(config.diagnosticsDir || resolve(config.stateDir || config.dataDir, "diagnostics"));
@@ -92,64 +77,29 @@ export class TelegramBridge {
     const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
     this.directory = resolve(config.dataDir, bot);
     this.stateDirectory = resolve(config.stateDir || config.dataDir, bot);
+    this.destination = Number([...config.allowed][0]);
   }
 
   private listen(): void {
     this.humanInput = new HumanInputScope();
-    this.offOwner = this.pi.events.on("background-tasks:claim-owner:v1", data => {
-      const query = data as { sessionId?: string; taskId?: string; accept?: (route: (id: string, content: string, metadata?: { kind?: string; status?: string }) => boolean) => void };
-      const owner = this.reply();
-      if (!this.running || !owner?.started || owner.settling || owner.controller.signal.aborted || this.foregroundOwner !== owner ||
-        query?.sessionId !== this.ctx.sessionManager.getSessionId() || owner.sessionId !== query.sessionId || typeof query.accept !== "function") return;
-      // A report is authority only after its matching bridge-generated custom message
-      // actually starts. Inherit its route, not its text or new user authorization.
-      const origin = owner === this.report ? this.report : undefined;
-      const chat = this.chat(owner);
-      if (!this.config.allowed.has(String(chat)) || (origin && origin.outcome !== "completed")) return;
-      const sessionId = owner.sessionId;
-      const generation = this.generation;
-      const expiresAt = Date.now() + 7 * 86400_000;
-      const taskId = typeof query.taskId === "string" && /^bg-[a-f0-9]{12}$/.test(query.taskId) ? query.taskId : undefined;
-      this.record({ ...this.correlation(owner, "notice"), task: taskId, phase: "task_captured", outcome: "not_applicable" });
-      query.accept((id, content, metadata) => {
-        const notice: Notice = { chat, sessionId, generation, id, content, replyId: randomUUID(), noticeId: randomUUID(), taskId, origin, ...noticeMetadata(metadata) };
-        // Normal report settlement does not abort its controller. Explicit report
-        // cancellation still revokes descendants, even if a notice already queued.
-        if (!this.running || generation !== this.generation || Date.now() > expiresAt || sessionId !== this.ctx.sessionManager.getSessionId() ||
-          !this.config.allowed.has(String(chat)) || (origin && (origin.controller.signal.aborted || origin.outcome !== "completed"))) {
-          this.noticeRecord(notice, "notice_suppressed", "route_expired"); return false;
-        }
-        if (this.noticeIds.has(id)) return true;
-        if (this.notices.length >= 128 || this.noticeIds.size >= 1024) { this.noticeRecord(notice, "notice_suppressed", "queue_full"); return false; }
-        this.noticeIds.add(id);
-        this.notices.push(notice);
-        this.noticeRecord(notice, "notice_queued");
-        return true;
-      });
-    });
   }
 
   get status(): string { return this.state; }
   get ownsConnection(): boolean { return this.running; }
   isTelegramPrompt(prompt: string): boolean {
-    if (this.report?.prompt === prompt) return true;
     return Boolean(this.active && (prompt === this.active.prompt || this.humanInput?.hasPrompt(this.active, prompt)));
   }
 
   /** Navigation revokes ephemeral capabilities, including a switch that is later cancelled. */
   invalidate(): void {
-    for (const reply of [this.active, this.report]) if (reply) this.record({ ...this.correlation(reply, "reply"), phase: "suppressed", outcome: "suppressed", reason: "navigation_or_shutdown" });
-    for (const notice of this.notices) this.noticeRecord(notice, "notice_suppressed", "navigation_or_shutdown");
+    if (this.run) this.record({ ...this.correlation(this.run, "reply"), phase: "suppressed", outcome: "suppressed", reason: "navigation_or_shutdown" });
     this.generation++;
     this.foregroundRunning = false;
-    this.active?.controller.abort();
-    this.report?.controller.abort();
-    this.active = this.report = this.foregroundOwner = undefined;
-    this.queue = []; this.notices = []; this.noticeIds.clear();
+    this.run?.controller.abort();
+    this.run = this.active = undefined;
+    this.queue = [];
   }
 
-  private reply(): Request | Report | undefined { return this.report || this.active; }
-  private chat(reply: Request | Report): number { return "chat" in reply ? reply.chat : reply.messages[0].chat.id; }
   private submit(request: Request, content: (TextContent | ImageContent)[], deliverAs: "steer" | "followUp"): void {
     const text = content.filter(block => block.type === "text").map(block => block.text).join("\n");
     const generation = this.generation;
@@ -233,8 +183,8 @@ export class TelegramBridge {
     this.running = false;
     this.controller.abort();
     this.invalidate();
-    this.humanInput?.close(); this.offOwner?.();
-    this.humanInput = this.offOwner = undefined;
+    this.humanInput?.close();
+    this.humanInput = undefined;
     this.media?.clear();
     if (this.worker) clearInterval(this.worker);
     if (this.typing) clearInterval(this.typing);
@@ -319,12 +269,7 @@ export class TelegramBridge {
   private record(event: DeliveryEvent): void { try { void this.ledger.append(event).catch(() => {}); } catch {} }
   private correlation(reply: Reply, operation: DeliveryContext["operation"], parent?: string): DeliveryContext {
     reply.diagnosticId ||= randomUUID();
-    return { reply: reply.diagnosticId, operation, parent, revision: reply.revision || 0,
-      task: reply.taskId, notice: reply.ledgerNotice, kind: reply.noticeKind, status: reply.taskStatus };
-  }
-  private noticeRecord(notice: Notice, phase: "notice_queued" | "notice_suppressed", reason?: DeliveryEvent["reason"]): void {
-    this.record({ reply: notice.replyId, notice: notice.noticeId, task: notice.taskId, kind: notice.kind, status: notice.status, operation: "notice",
-      phase, outcome: phase === "notice_queued" ? "not_applicable" : "suppressed", reason });
+    return { reply: reply.diagnosticId, operation, parent, revision: reply.revision || 0, task: reply.taskId };
   }
 
   private async receive(message: TgMessage): Promise<void> {
@@ -350,7 +295,7 @@ export class TelegramBridge {
   private refreshTyping(): void {
     if (!this.running || !this.connected || this.typingTask) return;
     const chats = new Set(this.queue.map(item => item.messages[0].chat.id));
-    if (this.active) chats.add(this.active.messages[0].chat.id);
+    if (this.active) chats.add(this.active.chat);
     if (!chats.size) return;
     this.typingTask = Promise.all([...chats].map(chat_id => this.api.call("sendChatAction", { chat_id, action: "typing" }, this.controller.signal).catch(() => {})))
       .then(() => {}).finally(() => { this.typingTask = undefined; });
@@ -424,7 +369,7 @@ export class TelegramBridge {
 
   private async steer(request: Request, followUp: QueuedRequest): Promise<void> {
     try {
-      followUp.content ||= await this.prepare({ ...followUp, sessionId: request.sessionId, controller: request.controller, started: false, outcome: "completed" });
+      followUp.content ||= await this.prepare({ ...followUp, sessionId: request.sessionId, chat: request.chat, controller: request.controller, started: false, outcome: "completed" });
       if (!this.running || request.controller.signal.aborted) return;
       // Downloads/STT may outlive the run. Keep the prepared input for normal dispatch,
       // rather than attaching it to a settled request or downloading it twice.
@@ -440,53 +385,29 @@ export class TelegramBridge {
 
   private async processQueue(): Promise<void> {
     if (!this.running) return;
-    if (this.report) {
-      if (!this.report.started && this.report.submittedAt && Date.now() - this.report.submittedAt > 10_000 && this.ctx.isIdle()) {
-        this.record({ ...this.correlation(this.report, "notice"), phase: "suppressed", outcome: "suppressed", reason: "start_watchdog" });
-        this.report.controller.abort(); this.report = undefined;
-      }
-      return;
-    }
     if (this.active) {
       const request = this.active;
       if (!request.started && request.submittedAt && Date.now() - request.submittedAt > 10_000 && this.ctx.isIdle()) {
         this.record({ ...this.correlation(request, "reply"), phase: "suppressed", outcome: "suppressed", reason: "start_watchdog" });
-        request.controller.abort(); this.foregroundOwner = undefined; this.active = undefined;
-        await this.text(request.messages[0].chat.id, "Pi did not start this request. Check the TUI for configuration or extension errors.", undefined, this.correlation(request, "warning"));
+        request.controller.abort(); this.active = undefined; if (this.run === request) this.run = undefined;
+        await this.text(request.chat, "Pi did not start this request. Check the TUI for configuration or extension errors.", undefined, this.correlation(request, "warning"));
       } else if (this.connected && request.started && !request.settling && !this.ctx.isIdle()) {
-        // Do not let another chat's queued request block the current owner's correction.
-        const index = this.queue.findIndex(item => item.messages[0].chat.id === request.messages[0].chat.id);
+        // Only a message from the request's own chat may steer it.
+        const index = this.queue.findIndex(item => item.messages[0].chat.id === request.chat);
         if (index >= 0 && this.queue[index].readyAt <= Date.now()) await this.steer(request, this.queue.splice(index, 1)[0]);
       }
       return;
     }
     // isIdle becomes true before agent_settled observers finish. Wait for our own
-    // lifecycle observation as well, so notices cannot enter an older run's settlement.
+    // lifecycle observation as well, so a queued request cannot enter an older run.
     if (!this.connected || this.foregroundRunning || !this.ctx.isIdle() || this.ctx.hasPendingMessages()) return;
-    if (!this.queue.length) {
-      const notice = this.notices.shift();
-      if (!notice) return;
-      if (notice.generation !== this.generation || notice.sessionId !== this.ctx.sessionManager.getSessionId() || !this.config.allowed.has(String(notice.chat)) ||
-        (notice.origin && (notice.origin.controller.signal.aborted || notice.origin.outcome !== "completed"))) {
-        this.noticeRecord(notice, "notice_suppressed", "route_expired"); return;
-      }
-      const noticeId = notice.noticeId;
-      this.report = { chat: notice.chat, noticeId, sessionId: notice.sessionId, prompt: notice.content, controller: new AbortController(),
-        diagnosticId: notice.replyId, taskId: notice.taskId, ledgerNotice: noticeId, noticeKind: notice.kind, taskStatus: notice.status,
-        started: false, submittedAt: Date.now(), outcome: "completed" };
-      this.record({ ...this.correlation(this.report, "notice"), phase: "report_submitted", outcome: "not_applicable" });
-      try {
-        this.pi.sendMessage({ customType: "background-notice", content: notice.content, display: false,
-          details: { telegramNoticeId: noticeId } }, { triggerTurn: true, deliverAs: "followUp" });
-      } catch {
-        this.record({ ...this.correlation(this.report, "notice"), phase: "suppressed", outcome: "suppressed", reason: "start_failed" });
-        this.report.controller.abort(); this.report = undefined;
-      }
-      return;
-    }
+    if (!this.queue.length) return;
     if (this.queue[0].readyAt > Date.now()) return;
-    const request: Request = { ...this.queue.shift()!, sessionId: this.ctx.sessionManager.getSessionId(), controller: new AbortController(), started: false, outcome: "completed" };
+    const queued = this.queue.shift()!;
+    const request: Request = { ...queued, sessionId: this.ctx.sessionManager.getSessionId(), chat: queued.messages[0].chat.id,
+      controller: new AbortController(), started: false, outcome: "completed" };
     this.active = request;
+    this.run = request;
     this.refreshTyping();
     try {
       const content = request.content || await this.prepare(request);
@@ -499,8 +420,9 @@ export class TelegramBridge {
       this.submit(request, content, "followUp");
     } catch (error) {
       request.controller.abort();
-      if (this.active === request) this.active = this.foregroundOwner = undefined;
-      if (this.running) await this.text(request.messages[0].chat.id, safeError(error)).catch(() => {});
+      if (this.active === request) this.active = undefined;
+      if (this.run === request) this.run = undefined;
+      if (this.running) await this.text(request.chat, safeError(error)).catch(() => {});
     }
   }
 
@@ -511,87 +433,43 @@ export class TelegramBridge {
     if (phase === "cancelled" || phase === "suppressed") this.record({ ...this.correlation(reply, "reply"), phase, outcome: "suppressed", reason });
   }
 
-  private cancel(reply: Reply | undefined, reason: NonNullable<Reply["cancellation"]>): void {
-    if (!reply || reply.controller.signal.aborted) return;
-    reply.cancellation = reason;
-    reply.controller.abort();
-    this.diagnostic(reply, "cancelled", reason);
-  }
-
   /** Arm only the admitted submission's own pre-normalization lifecycle. */
   beforeStart(prompt: string, images?: ImageContent[]): boolean {
-    if (this.report) return !this.report.controller.signal.aborted && this.report.prompt === prompt;
     return Boolean(this.active && this.humanInput?.prepare(prompt, images, this.ctx.sessionManager.getSessionId(), this.active));
   }
 
-  /** A custom message starting an idle run is not adjunct context in the owned run. */
-  beforeCustomStart(message: { customType: string; details?: unknown }): boolean {
-    const id = (message.details as { telegramNoticeId?: unknown } | undefined)?.telegramNoticeId;
-    if (this.running && this.report && !this.report.started && !this.report.controller.signal.aborted &&
-      this.report.sessionId === this.ctx.sessionManager.getSessionId() &&
-      message.customType === "background-notice" && id === this.report.noticeId) return true;
-    this.cancel(this.active, "custom_interruption"); this.cancel(this.report, "custom_interruption");
-    this.foregroundOwner = undefined;
-    return false;
-  }
-
   input(event: InputEvent): void {
-    // One-use admission, never ambient text equality or a last-chat fallback.
-    if (this.active && this.humanInput?.admit(event, this.ctx.sessionManager.getSessionId(), this.active)) return;
-    this.cancel(this.active, "foreign_input"); this.cancel(this.report, "foreign_input");
-    this.foregroundOwner = undefined;
+    if (this.active) this.humanInput?.admit(event, this.ctx.sessionManager.getSessionId(), this.active);
   }
 
   userStart(message: { role: string; content?: unknown; customType?: string; details?: unknown }): void {
-    if (message.role === "custom") {
-      const owner = this.reply();
-      // message_start also fires for tool/extension context in an existing run
-      // (e.g. web-search-content-ready), not just a new custom-origin request.
-      // Preserve only the already-admitted owner; context never creates authority.
-      // beforeCustomStart revokes it when an unrelated custom message starts a run.
-      if (message.customType !== "background-notice" && this.foregroundRunning && owner?.started && !owner.settling &&
-        !owner.controller.signal.aborted && this.foregroundOwner === owner &&
-        owner.sessionId === this.ctx.sessionManager.getSessionId()) return;
-      const id = (message.details as { telegramNoticeId?: unknown } | undefined)?.telegramNoticeId;
-      this.foregroundOwner = undefined;
-      if (this.running && this.report && this.report.sessionId === this.ctx.sessionManager.getSessionId() &&
-        message.customType === "background-notice" && id === this.report.noticeId && !this.report.started && !this.report.controller.signal.aborted) {
-        this.report.started = true;
-        this.foregroundOwner = this.report;
-        this.record({ ...this.correlation(this.report, "notice"), phase: "report_started", outcome: "not_applicable" });
-      } else if (this.report) { this.report.started = false; this.cancel(this.report, "custom_interruption"); }
-      this.cancel(this.active, "custom_interruption");
-      return;
-    }
     if (message.role !== "user") return;
-    // A local/RPC user that intervenes in a report must not capture its chat or final.
-    if (this.report) { this.report.started = false; this.cancel(this.report, "unowned_user_start"); }
-    this.foregroundOwner = undefined;
-    if (!this.active?.prompt || this.active.controller.signal.aborted) return;
-    const consumed = this.humanInput?.consume(message.content, this.ctx.sessionManager.getSessionId(), this.active);
-    if (!consumed) { this.cancel(this.active, "unowned_user_start"); return; }
+    const request = this.active;
+    if (!request?.prompt || request.controller.signal.aborted) return;
+    const consumed = this.humanInput?.consume(message.content, this.ctx.sessionManager.getSessionId(), request);
+    if (!consumed) return;
+    this.run = request;
     if (consumed.steering) {
       // A generated final is already user-visible in the TUI. Preserve it for
       // ordered delivery instead of dropping it when the correction steers.
       // Voice trailing text stays suppressed: an explicit voice send is the reply.
-      const superseded = this.active.final?.trim();
-      if (superseded && !this.active.spoke && this.active.outcome === "completed") {
-        (this.active.pendingFinals ||= []).push({ text: superseded, revision: this.active.revision || 0 });
+      const superseded = request.final?.trim();
+      if (superseded && !request.spoke && request.outcome === "completed") {
+        (request.pendingFinals ||= []).push({ text: superseded, revision: request.revision || 0 });
       }
-      this.active.revision = (this.active.revision || 0) + 1;
-      this.active.settling = false;
+      request.revision = (request.revision || 0) + 1;
+      request.settling = false;
       // Only a consumed correction supersedes the old final/voice-only state.
-      this.active.final = undefined;
-      this.active.spoke = this.active.delivered = false;
-      this.active.outcome = "completed";
+      request.final = undefined;
+      request.spoke = request.delivered = false;
+      request.outcome = "completed";
     }
-    this.active.started = true;
-    this.foregroundOwner = this.active;
+    request.started = true;
   }
 
   assistantEnd(message: { role: string; content?: unknown; stopReason?: string }): void {
-    const request = this.reply();
-    if (!request?.started || request.controller.signal.aborted || this.foregroundOwner !== request ||
+    const request = this.run;
+    if (!request?.started || request.controller.signal.aborted ||
       request.sessionId !== this.ctx.sessionManager.getSessionId() || message.role !== "assistant" || !Array.isArray(message.content)) return;
     if (message.stopReason === "toolUse" || message.content.some(block => block?.type === "toolCall")) {
       request.final = undefined;
@@ -603,38 +481,34 @@ export class TelegramBridge {
     this.record({ ...this.correlation(request, "reply"), phase: "generated", outcome: "not_applicable", reason: successful ? undefined : request.outcome === "aborted" ? "agent_aborted" : "agent_error" });
   }
 
-  boundary(outcome: AgentActivityOutcome): void { const request = this.reply(); if (request?.started) request.outcome = outcome; }
+  boundary(outcome: AgentActivityOutcome): void { const request = this.run; if (request?.started) request.outcome = outcome; }
 
   agentStart(): void {
     this.foregroundRunning = true;
     this.humanInput?.startRun(this.ctx.sessionManager.getSessionId());
+    if (this.active) { this.run = this.active; return; }
+    if (this.run && !this.run.settling) { this.run.started = true; return; }
+    this.run = { sessionId: this.ctx.sessionManager.getSessionId(), chat: this.destination, controller: new AbortController(),
+      started: true, outcome: "completed" };
   }
 
   async settled(): Promise<void> {
     this.foregroundRunning = false;
-    const request = this.reply();
-    if (request?.settling) return;
-    if (!request?.started || request.controller.signal.aborted) {
-      if (request?.controller.signal.aborted) this.diagnostic(request, "suppressed", request.cancellation || "context_revoked");
-      // Pi advertises idle before all agent_settled observers finish. A queue timer
-      // can submit a deferred report in that interval; this is the OLD run's event,
-      // not settlement of the report. Keep it pending, still unauthorized until its
-      // matching custom message starts. Cancellation/watchdog/navigation still revoke it.
-      if (this.report === request && request?.controller.signal.aborted) {
-        this.report = undefined;
-        if (this.foregroundOwner === request) this.foregroundOwner = undefined;
-      }
-      if (this.active === request && request?.controller.signal.aborted) this.active = this.foregroundOwner = undefined;
+    const request = this.run;
+    if (!request || request.settling) return;
+    if (!request.started || request.controller.signal.aborted) {
+      if (request.controller.signal.aborted) this.diagnostic(request, "suppressed", request.cancellation || "context_revoked");
+      this.clearRun(request);
       return;
     }
     request.settling = true;
     const revision = request.revision;
-    const chat = this.chat(request);
+    const chat = request.chat;
     const delivery = { ...this.correlation(request, "reply"), delivery: randomUUID() };
     this.record({ ...delivery, phase: "settled", outcome: "not_applicable" });
     try {
       if (!this.running) return;
-      if (this.foregroundOwner !== request || request.sessionId !== this.ctx.sessionManager.getSessionId() || !this.config.allowed.has(String(chat))) {
+      if (request.sessionId !== this.ctx.sessionManager.getSessionId() || !this.config.allowed.has(String(chat))) {
         this.diagnostic(request, "suppressed", "owner_session_or_allowlist_changed");
         return;
       }
@@ -699,42 +573,42 @@ export class TelegramBridge {
         if (this.ctx.hasUI) this.ctx.ui.notify(safeError(error), "warning");
       }
     } finally {
-      if (this.report === request) {
-        this.report = undefined;
-        if (this.foregroundOwner === request) this.foregroundOwner = undefined;
-      }
-      if (this.active === request && request.revision === revision) {
-        this.foregroundOwner = undefined;
-        if (this.running && this.humanInput?.hasPending(request)) {
-          // A slow input hook can finish after settlement and start a new run.
-          // Retain the reply owner until that already-submitted input is consumed.
-          request.started = false;
-          request.settling = false;
-          request.submittedAt = Date.now();
-          request.final = undefined;
-        } else this.active = undefined;
-      }
+      this.clearRun(request);
+      void revision;
     }
   }
 
-  private assertDelivery(request: Request | Report | undefined, signal?: AbortSignal): asserts request is Request | Report {
+  private clearRun(request: Reply): void {
+    if (this.run === request) this.run = undefined;
+    if (this.active === request) {
+      if (this.running && this.humanInput?.hasPending(request)) {
+        // A slow input hook can finish after settlement and start a new run.
+        // Retain the reply owner until that already-submitted input is consumed.
+        request.started = false;
+        request.settling = false;
+        request.submittedAt = Date.now();
+        request.final = undefined;
+      } else this.active = undefined;
+    }
+  }
+
+  private assertDelivery(request: Reply | undefined, signal?: AbortSignal): asserts request is Reply {
     const refuse = (code: DeliveryRefusalCode): never => {
       if (request) this.record({ ...this.correlation(request, "attachment"), phase: "suppressed", outcome: "suppressed", reason: "local_refusal" });
       throw new DeliveryRefusal(code, {
-      running: this.running, connected: this.connected, context: !request ? "none" : "chat" in request ? "report" : "request",
+      running: this.running, connected: this.connected, context: !request ? "none" : "request",
       started: Boolean(request?.started), settling: Boolean(request?.settling), cancelled: Boolean(request?.controller.signal.aborted),
-      owned: Boolean(request && this.foregroundOwner === request),
+      owned: Boolean(request && request === this.run),
     }); };
     if (!this.running) refuse("TG_BRIDGE_STOPPED");
     if (!this.connected) refuse("TG_BRIDGE_DISCONNECTED");
     if (!request) return refuse("TG_NO_CONTEXT");
     if (request.controller.signal.aborted) refuse("TG_CONTEXT_CANCELLED");
-    if (this.reply() !== request) refuse("TG_CONTEXT_REPLACED");
+    if (this.run !== request) refuse("TG_CONTEXT_REPLACED");
     if (!request.started) refuse("TG_CONTEXT_NOT_STARTED");
     if (request.settling) refuse("TG_CONTEXT_SETTLING");
-    if (this.foregroundOwner !== request) refuse("TG_CONTEXT_NOT_OWNER");
     if (request.sessionId !== this.ctx.sessionManager.getSessionId()) refuse("TG_SESSION_CHANGED");
-    if (!this.config.allowed.has(String(this.chat(request)))) refuse("TG_RECIPIENT_NOT_ALLOWED");
+    if (!this.config.allowed.has(String(request.chat))) refuse("TG_RECIPIENT_NOT_ALLOWED");
     if (signal?.aborted) refuse("TG_CALL_CANCELLED");
   }
 
@@ -752,7 +626,7 @@ export class TelegramBridge {
   }
 
   async send(params: SendParams, signal?: AbortSignal): Promise<void> {
-    const request = this.reply();
+    const request = this.run;
     this.assertDelivery(request, signal);
     const modes = [Boolean(params.path), params.paths !== undefined, Boolean(params.speech)].filter(Boolean).length;
     if (modes !== 1) throw new SafeError("Provide exactly one of path, paths or speech.");
@@ -765,12 +639,12 @@ export class TelegramBridge {
     await this.serial(async () => {
       beforeUpload();
       if (params.speech) {
-        await this.api.speak(this.chat(request), params.speech, combined, beforeUpload, context);
+        await this.api.speak(request.chat, params.speech, combined, beforeUpload, context);
         request.spoke = request.delivered = true;
       } else {
         const files = await Promise.all((params.paths || [params.path!]).map(path => outboundFile(this.ctx.cwd, path, params.kind, this.config.dataDir, combined)));
         beforeUpload();
-        const chat = this.chat(request);
+        const chat = request.chat;
         const sent = await this.api.sendGroup(chat, files, combined, beforeUpload, { ...context, operation: files.some(file => file.kind === "voice") ? "voice" : "attachment" });
         await this.indexOutbound(chat, files, sent);
         request.delivered = true;

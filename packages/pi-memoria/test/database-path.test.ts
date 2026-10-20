@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
@@ -48,6 +49,26 @@ test("main-file unlink and persistently unlinked companions remain fail-closed a
     try { assert.throws(() => location.check(), /Unsafe database/u); assert.equal(calls, name === path ? 1 : 32); }
     finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
   }
+});
+
+test("a companion visible before a concurrently created main file is not orphaned", async t => {
+  const dir = await temporary(t), path = join(dir, "memoria.sqlite");
+  fs.writeFileSync(path + "-wal", "synthetic companion");
+  const child = spawn(process.execPath, ["-e", `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(path)}, "synthetic main"), 100)`], { stdio: "ignore" });
+  t.after(() => child.kill("SIGKILL"));
+  const location = databasePath(path);
+  assert.ok(location.check(), "the bounded recheck observes the main file");
+  await new Promise<void>(done => child.once("exit", () => done()));
+  assert.equal(fs.readFileSync(path, "utf8"), "synthetic main");
+});
+
+test("a persistently orphaned companion still fails closed after a bounded wait", async t => {
+  const path = join(await temporary(t), "memoria.sqlite");
+  fs.writeFileSync(path + "-shm", "synthetic companion");
+  const started = performance.now();
+  assert.throws(() => databasePath(path), /Orphaned SQLite companion without a database/u);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed >= 500 && elapsed < 4000, `bounded failure took ${elapsed}ms`);
 });
 
 test("companion revalidation rejects symlink, hardlink and nonregular replacements without touching targets", async t => {

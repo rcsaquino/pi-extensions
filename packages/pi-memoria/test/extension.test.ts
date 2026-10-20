@@ -122,8 +122,8 @@ test("Pi loads the package, executes all five tools, injects fresh global memory
   const id = added.details.memory.id;
   const event = await h.renderPrompt();
   assert.match(h.section(event), /Start every sentence with beep_boop/u);
-  assert.match(h.section(event), /Before saving a durable fact, search SQLite with memoria_search/u);
-  assert.match(h.extension.tools.get("memoria_add")!.definition.promptGuidelines!.join(" "), /same fact is already stored, do not add it again/u);
+  assert.match(h.section(event), /Search SQLite when a topic may depend on prior knowledge/u);
+  assert.equal(h.extension.tools.get("memoria_add")!.definition.promptGuidelines, undefined, "save guidance lives only in the pi_memoria section");
   assert.equal(event.options.sections.other, "preserve me");
   const fact = await h.call("memoria_add", { content: "The user likes apples.", tags: ["fruit"] });
   assert.equal(fact.details.created, true);
@@ -196,6 +196,7 @@ test("structured and forced prompts separate instructions from fresh hot memory 
   const emptyMemory = block(empty.rendered, "pi_memoria");
   assert.match(block(emptyMemory, "hot_memory"), /Global MEMORY\.md \(0\/5000 characters;/u);
   assert.match(block(emptyMemory, "hot_memory"), /\n\(empty\)$/u);
+  assert.doesNotMatch(emptyMemory, /\n\n<\/hot_memory>/u);
   assert.doesNotMatch(emptyMemory, /<status>/u);
 
   const manual = "- [h_fresh0000000000] [p=90] Fresh standing instruction.\n";
@@ -209,16 +210,16 @@ test("structured and forced prompts separate instructions from fresh hot memory 
   assert.equal(memory, fresh.options.sections.pi_memoria);
   const instructions = block(memory, "instructions");
   assert.equal(instructions, MEMORY_GUIDANCE, "the prompt must contain the exact standing memory guidance");
-  assert.match(instructions, /standing instructions.*not merely quoted reference material/u);
+  assert.match(instructions, /standing instructions, not reference text/u);
   assert.match(instructions, /subject to higher-priority instructions/u);
   assert.match(instructions, /Resolve conflicting memories from current user instructions and original evidence/u);
   const hot = block(memory, "hot_memory");
-  assert.equal(hot, `Global MEMORY.md (${manual.length}/5000 characters; ${join(h.memoryDir, "MEMORY.md")}):\n${manual}`);
+  assert.equal(hot, `Global MEMORY.md (${manual.length}/5000 characters; ${join(h.memoryDir, "MEMORY.md")}):\n${manual.trimEnd()}`);
+  assert.doesNotMatch(fresh.rendered, /\n\n<\/hot_memory>/u);
   assert.doesNotMatch(instructions, /Fresh standing instruction\./u);
-  assert.doesNotMatch(hot, /Before saving a durable fact/u);
-  const save = h.extension.tools.get("memoria_add")!.definition.promptGuidelines!;
-  assert.equal(save.length, 1);
-  assert.match(save[0]!, /^Before saving a durable fact/u);
+  assert.doesNotMatch(hot, /search before adding/u);
+  assert.equal(instructions.match(/search before adding/gu)?.length, 1);
+  assert.equal(h.extension.tools.get("memoria_add")!.definition.promptGuidelines, undefined);
 
   await writeFile(join(h.memoryDir, "MEMORY.md"), manual.replace("Fresh", "Changed"));
   const forcedBase = "Opaque prompt.\n<addendum>\nEve addendum fixture.\n</addendum>";
@@ -256,7 +257,8 @@ test("current user and custom start events refresh exact memory guidance in stru
     const memory = block(rendered.rendered, "pi_memoria");
     assert.equal(memory, h.section(rendered));
     assert.equal(block(memory, "instructions"), MEMORY_GUIDANCE);
-    assert.equal(block(memory, "hot_memory"), `Global MEMORY.md (${manual.length}/5000 characters; ${join(h.memoryDir, "MEMORY.md")}):\n${manual}`);
+    assert.equal(block(memory, "hot_memory"), `Global MEMORY.md (${manual.length}/5000 characters; ${join(h.memoryDir, "MEMORY.md")}):\n${manual.trimEnd()}`);
+    assert.doesNotMatch(memory, /\n\n<\/hot_memory>/u);
     assert.doesNotMatch(memory, /Synthetic transport|Synthetic in-run/u);
     if (force) assert.ok(rendered.rendered.startsWith(`${force}\n\n<pi_memoria>`));
     else {
@@ -521,7 +523,7 @@ test("retired terminology configuration is ignored and shorthand survives as ord
   assert.doesNotMatch(reopened.text, /warning:/u);
   assert.equal(await readFile(retiredPath, "utf8"), "{not valid JSON", "retired files are neither managed nor modified");
   const prompt = await h.renderPrompt();
-  assert.match(h.section(prompt), /Save personal shorthand as ordinary SQLite facts/u);
+  assert.match(h.section(prompt), /Save personal shorthand as an ordinary fact/u);
 });
 
 test("full records remain reconstructable through text offsets after clipping", async (t) => {

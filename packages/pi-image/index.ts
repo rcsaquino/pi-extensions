@@ -10,8 +10,8 @@ export default function piImage(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "generate_image",
     label: "Generate image",
-    description: "Generate an image from a text prompt via the OpenRouter Images API (POST /api/v1/images/generations) using the stored OpenRouter login. Optional inputPaths reference existing workspace images for image-to-image. Saves a verified PNG/JPEG under the Pi working directory (default artifacts/) and returns the saved path plus metadata only, never image bytes. Generation may spend OpenRouter credits.",
-    promptGuidelines: ["When Rey asks for an image, generate it with generate_image and report the saved file path. Image bytes never belong in chat text."],
+    description: "Generate an image from a text prompt via the OpenRouter Images API (POST /api/v1/images/generations) using OPENROUTER_API_KEY from .env or the stored OpenRouter login. Optional inputPaths reference existing workspace images for image-to-image. Saves a verified PNG/JPEG under the Pi working directory (default artifacts/) and returns the saved path plus metadata only, never image bytes. Generation may spend OpenRouter credits.",
+    promptGuidelines: ["When the user asks for an image, generate it with generate_image and report the saved file path. Image bytes never belong in chat text."],
     parameters: Type.Object({
       prompt: Type.String({ minLength: 1, maxLength: 4000, description: "Text description of the desired image" }),
       model: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "OpenRouter image model id; defaults to openai/gpt-image-2.5-sunburst" })),
@@ -28,7 +28,7 @@ export default function piImage(pi: ExtensionAPI): void {
         const cwd = ctx.cwd;
         const references = await readReferenceImages(cwd, params.inputPaths);
         const output = await resolveOutputPath(cwd, params.outputPath);
-        const key = await readOpenRouterKey(agentDir());
+        const key = await readOpenRouterKey(agentDir(), cwd);
         const generated = await generateImageBytes({ key, model, prompt, size, references, signal });
         const saved = await saveImage(output.directory, generated.data, prompt, output.filename);
         const summary = { path: saved.path, bytes: saved.bytes, mime: saved.mime, model, ...(size ? { size } : {}), references: references.length };

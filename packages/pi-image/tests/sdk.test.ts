@@ -31,8 +31,10 @@ test("registered tool runs the full offline flow and saves inside the workspace"
   await mkdir(agentDir, { recursive: true });
   await writeFile(resolve(agentDir, "auth.json"), JSON.stringify({ openrouter: { type: "api_key", key: "OFFLINE-KEY" } }), { mode: 0o600 });
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousEnvKey = process.env.OPENROUTER_API_KEY;
   const previousFetch = globalThis.fetch;
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  delete process.env.OPENROUTER_API_KEY;
   const calls: string[] = [];
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     calls.push(String(url));
@@ -58,5 +60,7 @@ test("registered tool runs the full offline flow and saves inside the workspace"
     globalThis.fetch = previousFetch;
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previousEnvKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previousEnvKey;
   }
 });

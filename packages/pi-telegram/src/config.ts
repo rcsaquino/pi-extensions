@@ -7,7 +7,7 @@ import type { CauseCode } from "./delivery-ledger.ts";
 export class SafeError extends Error {}
 
 export type DeliveryRefusalCode = "TG_BRIDGE_STOPPED" | "TG_BRIDGE_DISCONNECTED" | "TG_NO_CONTEXT" | "TG_CONTEXT_NOT_STARTED" |
-  "TG_CONTEXT_SETTLING" | "TG_CONTEXT_CANCELLED" | "TG_CONTEXT_NOT_OWNER" | "TG_CONTEXT_REPLACED" |
+  "TG_CONTEXT_SETTLING" | "TG_CONTEXT_CANCELLED" | "TG_CONTEXT_REPLACED" |
   "TG_SESSION_CHANGED" | "TG_RECIPIENT_NOT_ALLOWED" | "TG_CALL_CANCELLED";
 export interface DeliveryState {
   running: boolean; connected: boolean; context: "none" | "request" | "report";
@@ -16,11 +16,10 @@ export interface DeliveryState {
 const refusalReasons: Record<DeliveryRefusalCode, string> = {
   TG_BRIDGE_STOPPED: "bridge is not running",
   TG_BRIDGE_DISCONNECTED: "bridge is disconnected",
-  TG_NO_CONTEXT: "no authenticated request or dispatch-linked report is active",
+  TG_NO_CONTEXT: "no active turn is available for delivery",
   TG_CONTEXT_NOT_STARTED: "delivery context is queued but has not started",
   TG_CONTEXT_SETTLING: "delivery context is settling",
   TG_CONTEXT_CANCELLED: "delivery context was cancelled or revoked",
-  TG_CONTEXT_NOT_OWNER: "delivery context does not own the foreground turn",
   TG_CONTEXT_REPLACED: "captured delivery context is no longer current",
   TG_SESSION_CHANGED: "delivery context belongs to a different session",
   TG_RECIPIENT_NOT_ALLOWED: "captured recipient is no longer allowed",
@@ -78,7 +77,7 @@ export function parseAllowed(value: string): Set<string> {
   return new Set(ids.map(String));
 }
 
-/** /login fallback: read the stored groq API key without surfacing secrets in errors. */
+/** /login fallback used only when GROQ_API_KEY is not configured; never surfaces secrets in errors. */
 async function authFileGroqKey(agentDir: string): Promise<string | undefined> {
   try {
     const data = JSON.parse(await readFile(resolve(agentDir, "auth.json"), "utf8")) as Record<string, unknown>;
@@ -113,8 +112,8 @@ export async function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.e
   const get = (key: string) => (file[key] ?? env[key])?.trim() || undefined;
   const token = get("TELEGRAM_BOT_TOKEN");
   if (!token) throw new SafeError("TELEGRAM_BOT_TOKEN is missing; Telegram is disconnected.");
-  // Groq uses only the key stored via Pi /login. Env file and environment values are ignored.
-  const groqKey = await authFileGroqKey(agentDir);
+  // Prefer the configured .env/environment key; fall back to a key stored via Pi /login.
+  const groqKey = get("GROQ_API_KEY") ?? await authFileGroqKey(agentDir);
   return {
     token,
     allowed: parseAllowed(get("TELEGRAM_ALLOWED_ID") || ""),

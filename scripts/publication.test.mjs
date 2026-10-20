@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repository = 'git+https://github.com/rcsaquino/pi-extensions.git';
 const identities = new Map([
-  ['pi-background-tasks', '@rcsaquino/pi-background-tasks'],
+  ['pi-subagents', '@rcsaquino/pi-subagents'],
   ['pi-idle-compaction', 'pi-idle-compaction'],
   ['pi-memoria', 'pi-memoria'],
   ['pi-telegram', '@rcsaquino/pi-telegram'],
@@ -154,7 +154,7 @@ test('package documentation local links also resolve without the monorepo', () =
 test('environment example is inert and interrupted test scratch stays ignored', () => {
   const example = read(join(root, 'packages/pi-telegram/.env.example'));
   const fields = Object.fromEntries(example.split('\n').filter(line => /^[A-Z_]+=/.test(line)).map(line => line.split('=')));
-  assert.deepEqual(fields, { TELEGRAM_BOT_TOKEN: '', TELEGRAM_ALLOWED_ID: '',
+  assert.deepEqual(fields, { TELEGRAM_BOT_TOKEN: '', TELEGRAM_ALLOWED_ID: '', GROQ_API_KEY: '',
     ELEVENLABS_API_KEY: '', ELEVENLABS_VOICE_ID: '', ELEVENLABS_MODEL_ID: 'eleven_v4' });
   const ignore = read(join(root, '.gitignore')).split('\n');
   for (const pattern of ['node_modules/', '.env', '.env.*', '!.env.example', '.test-tmp/', '.tmp/',
@@ -185,7 +185,7 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /working-directory: packages\/pi-memoria/);
   assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);
-  for (const other of ['pi-telegram', 'pi-background-tasks', 'pi-idle-compaction']) {
+  for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-subagents']) {
     assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
   }
 });

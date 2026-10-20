@@ -69,7 +69,7 @@ async function providerMessage(response: Response, key: string): Promise<string 
 
 function statusError(status: number, detail?: string): SafeError {
   const suffix = detail ? ` ${detail}` : "";
-  if (status === 401) return new SafeError(`OpenRouter authentication failed. Check the stored OpenRouter login (/login for openrouter).${suffix}`);
+  if (status === 401) return new SafeError(`OpenRouter authentication failed. Check OPENROUTER_API_KEY in .env or the stored OpenRouter login (/login for openrouter).${suffix}`);
   if (status === 402) return new SafeError(`OpenRouter payment required: image generation needs credits or an active key.${suffix}`);
   if (status === 404) return new SafeError(`OpenRouter image model or endpoint not found.${suffix}`);
   if (status === 429) return new SafeError(`OpenRouter rate limit reached; try again later.${suffix}`);

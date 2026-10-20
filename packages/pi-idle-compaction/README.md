@@ -66,7 +66,7 @@ The guard can read reviewed process-local v1 background registries. Unknown vers
 Other extensions can explicitly use `registerBackgroundWorkProvider()` from `background.mjs` with neutral key `idle-compaction.background-work.v1`. Providers return bounded synchronous items containing only `id` and `sessionId`; optional reconciliation/wake metadata must follow that contract. Old disposers cannot unregister a replacement provider.
 
 > [!IMPORTANT]
-> This is not an OS-wide job supervisor. Arbitrary shell processes, remote jobs, and private extension state are invisible. Co-installing a background-capable package, including `@rcsaquino/pi-background-tasks`, does not automatically register a provider or prove that its work is covered. Review status and admission integration before relying on coordination.
+> This is not an OS-wide job supervisor. Arbitrary shell processes, remote jobs, and private extension state are invisible. Co-installing a background-capable package does not automatically register a provider or prove that its work is covered. Review status and admission integration before relying on coordination.
 
 Provider snapshots are observations, not exclusion leases. They are rechecked after asynchronous RPC admission, but cannot prevent unregistered or newly starting work.
 

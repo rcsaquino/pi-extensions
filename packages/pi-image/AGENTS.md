@@ -5,7 +5,7 @@ Read this with [the monorepo instructions](https://github.com/rcsaquino/pi-exten
 ## Architecture
 
 - `index.ts`: distributable entry point; registers `generate_image` only.
-- `src/auth.ts`: stored OpenRouter login (`openrouter` entry in `<agent-dir>/auth.json`), Images endpoint and default model constants.
+- `src/auth.ts`: `.env`/environment key resolution (`.env` first, then process environment), stored OpenRouter login (`openrouter` entry in `<agent-dir>/auth.json`) as fallback, Images endpoint and default model constants.
 - `src/errors.ts`: credential-safe `SafeError`, `safeError`, and `redactKey`.
 - `src/validate.ts`: prompt/model/size bounds, workspace-contained reference reads, workspace-contained output resolution.
 - `src/client.ts`: direct `POST /api/v1/images/generations` calls with an injectable fetch transport, capped bodies, `input_references` encoding, `b64_json`/`url` handling, and redacted status errors.
@@ -26,7 +26,7 @@ The package has no `verify` script; root `npm run verify` combines its typecheck
 
 ## Non-negotiable behavior
 
-- Use only the stored OpenRouter login from `<agent-dir>/auth.json`. No new keys, no environment fallback, no key logging. Missing login fails closed with the `/login` hint.
+- Resolve credentials in this order: `OPENROUTER_API_KEY` in `<cwd>/.env`, then `<agent-dir>/.env`, then `process.env.OPENROUTER_API_KEY`, then the stored `/login` credential in `<agent-dir>/auth.json`. No key logging. Missing credentials fail closed with a hint covering both `.env` and `/login`.
 - Call the Images API directly (`POST /api/v1/images/generations`). Never route image models through `pi-ai` chat/completions; that path 404s with a message to use `/api/v1/images`.
 - Keep `generate_image` the only tool. No models-listing tool, no captions concept, no participation in tool-calling loops beyond this tool.
 - Validate everything twice: schema bounds plus code validation. Prompt 1–4000 chars; at most 3 reference images at 20 MB each; output always inside the working directory.
@@ -39,7 +39,7 @@ The package has no `verify` script; root `npm run verify` combines its typecheck
 
 Add regression cases in the corresponding suite:
 
-- `generate.test.ts`: txt2img request shape, `input_references` encoding, `url` fallback, auth-missing closed failure, prompt/model/size/reference/output bounds, PNG/JPEG verification, redaction, and response caps.
+- `generate.test.ts`: txt2img request shape, `input_references` encoding, `url` fallback, credential precedence and auth-missing closed failure, prompt/model/size/reference/output bounds, PNG/JPEG verification, redaction, and response caps.
 - `sdk.test.ts`: actual loader registration of `generate_image` with no commands, plus the full offline tool flow through fake fetch with an isolated agent dir.
 
 Mocks must inspect the intended API payload (URL, method, auth, body fields), not merely assert a fabricated success. Use fake fetch transports and isolated temp dirs; live network, real keys, real sessions, and production cursors are never test fixtures.

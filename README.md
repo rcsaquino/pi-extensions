@@ -2,7 +2,7 @@
 
 # pi-extensions
 
-**Independent extensions for [Pi](https://github.com/earendil-works/pi): memory, Telegram, idle compaction, and background work.**
+**Independent extensions for [Pi](https://github.com/earendil-works/pi): memory, Telegram, image generation, idle compaction, and subagents.**
 
 [![Node.js](https://img.shields.io/badge/full%20suite-Node.js%2026.10%2B-3c873a?style=flat-square)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
@@ -16,10 +16,10 @@ One repository, five separately versioned Pi packages. Install only the extensio
 ## Packages
 
 - **[pi-memoria](packages/pi-memoria/README.md)**: global startup rules, SQLite fact recall, and cited search across past conversations.
-- **[@rcsaquino/pi-telegram](packages/pi-telegram/README.md)**: Telegram transport for the existing Pi conversation, with attachments, steering, and explicitly requested voice replies.
+- **[@rcsaquino/pi-telegram](packages/pi-telegram/README.md)**: standalone Telegram transport for one Pi session and one destination chat, mirroring settled turns, with attachments, steering, and explicitly requested voice replies.
 - **[@rcsaquino/pi-image](packages/pi-image/README.md)**: text-to-image and image-to-image generation via the OpenRouter Images API, using the stored OpenRouter login.
 - **[pi-idle-compaction](packages/pi-idle-compaction/README.md)**: native compaction after an eligible idle period, with conservative background-work checks.
-- **[@rcsaquino/pi-background-tasks](packages/pi-background-tasks/README.md)**: non-blocking same-model workers with compact task briefs, realistic duration estimates and capacity-only scheduling, without workspace/resource read-write locks. Authorized concurrent edits can overwrite one another.
+- **[@rcsaquino/pi-subagents](packages/pi-subagents/README.md)**: supervised headless Pi workers in separate processes, with steerable runs, session-scoped notices, and final reports. Linux only; ships no agent definitions.
 
 Each package owns its manifest, entry point, runtime dependencies, tests, README, and agent instructions. Versions and release readiness are independent; inclusion here does not imply npm publication or production activation.
 
@@ -49,13 +49,13 @@ pi install ./packages/pi-telegram
 Or use a stable absolute path:
 
 ```sh
-pi install /absolute/path/to/pi-extensions/packages/pi-background-tasks
+pi install /absolute/path/to/pi-extensions/packages/pi-subagents
 ```
 
 Pi keeps local packages as references. Leave the checkout in place. Use `pi list` to inspect configured package declarations, then `/reload` in an idle Pi session when you intend to activate a change. Removing a package uses its installed source, for example:
 
 ```sh
-pi remove /absolute/path/to/pi-extensions/packages/pi-background-tasks
+pi remove /absolute/path/to/pi-extensions/packages/pi-subagents
 ```
 
 Removal does not erase that extension's runtime data.
@@ -94,7 +94,6 @@ The runner invokes each package's `check` or `typecheck` and `test` scripts sequ
 To focus on one package:
 
 ```sh
-npm --prefix packages/pi-background-tasks run verify
 npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```

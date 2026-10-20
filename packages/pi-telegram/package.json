@@ -38,7 +38,7 @@
     "typescript": "^5.9.0"
   },
   "scripts": {
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

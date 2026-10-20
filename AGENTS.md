@@ -8,7 +8,7 @@ This is a private npm workspace containing five independent Pi extension package
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram`, transport, media, and explicit speech delivery.
 - `packages/pi-image`: `@rcsaquino/pi-image`, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-idle-compaction`: native idle compaction and admission guards.
-- `packages/pi-background-tasks`: `@rcsaquino/pi-background-tasks`, independent in-process workers, capacity-only scheduling and optional staged file integrity; no workspace/resource locks.
+- `packages/pi-subagents`: `@rcsaquino/pi-subagents`, supervised external Pi workers with steering, session-scoped notices, and reports; Linux procfs required.
 - `scripts/workspaces.mjs`: sequential shared verification runner.
 - `scripts/link-host.mjs`: development-only missing/broken host dependency links.
 - `scripts/publication.test.mjs`: offline release-metadata, included-file, import-closure, documentation, and publication-workflow regression checks.
@@ -46,7 +46,6 @@ The runner finds all package directories and uses `check` or `typecheck` plus `t
 Targeted examples:
 
 ```sh
-npm --prefix packages/pi-background-tasks run verify
 npm --prefix packages/pi-idle-compaction run verify
 npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test

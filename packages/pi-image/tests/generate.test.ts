@@ -85,14 +85,31 @@ test("url fallback downloads without credentials and rejects non-images", async 
   await assert.rejects(generateImageBytes({ key: "K", model: "m", prompt: "p" }, bad), /did not return image bytes/);
 });
 
-test("missing OpenRouter login fails closed with a safe error", async t => {
+test("credentials resolve .env first, then environment, then stored login, and fail closed when missing", async t => {
   const root = await mkdtemp(join(scratch, "auth-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await assert.rejects(readOpenRouterKey(join(root, "empty")), /\/login for openrouter/);
+  const empty = join(root, "empty");
+  await assert.rejects(readOpenRouterKey(empty, empty, {}), /OPENROUTER_API_KEY in \.env/);
   await writeFile(join(root, "auth.json"), JSON.stringify({ openrouter: { type: "api_key" } }));
-  await assert.rejects(readOpenRouterKey(root), /\/login for openrouter/);
+  await assert.rejects(readOpenRouterKey(root, root, {}), /OPENROUTER_API_KEY in \.env/);
   await writeFile(join(root, "auth.json"), JSON.stringify({ openrouter: { type: "api_key", key: "  K-1  " } }));
-  assert.equal(await readOpenRouterKey(root), "K-1");
+  assert.equal(await readOpenRouterKey(root, root, {}), "K-1");
+  assert.equal(await readOpenRouterKey(root, root, { OPENROUTER_API_KEY: " E-1 " }), "E-1");
+
+  await writeFile(join(root, ".env"), "export OPENROUTER_API_KEY=\"dotenv-key\" # comment\nOTHER=x\n");
+  assert.equal(await readOpenRouterKey(root, root, { OPENROUTER_API_KEY: "E-1" }), "dotenv-key");
+
+  const cwd = join(root, "work");
+  await mkdir(cwd);
+  await writeFile(join(cwd, ".env"), "# no key here\nOTHER=1\n");
+  assert.equal(await readOpenRouterKey(root, cwd, {}), "dotenv-key");
+
+  const bare = join(root, "bare");
+  await mkdir(bare);
+  assert.equal(await readOpenRouterKey(bare, cwd, { OPENROUTER_API_KEY: "E-1" }), "E-1");
+
+  await writeFile(join(cwd, ".env"), "OPENROUTER_API_KEY=cwd-key\n");
+  assert.equal(await readOpenRouterKey(bare, cwd, { OPENROUTER_API_KEY: "E-1" }), "cwd-key");
 });
 
 test("prompt, model, and size validation rejects bad input", () => {

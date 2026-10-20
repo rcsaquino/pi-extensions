@@ -65,8 +65,7 @@ test("real SDK image normalization preserves admitted reply ownership, queues, s
       });
       pi.on("input", event => bridge.input(event));
       pi.on("before_agent_start", event => {
-        if (event.messageType === "custom") bridge.beforeCustomStart(event.message);
-        else bridge.beforeStart(event.prompt, event.images);
+        if (event.messageType === "user") bridge.beforeStart(event.prompt, event.images);
       });
       pi.on("agent_start", () => bridge.agentStart());
       pi.on("message_start", event => {
@@ -140,17 +139,20 @@ test("real SDK image normalization preserves admitted reply ownership, queues, s
     assert.deepEqual(sent.slice(3).map(item => item.chat_id), [123, 456]);
     assert.ok(consumed.at(-1)!.text.includes("[Image: original"), "queued other-chat initial prompt must normalize");
   });
-  await t.test("same-text local input cancels image owner; local and generic follow-ups cannot capture chat", async () => {
+  await t.test("local input leaves the active run intact and later local prompts are mirrored", async () => {
     held = false; holdNext = true; await feed(7, "Hold for local input"); await until(() => held);
     const sameText = consumed.at(-1)!.text;
     await session!.steer(sameText, undefined, { source: "interactive" }); release?.(); await session!.waitForIdle();
-    assert.equal(sent.length, 5, "neither old image final nor same-text local final may be delivered");
-    await session!.prompt(sameText, { source: "extension" }); assert.equal(sent.length, 5);
-    await feed(8, "Text-only authenticated follow-up", 123, false); await until(() => sent.length === 6); await session!.waitForIdle();
+    await until(() => sent.length === 6);
+    assert.equal(sent.at(-1)!.chat_id, 123, "the held authenticated run still settles once");
+    await session!.prompt(sameText, { source: "extension" }); await session!.waitForIdle();
+    await until(() => sent.length === 7);
+    assert.equal(sent.at(-1)!.chat_id, 123, "a local prompt is mirrored to the bound chat");
+    await feed(8, "Text-only authenticated follow-up", 123, false); await until(() => sent.length === 8); await session!.waitForIdle();
     assert.equal(sent.at(-1)!.chat_id, 123);
   });
   await t.test("unauthenticated photo cannot reach preparation or SDK", async () => {
-    const count = consumed.length; await feed(9, "Foreign", 777); assert.equal(consumed.length, count); assert.equal(sent.length, 6);
+    const count = consumed.length; await feed(9, "Foreign", 777); await delay(120); assert.equal(consumed.length, count); assert.equal(sent.length, 8);
   });
   assert.deepEqual(errors, []);
 });

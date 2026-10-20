@@ -27,7 +27,6 @@ async function fixture(t: test.TestContext, mode: Mode) {
   const trace: string[] = [], errors: string[] = [];
   const updates: unknown[] = [];
   let polls = 0, wake: (() => void) | undefined, starts = 0, settlements = 0, tools = 0;
-  let route: ((id: string, content: string, metadata?: { kind: string; status: string }) => boolean) | undefined;
   let piApi: ExtensionAPI;
   let release: (() => void) | undefined, blocked = false, hold = false;
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -66,7 +65,7 @@ async function fixture(t: test.TestContext, mode: Mode) {
     pi.registerTool({ name: "context_fixture", label: "Context fixture", description: "Synthetic context producer", parameters: Type.Object({}),
       async execute(_id, _args, signal, _update, ctx) {
         tools++;
-        pi.events.emit("background-tasks:claim-owner:v1", { sessionId: ctx.sessionManager.getSessionId(), taskId: "bg-123456abcdef", accept: (value: typeof route) => { route = value; } });
+        void ctx;
         if (hold) {
           hold = false; blocked = true;
           await new Promise<void>(done => { release = done; signal?.addEventListener("abort", () => done(), { once: true }); });
@@ -102,7 +101,7 @@ async function fixture(t: test.TestContext, mode: Mode) {
   ({ session } = await createAgentSession({ cwd: root, agentDir, resourceLoader: loader, settingsManager: settings, sessionManager: SessionManager.inMemory(root), model }));
   await session.bindExtensions({ mode: "rpc", onError: error => errors.push(error.error) });
   await until(() => polls >= 2, "poll started");
-  return { session, sent, trace, errors, root, getRoute: () => route, tools: () => tools, starts: () => starts, settlements: () => settlements,
+  return { session, sent, trace, errors, root, tools: () => tools, starts: () => starts, settlements: () => settlements,
     feed(id: number, chat = 123) { updates.push({ update_id: id, message: { message_id: id, date: 1791000000, from: { id: chat }, chat: { id: chat, type: "private" }, text: "Request synthetic" } }); wake?.(); },
     hold: () => { hold = true; }, blocked: () => blocked, release: () => release?.(),
     customIdle: () => piApi!.sendMessage(custom, { triggerTurn: true }),
@@ -110,11 +109,11 @@ async function fixture(t: test.TestContext, mode: Mode) {
   };
 }
 
-for (const mode of ["steer", "followUp", "append", "hook"] as const) test(`actual SDK ${mode} custom context preserves human/report ownership and only delivers settled finals`, async t => {
+for (const mode of ["steer", "followUp", "append", "hook"] as const) test(`actual SDK ${mode} custom context changes neither the active reply nor its chat`, async t => {
   const f = await fixture(t, mode);
   f.hold(); f.feed(1);
   await until(f.blocked, "tool blocked");
-  // Another chat waits and cannot take the human's or later report's reply target.
+  // Another chat waits for the busy session and cannot take the active reply target.
   f.feed(2, 456); await delay(120); assert.equal(f.sent.length, 0);
   f.release();
   await until(() => f.settlements() >= 2, "both human runs settled");
@@ -124,16 +123,10 @@ for (const mode of ["steer", "followUp", "append", "hook"] as const) test(`actua
   assert.ok(f.session.messages.some(message => message.role === "custom" && ["web-search-content-ready", "synthetic-hook-context"].includes(message.customType)), "real host stored the custom context");
   if (mode !== "append") assert.ok(f.trace.some(value => value.startsWith("message_start:custom:")), "queued/hook context emits the extension lifecycle; append-only context need not");
   assert.deepEqual(f.sent.map(message => [message.chat_id, message.text]), [[123, "Settled contextual final."], [456, "Settled contextual final."]], "context notifications must not cancel either reply");
-  const route = f.getRoute(); assert.ok(route, "context does not erase authenticated task capture");
-  assert.equal(route("completion", "Report synthetic", { kind: "settled", status: "completed" }), true);
-  await until(() => f.settlements() >= 3, "owned report settled"); await f.session.waitForIdle();
-  assert.deepEqual(f.sent.at(-1), { chat_id: 456, text: "Settled contextual final." });
+  // An idle custom notice is now mirrored to the single bound destination chat.
+  f.customIdle(); await until(() => f.settlements() >= 3, "mirrored idle custom run settled"); await f.session.waitForIdle();
+  assert.deepEqual(f.sent.at(-1), { chat_id: 123, text: "Settled contextual final." });
   assert.equal(f.sent.length, 3);
-  assert.equal(f.tools(), 3);
-  assert.ok(f.trace.some(value => value.startsWith("message_start:custom:")));
-  // Same notification while idle starts an unrelated run, never captures the last chat.
-  f.customIdle(); await until(() => f.settlements() >= 4, "unowned idle custom run settled"); await f.session.waitForIdle();
-  assert.equal(f.sent.length, 3, "idle custom turns remain TUI-only");
   assert.deepEqual(f.errors, []);
   await f.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
   const records = (await f.ledger()).records;

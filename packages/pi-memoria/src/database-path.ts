@@ -29,9 +29,25 @@ export function databasePath(input: string) {
       }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return undefined; }
   };
+  // A concurrent cold opener can make a companion visible before this process
+  // observes the main file. Re-resolve the main path briefly before failing;
+  // a genuinely orphaned companion still fails closed.
+  const settle = () => {
+    for (let attempt = 0; ; attempt++) {
+      const info = entry(path);
+      if (info) return info;
+      if (attempt >= 50) return undefined;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  };
   const check = () => {
-    directories(); const info = entry(path);
-    for (const suffix of ["-wal", "-shm", "-journal"]) if (entry(path + suffix) && !info) throw new Error("Orphaned SQLite companion without a database.");
+    directories();
+    let info = entry(path);
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+      if (!entry(path + suffix) || info) continue;
+      info = settle();
+      if (!info) throw new Error("Orphaned SQLite companion without a database.");
+    }
     return info;
   };
   check(); mkdirSync(dir, { recursive: true, mode: 0o700 }); check();

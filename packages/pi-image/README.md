@@ -14,7 +14,7 @@ The npm package is `@rcsaquino/pi-image`; the source directory remains `pi-image
 
 - Node.js **22.6+**, as declared by this package.
 - A Node-based Pi host using the `@earendil-works` namespace.
-- An OpenRouter login stored via Pi `/login` (`openrouter` entry in `<Pi agent directory>/auth.json`). No new keys or environment files.
+- An OpenRouter key, either `OPENROUTER_API_KEY` in a `.env` file or a login stored via Pi `/login` (`openrouter` entry in `<Pi agent directory>/auth.json`).
 
 Pi supplies the declared host peers. There are no runtime dependencies.
 
@@ -36,12 +36,14 @@ Run `/reload` in the owning idle Pi session when you intend to activate it. The 
 
 ## Configuration
 
-No environment file. The extension reads only the stored OpenRouter key:
+Resolved in this order:
 
-1. `PI_CODING_AGENT_DIR`, when explicitly set; otherwise
-2. `~/.pi/agent/auth.json`, entry `{ "openrouter": { "key": "..." } }` written by `/login` for openrouter.
+1. `OPENROUTER_API_KEY` in `<working directory>/.env`.
+2. `OPENROUTER_API_KEY` in `<agent directory>/.env` (`PI_CODING_AGENT_DIR`, when explicitly set; otherwise `~/.pi/agent`).
+3. `OPENROUTER_API_KEY` in the process environment.
+4. The stored `/login` credential in `<agent directory>/auth.json`, entry `{ "openrouter": { "key": "..." } }`.
 
-A missing login fails closed: `generate_image` reports that the OpenRouter login is missing. The key never appears in errors, logs, or tool results; provider error detail is truncated to a short redacted message.
+`.env` parsing is minimal: `KEY=VALUE` lines, optional `export`, `#` comments, and quoted values. A missing key fails closed: `generate_image` reports that the OpenRouter key is missing. The key never appears in errors, logs, or tool results; provider error detail is truncated to a short redacted message.
 
 ## Images API note
 

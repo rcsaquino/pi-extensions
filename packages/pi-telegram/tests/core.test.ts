@@ -59,8 +59,8 @@ test("explicit .env path fails closed if missing", async () => {
   await assert.rejects(loadConfig(workspace, { TELEGRAM_ENV_FILE: "missing-telegram-test.env", TELEGRAM_BOT_TOKEN: "fallback", TELEGRAM_ALLOWED_ID: "123" }), SafeError);
 });
 
-test("groq key comes only from /login auth.json", async () => {
-  const dir = await mkdtemp(resolve(workspace, "telegram-groq-login-"));
+test("groq key comes from .env or environment and falls back to /login auth.json", async () => {
+  const dir = await mkdtemp(resolve(workspace, "telegram-groq-config-"));
   const agent = resolve(dir, "agent");
   try {
     await mkdir(agent, { recursive: true });
@@ -68,10 +68,11 @@ test("groq key comes only from /login auth.json", async () => {
     await writeFile(resolve(agent, ".env"), "TELEGRAM_BOT_TOKEN=agent-token\nTELEGRAM_ALLOWED_ID=123\n");
     assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent })).groqKey, "login-groq-key");
     await writeFile(resolve(agent, ".env"), "TELEGRAM_BOT_TOKEN=agent-token\nTELEGRAM_ALLOWED_ID=123\nGROQ_API_KEY=file-groq\n");
-    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent, GROQ_API_KEY: "env-groq-key" })).groqKey, "login-groq-key");
-    await writeFile(resolve(agent, "auth.json"), "not json");
+    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent, GROQ_API_KEY: "env-groq-key" })).groqKey, "file-groq");
     await writeFile(resolve(agent, ".env"), "TELEGRAM_BOT_TOKEN=agent-token\nTELEGRAM_ALLOWED_ID=123\n");
-    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent, GROQ_API_KEY: "env-groq-key" })).groqKey, undefined);
+    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent, GROQ_API_KEY: "env-groq-key" })).groqKey, "env-groq-key");
+    await writeFile(resolve(agent, "auth.json"), "not json");
+    assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent, GROQ_API_KEY: "env-groq-key" })).groqKey, "env-groq-key");
     assert.equal((await loadConfig(dir, { PI_CODING_AGENT_DIR: agent })).groqKey, undefined);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -177,7 +178,7 @@ test("Groq receives actual audio multipart and configured key; transcript is red
 });
 
 test("missing Groq key and empty transcript produce useful safe errors", async () => {
-  await assert.rejects(new TelegramApi({ ...config, groqKey: undefined }).transcribe(Buffer.from("x"), "voice.ogg", signal), /\/login/);
+  await assert.rejects(new TelegramApi({ ...config, groqKey: undefined }).transcribe(Buffer.from("x"), "voice.ogg", signal), /GROQ_API_KEY/);
   await assert.rejects(new TelegramApi(config, async () => Response.json({ text: "" })).transcribe(Buffer.from("x"), "voice.ogg", signal), /no usable text/);
 });
 

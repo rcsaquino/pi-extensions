@@ -119,7 +119,7 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
         telegramContextSeen = JSON.stringify(context.messages).includes("current request arrived via Telegram");
         assert.ok(telegramContextSeen, "Telegram transport context must reach the model without an extra user label");
         const guidance = JSON.stringify(context.messages);
-        assert.ok(guidance.includes("Send voice messages only when the user explicitly asks"));
+        assert.ok(guidance.includes("Voice only when sir explicitly asks for voice or a spoken reply"));
         assert.ok(!guidance.includes("Prefer replying with telegram_send speech"));
         const stream = createAssistantMessageEventStream();
         const last = context.messages.filter(item => item.role !== "system").at(-1)!;

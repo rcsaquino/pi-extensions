@@ -217,8 +217,9 @@ test("structured and forced prompts separate instructions from fresh hot memory 
   assert.equal(hot, `Global MEMORY.md (${manual.length}/5000 characters; ${join(h.memoryDir, "MEMORY.md")}):\n${manual.trimEnd()}`);
   assert.doesNotMatch(fresh.rendered, /\n\n<\/hot_memory>/u);
   assert.doesNotMatch(instructions, /Fresh standing instruction\./u);
-  assert.doesNotMatch(hot, /search before adding/u);
-  assert.equal(instructions.match(/search before adding/gu)?.length, 1);
+  assert.doesNotMatch(hot, /search before adding/iu);
+  assert.equal(instructions.match(/search before adding/giu)?.length, 1);
+  assert.match(instructions, /Use the memoria tools for every memory read and write; never read or modify MEMORY\.md or the SQLite database directly/u);
   assert.equal(h.extension.tools.get("memoria_add")!.definition.promptGuidelines, undefined);
 
   await writeFile(join(h.memoryDir, "MEMORY.md"), manual.replace("Fresh", "Changed"));

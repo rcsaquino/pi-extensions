@@ -31,6 +31,7 @@ interface Reply {
   revision?: number;
   settling?: boolean;
   final?: string;
+  finalAt?: number;
   pendingFinals?: { text: string; revision: number }[];
   outcome: AgentActivityOutcome;
   spoke?: boolean;
@@ -416,6 +417,7 @@ export class TelegramBridge {
       while (!this.ctx.isIdle() || this.ctx.hasPendingMessages()) await delay(100, undefined, { signal });
       signal.throwIfAborted();
       request.prompt = content.filter(block => block.type === "text").map(block => block.text).join("\n");
+      // The start budget begins at dispatch, not when the request joined the queue.
       request.submittedAt = Date.now();
       this.submit(request, content, "followUp");
     } catch (error) {
@@ -442,7 +444,20 @@ export class TelegramBridge {
     if (this.active) this.humanInput?.admit(event, this.ctx.sessionManager.getSessionId(), this.active);
   }
 
-  userStart(message: { role: string; content?: unknown; customType?: string; details?: unknown }): void {
+  userStart(message: { role: string; content?: unknown; customType?: string; details?: unknown; timestamp?: number }): void {
+    if (message.role === "custom") {
+      // A notice queued before the current final turn is part of that continuation;
+      // one arriving after the final belongs to a new turn and must not overwrite it.
+      const request = this.run;
+      const final = request?.final?.trim();
+      const at = typeof message.timestamp === "number" ? message.timestamp : Date.now();
+      if (request?.started && !request.controller.signal.aborted && request.outcome === "completed" && !request.spoke && final &&
+        at >= (request.finalAt || 0)) {
+        (request.pendingFinals ||= []).push({ text: final, revision: request.revision || 0 });
+        request.final = undefined;
+      }
+      return;
+    }
     if (message.role !== "user") return;
     const request = this.active;
     if (!request?.prompt || request.controller.signal.aborted) return;
@@ -467,7 +482,7 @@ export class TelegramBridge {
     request.started = true;
   }
 
-  assistantEnd(message: { role: string; content?: unknown; stopReason?: string }): void {
+  assistantEnd(message: { role: string; content?: unknown; stopReason?: string; timestamp?: number }): void {
     const request = this.run;
     if (!request?.started || request.controller.signal.aborted ||
       request.sessionId !== this.ctx.sessionManager.getSessionId() || message.role !== "assistant" || !Array.isArray(message.content)) return;
@@ -478,6 +493,7 @@ export class TelegramBridge {
     const successful = ["stop", "length"].includes(message.stopReason || "");
     request.outcome = successful ? "completed" : message.stopReason === "aborted" ? "aborted" : "error";
     request.final = successful ? message.content.filter(block => block?.type === "text").map(block => block.text).join("\n").trim() : undefined;
+    request.finalAt = request.final ? (typeof message.timestamp === "number" ? message.timestamp : Date.now()) : undefined;
     this.record({ ...this.correlation(request, "reply"), phase: "generated", outcome: "not_applicable", reason: successful ? undefined : request.outcome === "aborted" ? "agent_aborted" : "agent_error" });
   }
 
@@ -485,7 +501,7 @@ export class TelegramBridge {
 
   agentStart(): void {
     this.foregroundRunning = true;
-    this.humanInput?.startRun(this.ctx.sessionManager.getSessionId());
+    this.humanInput?.startRun(this.ctx.sessionManager.getSessionId(), this.active);
     if (this.active) { this.run = this.active; return; }
     if (this.run && !this.run.settling) { this.run.started = true; return; }
     this.run = { sessionId: this.ctx.sessionManager.getSessionId(), chat: this.destination, controller: new AbortController(),
@@ -493,12 +509,13 @@ export class TelegramBridge {
   }
 
   async settled(): Promise<void> {
-    this.foregroundRunning = false;
     const request = this.run;
-    if (!request || request.settling) return;
+    if (!request) { this.foregroundRunning = false; return; }
+    if (request.settling) return;
     if (!request.started || request.controller.signal.aborted) {
       if (request.controller.signal.aborted) this.diagnostic(request, "suppressed", request.cancellation || "context_revoked");
       this.clearRun(request);
+      this.foregroundRunning = false;
       return;
     }
     request.settling = true;
@@ -574,6 +591,9 @@ export class TelegramBridge {
       }
     } finally {
       this.clearRun(request);
+      // Keep queued work out until our own settle observation and delivery finish.
+      // Pi's agent_settled emission is still in progress while this handler runs.
+      this.foregroundRunning = false;
       void revision;
     }
   }

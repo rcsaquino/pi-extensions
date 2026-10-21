@@ -50,6 +50,7 @@ class Server {
   file = Buffer.from([255, 216, 255, 0, 1, 2]);
   transcript = "A spoken request.";
   abortedPolls = 0;
+  sendDelayMs = 0;
   feed(msg: TgMessage, updateId = this.nextId++): void {
     this.updates.push([{ update_id: updateId, message: msg }]);
     this.wake?.();
@@ -62,6 +63,11 @@ class Server {
     if (String(url).includes("api.elevenlabs.io")) return new Response(Buffer.from("OggS---OpusHead audio"));
     if (String(url).includes("/file/bot")) return new Response(new Uint8Array(this.file));
     if (this.fatal) return Response.json({ ok: false, error_code: this.fatal, description: "mock failure" });
+    if (method === "sendMessage" && this.sendDelayMs) {
+      const wait = this.sendDelayMs;
+      this.sendDelayMs = 0;
+      await delay(wait);
+    }
     if (method === "getMe") return ok({ id: 999, username: "mock_bot" });
     if (method === "getWebhookInfo") return ok({ url: this.hook });
     if (method === "getFile") return ok({ file_path: args.file_id + ".ogg" });
@@ -82,12 +88,14 @@ class Server {
   texts(): { chat_id: number; text: string }[] { return this.calls.filter(call => call.method === "sendMessage").map(call => call.args); }
 }
 
-async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; consumeReports?: boolean; mode?: string; lockDir?: string; start?: boolean } = {}) {
+async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; consumeReports?: boolean; deferDuringSettle?: boolean; mode?: string; lockDir?: string; start?: boolean } = {}) {
   const dir = await mkdtemp(resolve(workspace, "telegram-bridge-"));
   const server = options.server || new Server();
   const submissions: (TextContent | ImageContent)[][] = [];
   const deliveries: string[] = [];
   const consumers: (() => void)[] = [];
+  const deferredConsumers: (() => void)[] = [];
+  let settling = false;
   const statuses: string[] = [];
   const notices: string[] = [];
   let idle = true;
@@ -116,13 +124,16 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
     const text = content.filter(b => b.type === "text").map(b => b.text).join("\n");
     const images = content.filter(b => b.type === "image");
     bridge.input({ type: "input", source: "extension", text, images });
-    const consume = AsyncResource.bind(() => {
+    const start = () => {
       bridge.beforeStart(text, images);
       bridge.agentStart();
       idle = false;
       bridge.userStart({ role: "user", content });
-    });
+    };
+    const consume = AsyncResource.bind(start);
     consumers.push(consume);
+    // Pi's deferred settled action runs outside the submission's AsyncLocalStorage scope.
+    if (options.deferDuringSettle && settling) { deferredConsumers.push(start); return; }
     if (options.consume !== false) consume();
   } } as unknown as ExtensionAPI;
   bridge = new TelegramBridge(pi, ctx, { ...config, allowed: new Set(config.allowed), dataDir: resolve(dir, "downloads"), stateDir: resolve(dir, "state"), tmpDir: resolve(dir, "tmp"), lockDir: options.lockDir }, server.fetch);
@@ -140,7 +151,13 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
     finish: async (text = "Final reply.", stopReason = "stop") => {
       bridge.assistantEnd({ role: "assistant", content: [{ type: "thinking", thinking: "private" }, { type: "text", text }], stopReason });
       idle = true;
-      await bridge.settled();
+      if (options.deferDuringSettle) {
+        settling = true;
+        try { await bridge.settled(); } finally {
+          settling = false;
+          for (const consume of deferredConsumers.splice(0)) consume();
+        }
+      } else await bridge.settled();
     },
   };
 }
@@ -328,6 +345,60 @@ test("queued users keep FIFO order and finals stay pinned to their originating c
   await until(() => h.submissions.length === 2);
   await h.finish("For second user.");
   assert.deepEqual(h.server.texts().map(item => item.chat_id), [123, 456]);
+});
+
+test("a request queued behind a notice past the watchdog window starts after settlement and delivers", async t => {
+  const realNow = Date.now;
+  let offset = 0;
+  t.mock.method(Date, "now", () => realNow() + offset);
+  const h = await fixture(t, { deferDuringSettle: true });
+  h.bridge.agentStart();
+  h.setIdle(false);
+  h.server.feed(message(1, "Queued behind a notice"));
+  await delay(150);
+  assert.equal(h.submissions.length, 0);
+  // The request has now waited far longer than the start watchdog while the notice turn runs.
+  offset = 11_000;
+  h.server.sendDelayMs = 350;
+  await h.finish("Notice final.");
+  await until(() => h.submissions.length === 1);
+  await h.finish("Queued reply.");
+  assert.deepEqual(h.server.texts().map(item => item.text), ["Notice final.", "Queued reply."]);
+  assert.ok(!h.server.texts().some(item => item.text.includes("did not start")));
+  const records = await ledgerRecords(h);
+  assert.ok(!records.some(record => record.reason === "start_watchdog"));
+});
+
+test("a genuinely stalled start still warns and aborts", async t => {
+  const realNow = Date.now;
+  let offset = 0;
+  t.mock.method(Date, "now", () => realNow() + offset);
+  const h = await fixture(t, { consume: false });
+  h.server.feed(message(1, "Never starts"));
+  await until(() => h.submissions.length === 1);
+  h.setIdle(true);
+  offset = 11_000;
+  await until(() => h.server.texts().length === 1);
+  assert.equal(h.server.texts()[0].text, "Pi did not start this request. Check the TUI for configuration or extension errors.");
+  const records = await ledgerRecords(h);
+  assert.ok(records.some(record => record.reason === "start_watchdog"));
+});
+
+test("a later notice turn preserves an already generated final", async t => {
+  const h = await fixture(t);
+  h.server.feed(message(1, "Run the audit"));
+  await until(() => h.submissions.length === 1);
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Audit stopped at 16:15:03." }], stopReason: "stop" });
+  h.bridge.userStart({ role: "custom", customType: "subagent-notice", content: "[Subagent settled]\nStatus: done" });
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Cancelled audit has settled." }], stopReason: "stop" });
+  h.setIdle(true);
+  await h.bridge.settled();
+  assert.deepEqual(h.server.texts().map(item => item.text), ["Audit stopped at 16:15:03.", "Cancelled audit has settled."]);
+  const records = await ledgerRecords(h);
+  const sent = records.filter(record => record.operation === "reply" && record.phase === "sent");
+  assert.equal(sent.length, 2);
+  assert.equal(new Set(sent.map(record => record.delivery)).size, 2);
+  assert.ok(sent.every(record => record.reply === sent[0].reply));
 });
 
 test("same-chat follow-ups steer the active run without waiting for settlement", async t => {

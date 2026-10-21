@@ -75,6 +75,19 @@ test("queued steering uses admitted exact native content in the authenticated ru
   assert.equal(h.scope.hasPending(h.owner), false, "identical corrections each consume once");
 });
 
+test("a host-deferred start can resume its own detached submission without borrowing another owner", t => {
+  const h = fixture(t);
+  h.send(() => {}); // No synchronous input/admission: the host deferred this prompt past agent_settled.
+  assert.ok(h.scope.admit(h.event, "session", h.owner));
+  assert.ok(h.scope.prepare(h.event.text, [h.image], "session", h.owner));
+  h.scope.startRun("session", h.owner);
+  assert.deepEqual(h.scope.consume([{ type: "text", text: "Host normalized deferred text" }], "session", h.owner), { steering: false, text: h.event.text });
+  assert.equal(h.scope.consume([{ type: "text", text: h.event.text }], "session", h.owner), undefined, "detached admission remains one-use");
+  h.send(() => { assert.ok(h.scope.admit({ ...h.event, streamingBehavior: "steer" }, "session", h.owner)); }, true);
+  assert.deepEqual(h.scope.consume([{ type: "text", text: h.event.text }, h.image], "session", h.owner), { steering: true, text: h.event.text });
+  assert.equal(h.scope.admit(h.event, "session", {}), false, "another owner cannot claim the detached submission");
+});
+
 test("handled/unarmed admission cannot consume and close clears pending capabilities", t => {
   const h = fixture(t);
   h.send(() => {

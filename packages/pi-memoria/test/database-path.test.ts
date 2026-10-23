@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { databasePath, pruneInspectionScratch } from "../src/database-path.ts";
-import { temporary } from "./helpers.ts";
+import { makeForeignOwned, temporary } from "./helpers.ts";
 
 // Inject the precise stat result observed on Linux during SQLite last-close:
 // the syscall resolved a regular inode, then unlink made its link count zero.
@@ -42,13 +42,16 @@ test("stale inspection scratch is pruned only when old and owned by this user", 
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
   fs.utimesSync(old, twoHoursAgo, twoHoursAgo);
   fs.utimesSync(foreign, twoHoursAgo, twoHoursAgo);
-  const ownedForeign = process.getuid?.() === 0;
-  if (ownedForeign) fs.chownSync(foreign, 1, 1);
-  assert.equal(pruneInspectionScratch(base), 1);
+  // An unprivileged runner cannot create a foreign-owned fixture; in that case
+  // the "foreign" directory is just another stale same-user directory and is
+  // correctly pruned. Assert whichever branch the fixture actually exercises.
+  const ownedForeign = await makeForeignOwned(foreign);
+  assert.equal(pruneInspectionScratch(base), ownedForeign ? 1 : 2);
   assert.equal(fs.existsSync(old), false);
   assert.equal(fs.existsSync(recent), true);
   assert.equal(fs.existsSync(unrelated), true);
   if (ownedForeign) assert.equal(fs.existsSync(foreign), true, "another user's scratch directory is never removed");
+  else assert.equal(fs.existsSync(foreign), false, "a stale same-user scratch directory is pruned");
 });
 
 test("main-file unlink and persistently unlinked companions remain fail-closed and bounded", async t => {

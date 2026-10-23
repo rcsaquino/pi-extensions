@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chown, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { TObject } from "typebox";
@@ -7,7 +7,7 @@ import { DefaultResourceLoader, ExtensionRunner, ModelRegistry, ModelRuntime, Se
 import { MEMORY_GUIDANCE } from "../index.ts";
 import { ExpectedError } from "../src/errors.ts";
 import { pruneSpillFiles, toolError } from "../src/results.ts";
-import { temporary } from "./helpers.ts";
+import { makeForeignOwned, temporary } from "./helpers.ts";
 
 function occurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
@@ -423,14 +423,17 @@ test("spill cleanup removes old response directories and keeps recent ones", asy
   const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
   await utimes(old, twoDaysAgo, twoDaysAgo);
   await utimes(foreign, twoDaysAgo, twoDaysAgo);
-  const ownedForeign = process.getuid?.() === 0;
-  if (ownedForeign) await chown(foreign, 1, 1);
+  // An unprivileged runner cannot create a foreign-owned fixture; in that case
+  // the "foreign" directory is just another stale same-user directory and is
+  // correctly pruned. Assert whichever branch the fixture actually exercises.
+  const ownedForeign = await makeForeignOwned(foreign);
   const removed = await pruneSpillFiles(base);
-  assert.equal(removed, 1);
+  assert.equal(removed, ownedForeign ? 1 : 2);
   await assert.rejects(stat(old), { code: "ENOENT" });
   assert.ok((await stat(recent)).isDirectory());
   assert.ok((await stat(unrelated)).isDirectory());
   if (ownedForeign) assert.ok((await stat(foreign)).isDirectory(), "another user's spill directory is never removed");
+  else await assert.rejects(stat(foreign), { code: "ENOENT" }, "a stale same-user spill directory is pruned");
 });
 
 test("clipped SQLite search keeps continuation and spills the complete payload", async (t) => {

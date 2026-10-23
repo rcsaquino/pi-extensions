@@ -9,7 +9,7 @@ The only automated publication path is `pi-memoria` through `.github/workflows/p
 Prepared versions are independent and are not claims of publication:
 
 - `packages/pi-idle-compaction`: `pi-idle-compaction` **0.1.0**.
-- `packages/pi-memoria`: `pi-memoria` **0.4.5**, retaining 0.4.4's memory-tool rule and clearer paraphrase-aware deduplication, flooring the Pi host peer range at >=1.2.0 and aligning the development host to 1.3.0.
+- `packages/pi-memoria`: `pi-memoria` **0.4.6**, the audit-fix release: canonical-path session containment without symlink traversal, remembered roots bounded to the newest 100, malformed-config fallback, bounded spill and inspection-snapshot hygiene, and a typebox peer floor of >=1.3.0 tested on Pi 1.3.0.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.1**, preserving authenticated reply ownership through in-run custom context while keeping unrelated custom-origin runs unowned.
 - `packages/pi-image`: `@rcsaquino/pi-image` **0.1.0**, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-subagents`: `@rcsaquino/pi-subagents` **0.1.0**, supervised headless Pi workers with steerable runs, session-scoped notices and reports.
@@ -72,7 +72,7 @@ If the workflow fails after a successful publish (for example during the confirm
 
 After Git has deliberately been initialized, review the intended diff and commit only authorized source files. Use package-specific tags, for example:
 
-- `pi-memoria-v0.4.5`
+- `pi-memoria-v0.4.6`
 - `pi-telegram-v0.2.1`
 - `pi-image-v0.1.0`
 - `pi-idle-compaction-v0.1.0`

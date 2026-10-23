@@ -1,6 +1,29 @@
-import { constants, closeSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeSync, type Stats } from "node:fs";
+import { constants, closeSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync, writeSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
+
+const INSPECTION_PREFIX = "pi-memoria-inspection-";
+const INSPECTION_STALE_MS = 60 * 60 * 1000;
+let lastInspectionPrune = 0;
+
+/** Remove stale, same-user inspection scratch left by a crashed startup snapshot. */
+export function pruneInspectionScratch(base: string = tmpdir(), now = Date.now()): number {
+  let entries;
+  try { entries = readdirSync(base, { withFileTypes: true }); } catch { return 0; }
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(INSPECTION_PREFIX)) continue;
+    const path = join(base, entry.name);
+    try {
+      const info = statSync(path);
+      if (!info.isDirectory() || (uid !== undefined && info.uid !== uid) || now - info.mtimeMs <= INSPECTION_STALE_MS) continue;
+      rmSync(path, { recursive: true, force: true });
+      removed++;
+    } catch { /* a concurrent cleanup or an unsafe entry is left alone */ }
+  }
+  return removed;
+}
 
 /** Conservative startup checks, not exclusion of uncoordinated same-user processes.
  * No chmod or SQLite open occurs until the entire existing chain and companions
@@ -54,6 +77,10 @@ export function databasePath(input: string) {
   return {
     path, check,
     inspect(work: (snapshot: string) => void) {
+      if (Date.now() - lastInspectionPrune > INSPECTION_STALE_MS) {
+        lastInspectionPrune = Date.now();
+        try { pruneInspectionScratch(); } catch { /* best effort */ }
+      }
       // SQLite READONLY still writes WAL shared-memory read marks (and may create
       // companions). Inspect a private coherent copy instead of touching foreign
       // state. Do not copy -shm: SQLite reconstructs it ONLY in this private tree.

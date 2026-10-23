@@ -2,13 +2,14 @@
 
 ## Project and scope
 
-This is a private npm workspace containing five independent Pi extension packages. The root supplies navigation and verification tooling, not an extension entry point. Read the target package's README and AGENTS.md before changing it; package-local instructions refine these rules for that subtree.
+This is a private npm workspace containing six independent Pi extension packages. The root supplies navigation and verification tooling, not an extension entry point. Read the target package's README and AGENTS.md before changing it; package-local instructions refine these rules for that subtree.
 
 - `packages/pi-memoria`: global memory and original-session retrieval.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram`, transport, media, and explicit speech delivery.
 - `packages/pi-image`: `@rcsaquino/pi-image`, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-idle-compaction`: native idle compaction and admission guards.
 - `packages/pi-subagents`: `@rcsaquino/pi-subagents`, supervised external Pi workers with steering, session-scoped notices, and reports; Linux procfs required.
+- `packages/pi-skill-workshop`: `pi-skill-workshop`, foreground learned-skill lifecycle with snapshots, reversible archive/restore, a change feed, and manual idle cleanup.
 - `scripts/workspaces.mjs`: sequential shared verification runner.
 - `scripts/link-host.mjs`: development-only missing/broken host dependency links.
 - `scripts/publication.test.mjs`: offline release-metadata, included-file, import-closure, documentation, and publication-workflow regression checks.
@@ -19,7 +20,7 @@ Keep package versions, APIs, dependencies, and installability independent unless
 
 ## Environment and setup
 
-The full suite currently requires Node 26.10.x or newer in the 26.x line, npm, and a Node-based Pi host. The validated combined offline host is Pi 1.2.0 on Node 26.11.1. Read package manifests for their different engines and peer ranges. Memoria needs `rg`; Telegram ownership needs util-linux-compatible `flock`, and long-speech tests need ffmpeg.
+The full suite currently requires Node 26.12.x or newer in the 26.x line, npm, and a Node-based Pi host. The validated combined offline host is Pi 1.3.0 on Node 26.12.0. Read package manifests for their different engines and peer ranges. Memoria needs `rg`; Telegram ownership needs util-linux-compatible `flock`, and long-speech tests need ffmpeg.
 
 Install dependencies package by package, using that package's README. For example:
 
@@ -41,7 +42,7 @@ npm test
 npm run verify
 ```
 
-The runner finds all package directories and uses `check` or `typecheck` plus `test`. Root `check`, `test`, and `verify` also run `check:publication`; use `npm run check:publication` for just the offline publication regressions. It runs sequentially, sets `PI_OFFLINE=1`, and points shared temporary directories to disposable `/tmp/pi-extensions-tests`. Set `PI_EXTENSIONS_TEST_ROOT` to an approved isolated directory when needed. Some packages also have ignored package-local fixtures.
+The runner finds all package directories and uses `check` or `typecheck` plus `test`. Root `check`, `test`, and `verify` also run `check:integration` (the two-package neutral background-work contract) and `check:publication`; use `npm run check:publication` or `npm run check:integration` for those focused checks. It runs sequentially, sets `PI_OFFLINE=1`, and points shared temporary directories to disposable `/tmp/pi-extensions-tests`. Set `PI_EXTENSIONS_TEST_ROOT` to an approved isolated directory when needed. Some packages also have ignored package-local fixtures.
 
 Targeted examples:
 
@@ -51,7 +52,7 @@ npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```
 
-Run focused checks while changing code, then the root suite for shared integration, imports, path changes, or final verification. Read failures; do not weaken a regression test to obtain a green run. Add relevant tests for behavioral changes.
+Run focused checks while changing code, then the root suite for shared integration, imports, path changes, or final verification. Read failures; do not weaken a regression test to obtain a green run. Add relevant tests for behavioral changes. Package `test`/`check`/`link-host` scripts are checkout-only where they reference files excluded from the tarball (`tests/`, package-local `scripts/`); they are not runtime entry points.
 
 Use synthetic providers, isolated agent directories, fake clocks/transports, real local SQLite where appropriate, and read-only loader verification without session startup. Never use real memory, sessions, user skills, Telegram ownership/cursors, credentials, or live provider calls as test fixtures.
 

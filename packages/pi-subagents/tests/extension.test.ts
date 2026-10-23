@@ -54,6 +54,33 @@ describe('subagent dispatch paths', { ...(dispatchSkip ? { skip: dispatchSkip } 
     assert.equal(argv[argv.length - 1], join(dir, 'session'));
   });
 
+  test('concurrent dispatches respect the per-session running cap', async t => {
+    const h = await harness(t, { scenario: { text: 'done', settleDelayMs: 5000 }, maxRunning: '1' });
+    const results = await Promise.allSettled([
+      h.dispatch({ title: 'first concurrent dispatch' }),
+      h.dispatch({ title: 'second concurrent dispatch' }),
+    ]);
+    const fulfilled = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+    const rejected = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+    assert.equal(fulfilled.length, 1, 'one dispatch must win the only slot');
+    assert.equal(rejected.length, 1);
+    assert.match(String(rejected[0]), /At most 1 subagent/);
+  });
+
+  test('result pagination never splits a surrogate pair', async t => {
+    const report = 'a'.repeat(11999) + '😀' + 'tail';
+    const h = await harness(t, { scenario: { text: report } });
+    const run = await h.dispatch();
+    await h.waitForNotice();
+    const first = await h.call('subagent_tasks', { action: 'result', id: run.id }) as { details: { text: string; nextOffset?: number } };
+    assert.equal(first.details.text, 'a'.repeat(11999));
+    assert.equal(first.details.nextOffset, 11999);
+    assert.doesNotMatch(first.details.text, /[\uD800-\uDBFF]$/);
+    const second = await h.call('subagent_tasks', { action: 'result', id: run.id, offset: first.details.nextOffset }) as { details: { text: string } };
+    assert.equal(second.details.text, '😀tail');
+    assert.equal(first.details.text + second.details.text, report);
+  });
+
   test('settlement injects one hidden follow-up notice with the report', async t => {
     const h = await harness(t, { scenario: { text: 'all tests pass' } });
     const run = await h.dispatch();
@@ -73,6 +100,25 @@ describe('subagent dispatch paths', { ...(dispatchSkip ? { skip: dispatchSkip } 
 
     await h.call('subagent_tasks', { action: 'list' });
     assert.equal(h.notices.length, 1, 'a repeat reconcile must not duplicate the notice');
+  });
+
+  test('a transport failure leaves the notice retryable and delivers it once after recovery', async t => {
+    const h = await harness(t, { scenario: { text: 'retry after transport recovery' }, noticeFailures: 1 });
+    const run = await h.dispatch();
+    const pending = await waitFor(async () => {
+      const record = await h.record(run.id);
+      return record?.notice === 'pending' && record?.noticeAttempts === 1 ? record : undefined;
+    });
+    assert.equal(pending.notice, 'pending');
+    assert.ok(typeof pending.noticeNextAttemptAt === 'string');
+    const notice = await h.waitForNotice();
+    assert.match(String(notice.message.content), /retry after transport recovery/);
+    const settled = await waitFor(async () => {
+      const record = await h.record(run.id);
+      return record?.notice === 'sent' ? record : undefined;
+    });
+    assert.equal(settled.noticeAttempts, 2);
+    assert.equal(h.notices.length, 1, 'retry must not duplicate the successful delivery');
   });
 
   test('denied dialogs are counted in the run record and the notice', async t => {
@@ -319,6 +365,18 @@ describe('subagent dispatch paths', { ...(dispatchSkip ? { skip: dispatchSkip } 
     assert.equal(h.notices.length, 0);
   });
 
+
+  test('a malformed agent directory disables the section without failing prompt assembly', async t => {
+    const h = await harness(t);
+    process.env.PI_CODING_AGENT_DIR = 'relative/agent';
+    const event = {
+      messageType: 'user', prompt: 'hi', systemPrompt: '',
+      systemPromptOptions: { sections: { subagents: 'stale section' } as Record<string, string> },
+    };
+    await assert.doesNotReject(h.emit('before_agent_start', event));
+    assert.equal(event.systemPromptOptions.sections.subagents, undefined);
+    await assert.rejects(h.dispatch(), /absolute path/);
+  });
 
   test('before_agent_start lists only subagents that have a description.md', async t => {
     const h = await harness(t, { setup: false });

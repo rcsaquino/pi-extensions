@@ -67,6 +67,7 @@ export interface RunRecord {
   notice?: NoticeState;
   noticeAttempts?: number;
   noticeAt?: string;
+  noticeNextAttemptAt?: string;
   [key: string]: unknown;
 }
 

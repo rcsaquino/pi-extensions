@@ -1,6 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { cleanup, readJsonFile, startSupervisor, waitForFile, type SupervisorHandle } from './helpers.ts';
@@ -166,6 +167,31 @@ test('a vanished run directory makes the supervisor exit 6', async t => {
   await rm(handle.dir, { recursive: true, force: true });
   await finish(handle, 10000);
   assert.equal((await handle.done).code, 6);
+});
+
+test('an unterminated stdout flood is cut off at the buffer cap without waiting the full grace', async t => {
+  const started = Date.now();
+  const handle = await startSupervisor({ scenario: { text: 'never settled', floodBytes: 64 * 1024 * 1024 } });
+  t.after(async () => { handle.stop(); await cleanup(handle.root); });
+  let peakRssKb = 0;
+  let sampling = true;
+  const samplingTask = (async () => {
+    while (sampling) {
+      try {
+        const status = await readFile(`/proc/${handle.child!.pid}/status`, 'utf8');
+        const match = /VmRSS:\s+(\d+) kB/.exec(status);
+        if (match) peakRssKb = Math.max(peakRssKb, Number(match[1]));
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  })();
+  await finish(handle, 15000);
+  sampling = false;
+  await samplingTask;
+  assert.equal(await handle.exitCode(), 4);
+  assert.match(await handle.log(), /protocol failure: unterminated line over 8 MiB/);
+  assert.ok(Date.now() - started < 6000, 'protocol failure must not wait the full 10 s worker-exit grace');
+  assert.ok(peakRssKb < 160 * 1024, `supervisor RSS peaked at ${peakRssKb} kB`);
 });
 
 test('invalid protocol output is a protocol failure with exit 4', async t => {

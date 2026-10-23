@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chown, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { TObject } from "typebox";
 import { DefaultResourceLoader, ExtensionRunner, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, type BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
 import { MEMORY_GUIDANCE } from "../index.ts";
 import { ExpectedError } from "../src/errors.ts";
-import { toolError } from "../src/results.ts";
+import { pruneSpillFiles, toolError } from "../src/results.ts";
 import { temporary } from "./helpers.ts";
 
 function occurrences(text: string, needle: string): number {
@@ -22,7 +22,7 @@ function block(text: string, name: string): string {
 }
 
 /** Load the real extension through Pi's loader with isolated storage. */
-async function harness(t: TestContext) {
+async function harness(t: TestContext, options: { sessionDirs?: string } = {}) {
   const directory = await temporary(t);
   const agentDir = join(directory, "agent");
   const memoryDir = join(directory, "memory");
@@ -36,6 +36,7 @@ async function harness(t: TestContext) {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   process.env.PI_MEMORIA_DIR = memoryDir;
   delete process.env.PI_MEMORIA_SESSION_DIRS;
+  if (options.sessionDirs !== undefined) process.env.PI_MEMORIA_SESSION_DIRS = options.sessionDirs;
   t.after(() => {
     for (const [name, value] of [["PI_CODING_AGENT_DIR", originalAgent], ["PI_MEMORIA_DIR", originalMemory], ["PI_MEMORIA_SESSION_DIRS", originalRoots]]) {
       if (value === undefined) delete process.env[name!]; else process.env[name!] = value;
@@ -188,6 +189,16 @@ for (const unavailable of [false, true]) {
     } finally { if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; }
   });
 }
+
+test("malformed PI_MEMORIA_SESSION_DIRS falls back safely and reports the configuration problem", async (t) => {
+  const h = await harness(t, { sessionDirs: "not-json" });
+  await h.dispatch("session_start");
+  const event = await h.renderPrompt();
+  assert.match(h.section(event), /MEMORY CONFIGURATION INVALID/u);
+  assert.match(h.section(event), /Safe fallback memory paths and session roots are in use/u);
+  const fact = await h.call("memoria_add", { content: "The fallback still stores facts." });
+  assert.equal(fact.details.created, true);
+});
 
 test("structured and forced prompts separate instructions from fresh hot memory and preserve the addendum", async (t) => {
   const h = await harness(t);
@@ -400,6 +411,26 @@ test("compact responses render changes once while details retain the full result
   assert.match(removed.text, /memoria_delete: hot/u);
   assert.equal(occurrences(removed.text, "H".repeat(3_000)), 1);
   assert.match(removed.text, /budget: \d+\/5000/u);
+});
+
+test("spill cleanup removes old response directories and keeps recent ones", async (t) => {
+  const base = await temporary(t);
+  const old = join(base, "pi-memoria-result-old");
+  const recent = join(base, "pi-memoria-result-recent");
+  const unrelated = join(base, "another-directory");
+  const foreign = join(base, "pi-memoria-result-foreign");
+  for (const directory of [old, recent, unrelated, foreign]) await mkdir(directory);
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  await utimes(old, twoDaysAgo, twoDaysAgo);
+  await utimes(foreign, twoDaysAgo, twoDaysAgo);
+  const ownedForeign = process.getuid?.() === 0;
+  if (ownedForeign) await chown(foreign, 1, 1);
+  const removed = await pruneSpillFiles(base);
+  assert.equal(removed, 1);
+  await assert.rejects(stat(old), { code: "ENOENT" });
+  assert.ok((await stat(recent)).isDirectory());
+  assert.ok((await stat(unrelated)).isDirectory());
+  if (ownedForeign) assert.ok((await stat(foreign)).isDirectory(), "another user's spill directory is never removed");
 });
 
 test("clipped SQLite search keeps continuation and spills the complete payload", async (t) => {

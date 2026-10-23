@@ -196,6 +196,21 @@ test("two database connections see each other's changes; archived hot entries su
   assert.deepEqual(first.roots(), ["/tmp/root"]);
 });
 
+test("remembered session roots are bounded to the newest entries", async (t) => {
+  const path = join(await temporary(t), "memoria.sqlite");
+  const db = new MemoryDatabase(path);
+  t.after(() => db.close());
+  const roots = Array.from({ length: 105 }, (_, index) => `/tmp/remembered-root-${String(index).padStart(3, "0")}`);
+  const evicted = db.rememberRoots(roots);
+  const kept = db.roots();
+  assert.equal(evicted.length, 5);
+  assert.deepEqual(evicted.sort(), roots.slice(0, 5).map((root) => root));
+  assert.equal(kept.length, 100);
+  assert.equal(kept.includes("/tmp/remembered-root-004"), false);
+  assert.equal(kept.includes("/tmp/remembered-root-005"), true);
+  assert.equal(kept.includes("/tmp/remembered-root-104"), true);
+});
+
 test("unknown future schema fails without overwriting data", async (t) => {
   const path = join(await temporary(t), "memoria.sqlite");
   const raw = new DatabaseSync(path);

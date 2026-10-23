@@ -4,10 +4,17 @@ import { createIdleCompactor } from './controller.mjs';
 import { createBackgroundGuard } from './background.mjs';
 
 // Standalone runtime: Node built-ins + the host's public Pi API only.
+interface RpcReply {
+  version?: unknown;
+  requestId?: unknown;
+  success?: unknown;
+  data?: unknown;
+}
+
 export default function idleCompaction(pi: ExtensionAPI) {
   const pending = new Set<() => void>();
   let stopped = false;
-  const rpc = (method: string): Promise<any> => new Promise(resolve => {
+  const rpc = (method: string): Promise<unknown> => new Promise(resolve => {
     if (stopped) { resolve(null); return; }
     const requestId = randomUUID();
     let done = false;
@@ -22,8 +29,9 @@ export default function idleCompaction(pi: ExtensionAPI) {
       resolve(value);
     };
     const cancel = () => finish(null);
-    off = pi.events.on(`subagents:rpc:v1:reply:${requestId}`, (reply: any) => {
-      finish(reply?.version === 1 && reply.requestId === requestId && reply.success ? reply.data : null);
+    off = pi.events.on(`subagents:rpc:v1:reply:${requestId}`, (reply: unknown) => {
+      const value = reply as RpcReply | null;
+      finish(value?.version === 1 && value.requestId === requestId && value.success ? value.data : null);
     });
     pending.add(cancel);
     timeout = setTimeout(cancel, 5000);

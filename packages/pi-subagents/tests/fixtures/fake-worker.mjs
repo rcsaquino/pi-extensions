@@ -58,7 +58,7 @@ function waitForResponse(id) {
   return new Promise(resolve => waiting.set(id, resolve));
 }
 
-process.stdin.on('data', chunk => {
+process.stdin.on('data', async chunk => {
   buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk;
   let index;
   while ((index = buffer.indexOf(10)) !== -1) {
@@ -100,6 +100,17 @@ process.stdin.on('data', chunk => {
       if (reply === 'handled') continue;
       if (scenario.exitOnPrompt) { process.exit(1); }
       if (scenario.badJson) { process.stdout.write('not json\n'); continue; }
+      if (scenario.floodBytes) {
+        const chunk = Buffer.alloc(1024 * 1024, 0x78);
+        let left = scenario.floodBytes;
+        while (left > 0) {
+          const part = chunk.subarray(0, Math.min(left, chunk.length));
+          if (!process.stdout.write(part)) await new Promise(resolve => process.stdout.once('drain', resolve));
+          left -= part.length;
+        }
+        await sleep(60000);
+        return;
+      }
       void runTurn();
       continue;
     }

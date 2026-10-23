@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { SubagentsManager } from './manager.ts';
 import { discover } from './registry.ts';
 import { renderSubagentsSection } from './context.ts';
+import { registerSubagentsBackgroundWork } from './background.ts';
 
 function renderList(runs: Awaited<ReturnType<SubagentsManager['list']>>): string {
   if (!runs.runs.length) return 'No subagent runs in this session.';
@@ -17,6 +18,25 @@ function renderList(runs: Awaited<ReturnType<SubagentsManager['list']>>): string
 
 export default function subagents(pi: ExtensionAPI): void {
   let manager = new SubagentsManager(pi);
+  let unregisterBackground: (() => void) | undefined;
+  let backgroundWarningShown = false;
+  let discoveryWarningShown = false;
+  const registerBackground = (ctx?: ExtensionContext) => {
+    unregisterBackground?.();
+    unregisterBackground = undefined;
+    try {
+      unregisterBackground = registerSubagentsBackgroundWork(sessionId => manager.activeWork(sessionId));
+    } catch {
+      // Coordination is optional; a corrupt foreign registry must not break
+      // dispatch. Report one bounded warning without exposing registry contents.
+      if (!backgroundWarningShown) {
+        backgroundWarningShown = true;
+        try {
+          if (ctx?.hasUI) ctx.ui.notify('Subagent background coordination is unavailable; idle compaction stays deferred while subagent tools are present.', 'warning');
+        } catch { /* A UI failure must not break the session. */ }
+      }
+    }
+  };
 
   pi.registerFlag('subagents-max-running', {
     type: 'string', default: '4',
@@ -97,14 +117,31 @@ export default function subagents(pi: ExtensionAPI): void {
     },
   });
 
-  pi.on('before_agent_start', event => {
-    const body = renderSubagentsSection(discover().definitions);
-    if (body) event.systemPromptOptions.sections.subagents = body;
+  pi.on('before_agent_start', (event, ctx) => {
+    try {
+      const body = renderSubagentsSection(discover().definitions);
+      if (body) event.systemPromptOptions.sections.subagents = body;
+    } catch (error) {
+      // A malformed agent directory disables the subagent section, not every
+      // prompt assembly. Dispatch still reports the actionable error lazily.
+      delete event.systemPromptOptions.sections.subagents;
+      if (!discoveryWarningShown) {
+        discoveryWarningShown = true;
+        try {
+          if (ctx?.hasUI) ctx.ui.notify(`Subagent discovery is unavailable: ${(error as Error).message}`, 'warning');
+        } catch { /* A UI failure must not break prompt assembly. */ }
+      }
+    }
   });
 
   pi.on('session_start', async (_event, ctx: ExtensionContext) => {
     if (manager.closed) manager = new SubagentsManager(pi);
     await manager.init(ctx);
+    registerBackground(ctx);
   });
-  pi.on('session_shutdown', async () => { await manager.shutdown(); });
+  pi.on('session_shutdown', async () => {
+    unregisterBackground?.();
+    unregisterBackground = undefined;
+    await manager.shutdown();
+  });
 }

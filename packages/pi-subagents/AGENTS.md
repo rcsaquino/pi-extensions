@@ -14,7 +14,7 @@ npm --prefix packages/pi-subagents test
 npm --prefix packages/pi-subagents run verify
 ```
 
-Tests are offline and use a fake RPC worker. They do spawn real supervisor and worker processes, so they require Linux procfs and a writable temporary root (`PI_SUBAGENTS_TEST_ROOT`). Do not replace the fake worker with a live provider call.
+Tests are offline and use a fake RPC worker. They do spawn real supervisor and worker processes, so they require Linux procfs and a writable temporary root (`PI_SUBAGENTS_TEST_ROOT`). The maintained baseline is Node 26.12.0 on Pi 1.3.0. Do not replace the fake worker with a live provider call. Test files and package-local scripts are checkout-only and excluded from the tarball.
 
 ## Architecture
 
@@ -23,6 +23,7 @@ Tests are offline and use a fake RPC worker. They do spawn real supervisor and w
 - `src/manager.ts`: dispatch, discovery-driven validation, supervisor spawn and ready handshake, reconciliation, notices, steering, cancellation, retention.
 - `src/registry.ts`: `prompt.md` discovery, optional `description.md` summaries, and strict `agent.json` validation.
 - `src/context.ts`: renders the `<subagents>` system prompt section from described definitions.
+- `src/background.ts`: the neutral synchronous `idle-compaction.background-work.v1` provider; no RPC or foreign state.
 - `src/model.ts`: provider/model/thinking resolution against the model registry.
 - `src/store.ts`: atomic records, run ids, exclusive run directories, record reading.
 - `src/proc.ts`: `/proc` identity, boot-id checks, process-group ownership and signals.
@@ -40,19 +41,21 @@ Tests are offline and use a fake RPC worker. They do spawn real supervisor and w
 - Every group kill verifies the recorded boot id, the process session id, and start ticks. Never signal the extension's own group.
 - The supervisor dies with the parent Pi process and records `parent_gone`; an extension reload or session switch does not kill runs.
 - `task.json` is written only by the extension, atomically, with unknown fields preserved. The supervisor writes only its own run files.
-- Notices are at-least-once per settled run, deduplicated within the process, scoped to the dispatching session, and framed as untrusted.
+- Notices are at-least-once per settled run while delivery remains possible, deduplicated within the process, scoped to the dispatching session, and framed as untrusted. A `sendMessage` failure leaves the record `pending` with bounded exponential backoff (five attempts); terminal failure is recorded as `failed`, never silently dropped. The guarantee is documented in README/SPEC and must match the code.
 - The worker inherits the service environment (including provider credentials), but not conversation history, memory, transport extensions, or the parent's appended system prompt.
 - `PI_SUBAGENTS_WORKER=1` is set for every worker; dispatch refuses to run when it is set, so recursion is blocked.
 - Capability lives only in `agent.json`. No dispatch field may widen it.
-- Retention never removes a running run, a pending notice, or an unsupported schema version. Other sessions' runs are reconciled only when that session is opened.
+- The background provider is registered on session start and removed on shutdown. It must stay synchronous, same-session scoped, and limited to `{ id, sessionId }`; never call the retired legacy RPC from this package. Unreadable roots and malformed/incompatible records must throw (fail closed), never return an empty idle snapshot. Registration failure must stay non-fatal with one bounded warning.
+- Retention never removes a running run, a pending notice, or an unsupported schema version. It releases the matching per-run `dirs`/`notified`/`exitSeen`/`chains` entries, and shutdown clears those maps. Other sessions' runs are reconciled only when that session is opened.
 
 ## Regression targets
 
-- `registry.test.ts`: defaults, unknown keys, extension/skill path rules, tool denylist, model patterns, thinking, bounds, discovery warnings.
+- `registry.test.ts`: defaults, unknown keys, extension/skill path rules, tool denylist, model patterns, thinking, bounds, discovery warnings, description cap, and agent-directory normalization.
+- `background.test.ts`: synchronous provider contract, replacement-safe disposal, session-scoped active-run snapshots, and fail-closed unreadable/malformed state.
 - `model.test.ts`: inherited and qualified selections, unique/ambiguous bare ids, credentials, thinking overrides.
 - `store.test.ts`: run-id shape, private atomic writes, exclusive directories, record round-trip, exit mapping, notice framing and caps.
-- `supervisor.test.ts`: settlement, empty reports, final-generation capture, dialogs, mid-run and final-scan steering, timeout, turn limit, SIGTERM, parent death, vanished run directory, protocol failure, spawn failure, log caps, abort escalation.
-- `extension.test.ts`: dispatch artifacts, notice delivery and dedup, result pagination, steering, cancel, concurrency limits, validation errors, session ownership, incompatible records, retention, synchronous spawn failure.
+- `supervisor.test.ts`: settlement, empty reports, final-generation capture, dialogs, mid-run and final-scan steering, timeout, turn limit, SIGTERM, parent death, vanished run directory, protocol failure, unterminated-flood buffer/RSS cap, spawn failure, log caps, abort escalation.
+- `extension.test.ts`: dispatch artifacts, notice delivery/dedup/retry, surrogate-safe result pagination, steering, cancel, concurrent admission and the running cap, guarded malformed agent-directory startup, validation errors, session ownership, incompatible records, retention, synchronous spawn failure.
 - `loader.test.ts`: distributable entry loads without starting runtime resources.
 
 ## Boundaries

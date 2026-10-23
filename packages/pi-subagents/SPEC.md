@@ -81,7 +81,9 @@ Eve, and never addresses sir.
 ```
 
 Root resolution: `$PI_CODING_AGENT_DIR/subagents`, defaulting to
-`~/.pi/agent/subagents`. No other root.
+`~/.pi/agent/subagents`. No other root. A relative `PI_CODING_AGENT_DIR` is
+rejected; prompt assembly then omits the subagent section and dispatch reports
+the error, so one malformed override does not fail every turn.
 
 The root may be absent or empty. Both are valid states: the extension loads,
 lists no agents, and rejects dispatch with "no agents defined".
@@ -114,7 +116,7 @@ Missing or non-regular `prompt.md`: not listed, with a validation warning.
 
 - `description.md` is optional, 1 byte to 4 KiB, plain text.
 - Whitespace is collapsed to a single line; the rendered text is capped at 400
-  characters on a word boundary with an ellipsis.
+  code points on a word boundary, including the trailing ellipsis when truncated.
 - Before every agent run, discovery runs and described definitions are rendered
   as `- <name>: <description>` in the `subagents` system prompt section, which
   Pi wraps as `<subagents>...</subagents>`.
@@ -275,7 +277,10 @@ The supervisor is a strict JSONL client:
 - Read stdout as a byte stream and split only on LF, stripping one optional CR.
   Never use `readline`, which also splits on U+2028 and U+2029. Decode with a
   streaming UTF-8 decoder so a multibyte character is never split across chunks.
-- Buffer partial lines. Reject any line over 8 MiB, log, abort, exit 4.
+- Frame chunks into one fixed 8 MiB buffer; never concatenate an unbounded
+  number of chunks. Reject any line or unterminated buffer over 8 MiB, log,
+  destroy stdout, release the buffer, and exit 4 without waiting the normal
+  10-second worker-exit grace.
 - EOF on stdout before `agent_settled` is a protocol failure, even if the worker
   process has not exited yet.
 - Drain stdout continuously; a stalled reader stalls the worker.
@@ -617,6 +622,7 @@ on every notice or status update.
 | `notice` | enum | Absent while running or after a spawn failure; pending, sent, or failed after settlement. |
 | `noticeAttempts` | integer | Incremented before each injection attempt. |
 | `noticeAt` | ISO string | Optional, time of the last successful injection. |
+| `noticeNextAttemptAt` | ISO string | Optional, earliest retry time after a transport failure. |
 
 Unknown fields are preserved on rewrite. A missing or unreadable `task.json`
 makes the run invisible to `list`; it is never reconstructed from logs. The
@@ -750,12 +756,17 @@ Injection rules:
   session. The id is read again immediately before `sendMessage`; a mismatch
   leaves the notice `pending`. A notice for a closed session is attempted when
   that session is next opened.
-- Injection is at-least-once per settled run, not per transport. The extension
-  records `noticeAttempts` before the awaited call and `notice` plus `noticeAt`
-  after it, deduplicates by run id within the process, and tolerates a repeat
-  after a crash.
-- A failed `sendMessage` leaves `notice: failed` visible in `status`; it does not
-  retry blindly.
+- Injection is at-least-once per settled run while delivery remains possible,
+  not per transport. The extension records `noticeAttempts` before the awaited
+  call and `notice` plus `noticeAt` after it, deduplicates by run id within the
+  process, and tolerates a repeat after a crash.
+- A failed `sendMessage` leaves `notice: pending` with `noticeNextAttemptAt` and
+  retries with bounded exponential backoff (1 s, 2 s, 4 s, 8 s), up to five
+  attempts. A successful retry is marked `sent` and is not duplicated in the
+  same process. After the fifth failure the record is marked `failed` and stays
+  visible in `status`; the full report remains available through `result`.
+- A record left `failed` by an older version with fewer than five attempts is
+  retried once the current session reconciles it.
 - A failed, cancelled, or orphaned run always produces a notice. The exceptions
   are a spawn failure returned synchronously by `subagent_dispatch`, because the
   caller already has the error, and a run whose directory was deleted, because
@@ -766,6 +777,20 @@ Injection rules:
 mirrors that session's settled assistant turns, including this package's
 notices. It has no claim-owner listener, does not inspect this custom type, and
 requires no rename. Delivery belongs entirely to the transport.
+
+### 11.1 Background-work coordination
+
+On `session_start`, the extension registers a synchronous provider named
+`pi-subagents` under the neutral process-local registry key
+`Symbol.for("idle-compaction.background-work.v1")`. `listActiveWork(context)`
+returns at most the runs with `status: "running"` whose `sessionId` or
+`sessionFile` matches `context.sessionId`, as `{ id, sessionId }` items. It reads
+only this package's run records and never calls the retired legacy RPC. The
+provider is unregistered on `session_shutdown`. A corrupt foreign registry is
+ignored so dispatch remains usable, with one bounded warning; `pi-idle-compaction`
+then fails closed for current subagent tools rather than assuming idleness. An
+unreadable run root or malformed/incompatible `task.json` throws instead of
+returning an empty snapshot.
 
 ## 12. Tools
 
@@ -844,7 +869,8 @@ current session; a run from another session is reported as not found.
   returns `incompatible` without interpreting its fields.
 - `result`: pages `report.md` only. 12000 characters by default, with an
   `offset` for continuation; the result includes `totalChars` and
-  `nextOffset`. A running run returns its status and no report. A terminal run
+  `nextOffset`. Page boundaries back up rather than splitting a UTF-16 surrogate
+  pair. A running run returns its status and no report. A terminal run
   with no report returns its status, reason, and the report path if one exists.
   An incompatible run returns `incompatible` and no report.
 - `cancel`: checks the `settling` marker, then records `cancelRequestedAt` and
@@ -1126,13 +1152,24 @@ Expected implementation size: about 1,500 lines of source plus tests.
 
 ## 20. Decisions and changelog
 
+Draft 14 to draft 15:
+
+- Added the synchronous `idle-compaction.background-work.v1` provider so current
+  `pi-idle-compaction` sees same-session running workers without a legacy RPC.
+- Made notice transport failures retryable with bounded exponential backoff and
+  a visible `noticeNextAttemptAt`; the final failure is `failed`, not silent.
+- Kept the 400-code-point description cap inclusive of its trailing ellipsis.
+- Added Linux-only `os` metadata, a Pi `>=1.2.0 <2` host-peer floor, and a
+  bounded `typebox` peer range.
+
 Draft 13 to draft 14:
 
 - Renamed the definition prompt file from `PROMPT.md` to `prompt.md`.
 - Added an optional `description.md` per definition. Before each agent run,
   described definitions are listed as `- <name>: <description>` in the
   `subagents` system prompt section (`<subagents>...</subagents>`). Whitespace
-  is collapsed to one line and the text is capped at 400 characters.
+  is collapsed to one line and the text is capped at 400 code points including
+  a trailing ellipsis.
 - A definition without `description.md` remains dispatchable but is not listed
   in the prompt. No section is added when nothing is described.
 

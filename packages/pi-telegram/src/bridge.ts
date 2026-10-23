@@ -4,13 +4,14 @@ import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { AgentActivityOutcome, ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
-import { ApiError, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type OutgoingFile, type TgMessage, type TgUpdate, type TgUser } from "./api.ts";
+import { ApiError, MAX_ATTACHMENT_TOTAL_BYTES, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type OutgoingFile, type TgMessage, type TgUpdate, type TgUser } from "./api.ts";
 import { type Config, DeliveryRefusal, type DeliveryRefusalCode, SafeError, redact, safeError, stamp } from "./config.ts";
 import { ConnectionLease } from "./connection-lease.ts";
 import { HumanInputScope } from "./human-input.ts";
 import { formatReplyContext } from "./reply-context.ts";
 import { SentMediaRegistry, type SentMediaRecord } from "./sent-media.ts";
 import { DeliveryLedger, type DeliveryContext, type DeliveryEvent } from "./delivery-ledger.ts";
+import { assertSpeechLength } from "./voice.ts";
 
 const ALBUM_WAIT_MS = 1000;
 /** Timestamp metadata is emitted at most once per session in any 30-minute window. */
@@ -78,7 +79,11 @@ export class TelegramBridge {
     const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
     this.directory = resolve(config.dataDir, bot);
     this.stateDirectory = resolve(config.stateDir || config.dataDir, bot);
-    this.destination = Number([...config.allowed][0]);
+    const destination = config.destination ?? (config.allowed.size === 1 ? Number([...config.allowed][0]) : undefined);
+    if (!destination || !Number.isSafeInteger(destination) || destination <= 0) {
+      throw new SafeError("Exactly one destination chat is required; set TELEGRAM_DESTINATION_ID.");
+    }
+    this.destination = destination;
   }
 
   private listen(): void {
@@ -273,7 +278,15 @@ export class TelegramBridge {
     return { reply: reply.diagnosticId, operation, parent, revision: reply.revision || 0, task: reply.taskId };
   }
 
+  private validId(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  }
+
   private async receive(message: TgMessage): Promise<void> {
+    // Telegram-shaped values are untrusted input. Validate every numeric
+    // identity before it can reach a download path or the message queue.
+    if (!this.validId(message?.message_id) || !this.validId(message?.date) ||
+        !this.validId(message?.chat?.id) || (message.from !== undefined && !this.validId(message.from.id))) return;
     if (!this.authorized(message)) return;
     // Slash-prefixed text is ordinary input, never transport control or a Pi command.
     if (!message.text && !message.caption && !message.photo && !message.document && !message.video && !message.animation && !message.video_note && !message.voice && !message.audio) {
@@ -322,7 +335,9 @@ export class TelegramBridge {
       const file = photo || message.document || message.video || message.animation || message.video_note || message.voice || message.audio;
       if (!file) continue;
       const { data, filename } = await this.api.download(file, signal);
-      const path = resolve(this.directory, `${message.message_id}-${randomUUID()}-${filename}`);
+      // Never interpolate a provider-supplied numeric field into a path; the
+      // random UUID supplies uniqueness and safeFilename supplies the basename.
+      const path = resolve(this.directory, `${randomUUID()}-${filename}`);
       await writeFile(path, data, { mode: 0o600, flag: "wx" });
       paths.push(path);
       const kind = photo ? "photo" : message.document ? "document" : message.video ? "video" : message.animation ? "animation"
@@ -446,13 +461,12 @@ export class TelegramBridge {
 
   userStart(message: { role: string; content?: unknown; customType?: string; details?: unknown; timestamp?: number }): void {
     if (message.role === "custom") {
-      // A notice queued before the current final turn is part of that continuation;
-      // one arriving after the final belongs to a new turn and must not overwrite it.
+      // A custom message starts a continuation only after the prior final was generated.
+      // Its timestamp is creation time when it was queued as a follow-up, so delivery
+      // order, not clock order, decides whether the final must be preserved.
       const request = this.run;
       const final = request?.final?.trim();
-      const at = typeof message.timestamp === "number" ? message.timestamp : Date.now();
-      if (request?.started && !request.controller.signal.aborted && request.outcome === "completed" && !request.spoke && final &&
-        at >= (request.finalAt || 0)) {
+      if (request?.started && !request.controller.signal.aborted && request.outcome === "completed" && !request.spoke && final) {
         (request.pendingFinals ||= []).push({ text: final, revision: request.revision || 0 });
         request.final = undefined;
       }
@@ -646,11 +660,14 @@ export class TelegramBridge {
   }
 
   async send(params: SendParams, signal?: AbortSignal): Promise<void> {
+    // Size/aggregate validation precedes context admission so oversized input is
+    // refused without touching the transport even when no turn is active.
     const request = this.run;
-    this.assertDelivery(request, signal);
     const modes = [Boolean(params.path), params.paths !== undefined, Boolean(params.speech)].filter(Boolean).length;
     if (modes !== 1) throw new SafeError("Provide exactly one of path, paths or speech.");
     if (params.paths && (params.paths.length < 1 || params.paths.length > 10)) throw new SafeError("Provide 1–10 attachment paths.");
+    if (params.speech) assertSpeechLength(params.speech);
+    this.assertDelivery(request, signal);
     const signals = [this.controller.signal, request.controller.signal];
     if (signal) signals.push(signal);
     const combined = AbortSignal.any(signals);
@@ -662,7 +679,15 @@ export class TelegramBridge {
         await this.api.speak(request.chat, params.speech, combined, beforeUpload, context);
         request.spoke = request.delivered = true;
       } else {
-        const files = await Promise.all((params.paths || [params.path!]).map(path => outboundFile(this.ctx.cwd, path, params.kind, this.config.dataDir, combined)));
+        // Read sequentially against one aggregate budget, so ten large files
+        // cannot allocate several hundred megabytes before the first refusal.
+        const files: OutgoingFile[] = [];
+        let total = 0;
+        for (const path of params.paths || [params.path!]) {
+          const file = await outboundFile(this.ctx.cwd, path, params.kind, this.config.dataDir, combined, MAX_ATTACHMENT_TOTAL_BYTES - total);
+          total += file.data.length;
+          files.push(file);
+        }
         beforeUpload();
         const chat = request.chat;
         const sent = await this.api.sendGroup(chat, files, combined, beforeUpload, { ...context, operation: files.some(file => file.kind === "voice") ? "voice" : "attachment" });

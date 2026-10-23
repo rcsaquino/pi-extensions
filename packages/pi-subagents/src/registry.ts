@@ -15,9 +15,20 @@ const DESCRIPTION = 'description.md';
 const DESCRIPTION_READ_MAX = 4 * 1024;
 const DESCRIPTION_RENDER_MAX = 400;
 
+/** Normalize PI_CODING_AGENT_DIR like memoria: expand ~ and refuse a relative path. */
+export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.PI_CODING_AGENT_DIR?.trim();
+  if (!configured) return resolve(homedir(), '.pi', 'agent');
+  const expanded = configured === '~' ? homedir()
+    : configured.startsWith('~/') ? join(homedir(), configured.slice(2)) : configured;
+  if (!expanded || !isAbsolute(expanded)) {
+    throw new Error('PI_CODING_AGENT_DIR must be an absolute path (or start with ~/).');
+  }
+  return resolve(expanded);
+}
+
 export function subagentsRoot(): string {
-  const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
-  return join(resolve(agentDir), 'subagents');
+  return join(agentDir(), 'subagents');
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -112,7 +123,8 @@ function descriptionFile(dir: string): string | undefined {
     const text = readFileSync(path, 'utf8').replace(/\s+/g, ' ').trim();
     if (!text) return undefined;
     if (text.length <= DESCRIPTION_RENDER_MAX) return text;
-    const cut = text.slice(0, DESCRIPTION_RENDER_MAX);
+    // Keep the ellipsis inside the advertised 400-code-point budget.
+    const cut = text.slice(0, DESCRIPTION_RENDER_MAX - 1);
     const boundary = cut.lastIndexOf(' ');
     return `${(boundary > 0 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
   } catch {

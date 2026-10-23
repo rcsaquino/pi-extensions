@@ -17,8 +17,8 @@ pi-memoria gives Pi one memory shared across every project: instructions that mu
 
 ## Requirements
 
-- **Node.js 22.19+** (uses `node:sqlite`; earlier baselines 22.19/24.20, maintained offline suite 26.11.1).
-- A Node-based **Pi** host. The pinned development baseline is 1.2.0, which the maintained offline suite uses. Standalone/Bun builds are not validated with `node:sqlite`.
+- **Node.js 22.19+** (uses `node:sqlite`; earlier baselines 22.19/24.20 are historical, and the maintained offline suite uses 26.12.0).
+- A Node-based **Pi** host. The pinned development baseline is Pi 1.3.0, which the maintained offline suite uses. Earlier 1.2.0 runs are historical. Standalone/Bun builds are not validated with `node:sqlite`.
 - **ripgrep (`rg`)**, either on PATH or in Pi's managed `<agent-dir>/bin/` directory, for session search.
 
 ## Installation
@@ -123,7 +123,7 @@ Tool replies are compact; oversized results spill to a private `pi-memoria-resul
 - **Add:** `store` is `long_term` (default) or `hot`; SQLite accepts `tags` and `source`. Identical content is reused with `created: false`; edits are the only way to change a fact. SQLite limits: 20,000 characters, 30 tags, 2,000-character source.
 - **Edit/delete:** pass an `id` (`m_` for SQLite, `h_` for hot) and only the fields to change. `expected_revision` or hot `expected_content` catches concurrent writes. Deletion never archives hot bullets or erases sessions.
 - **Search:** `memoria_search` searches SQLite only; hot `h_` entries are injected from `MEMORY.md` and cannot be searched or read by this tool. `mode` is `any` (default), `all`, `phrase`, or `literal`; a miss falls back to a literal scan and reports the mode used. `tags` match exactly and case-sensitively. Read an SQLite memory with its `m_` ID; long content paginates via `text_offset`.
-- **Sessions:** decoded JSON is searched, including hidden, ignored, and inactive-branch files. Results carry path/line citations. `exhausted: true` means every accessible root was scanned without errors; warnings mean partial results, never absence.
+- **Sessions:** decoded JSON is searched, including hidden, ignored, and inactive-branch files. Results carry path/line citations. Symlinks are never followed during recursive search, so a link to an outside tree is not traversed or read; an in-root symlinked archive remains searchable through its canonical target path. Reads authorize only the canonical path, and a file that disappears mid-search is skipped with a warning. `exhausted: true` means every accessible root was scanned without errors; warnings mean partial results, never absence.
 
 ## Configuration
 
@@ -151,7 +151,9 @@ Session search prefers Pi's managed `<agent-dir>/bin/rg` (`rg.exe` on Windows), 
 
 Memoria never downloads binaries or changes PATH. Normal interactive Pi startup can provision missing ripgrep on supported platforms. On an offline first start, after a failed download, or where Pi cannot provision it (such as Android/Termux), install system ripgrep or provision the managed binary separately. Android/Termux users can use `pkg install ripgrep`. Reading an original entry with `action=read` does not require ripgrep.
 
-The default session root is `<agent-dir>/sessions`; roots Pi uses are remembered across projects. Changing `PI_MEMORIA_DIR` selects a different store without migrating the old one, project `cwd` is never used to choose it, and no data is sent over the network.
+The default session root is `<agent-dir>/sessions`; roots Pi uses are remembered across projects, capped at the newest 100 entries. Configured roots are re-added after session-derived roots, so an explicitly configured archive is never the entry evicted by that bound; when old custom roots are evicted, the prompt status reports the count and points to `PI_MEMORIA_SESSION_DIRS`. Changing `PI_MEMORIA_DIR` selects a different store without migrating the old one, project `cwd` is never used to choose it, and no data is sent over the network. A malformed path override falls back to the host default paths and is reported in the prompt status instead of escaping the session handler.
+
+Oversized tool results spill a private complete payload under the OS temporary directory. Spill directories are pruned to at most 100 entries and 24 hours, checked at most once per hour before a new spill; on a shared temporary directory, only directories owned by the current user are removed. Crash-left `pi-memoria-inspection-*` startup snapshots are pruned after one hour with the same ownership check.
 
 </details>
 
@@ -169,7 +171,7 @@ The default session root is `<agent-dir>/sessions`; roots Pi uses are remembered
 | Session match near the end of the corpus | 26.776 ms | 34.777 ms |
 | Absent session term, complete scan | 4.325 ms | 5.172 ms |
 
-`npm run bench` recreates this synthetic corpus in a temporary directory. Warm-cache medians on Linux, Node 24.20, Ryzen 5 7500F, including `rg` startup. Indexed lookups stay fast; scans grow with corpus size. Not a performance guarantee.
+`npm run bench` recreates this synthetic corpus in a temporary directory. These historical warm-cache medians were measured on Linux, Node 24.20, Ryzen 5 7500F, including `rg` startup; they are not current Node 26.12/Pi 1.3.0 acceptance evidence. Indexed lookups stay fast; scans grow with corpus size. Not a performance guarantee.
 
 </details>
 
@@ -186,7 +188,7 @@ npm --prefix packages/pi-memoria run bench
 
 No package lockfile is currently committed, so `npm ci` is not a fresh-checkout setup command. The shared host-link helper preserves working dependencies and only repairs missing/broken links.
 
-There is no build step: Pi loads `index.ts` directly. `src/database.ts`, `src/hot-memory.ts`, and `src/sessions.ts` own the storage layers; `index.ts` wires them to lifecycle events and the tool schemas. Tests use temporary directories, real SQLite FTS5, real `rg`, concurrent writers, and Pi's extension loader. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
+There is no build step: Pi loads `index.ts` directly. `src/database.ts`, `src/hot-memory.ts`, and `src/sessions.ts` own the storage layers; `index.ts` wires them to lifecycle events and the tool schemas. Tests use temporary directories, real SQLite FTS5, real `rg`, concurrent writers, and Pi's extension loader. Test and benchmark files are checkout-only and excluded from the published tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
 
 ## Support and contact
 

@@ -2,16 +2,16 @@
 
 # pi-extensions
 
-**Independent extensions for [Pi](https://github.com/earendil-works/pi): memory, Telegram, image generation, idle compaction, and subagents.**
+**Independent extensions for [Pi](https://github.com/earendil-works/pi): memory, Telegram, image generation, idle compaction, subagents, and skill lifecycle.**
 
-[![Node.js](https://img.shields.io/badge/full%20suite-Node.js%2026.10%2B-3c873a?style=flat-square)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/full%20suite-Node.js%2026.12%2B-3c873a?style=flat-square)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
 [Packages](#packages) · [Installation](#installation) · [Development](#development) · [Safety](#safety-and-runtime-data) · [Support](#support-and-contact)
 
 </div>
 
-One repository, five separately versioned Pi packages. Install only the extensions you need. The root is a private npm development workspace, not an all-in-one Pi extension or a published npm package.
+One repository, six separately versioned Pi packages. Install only the extensions you need. The root is a private npm development workspace, not an all-in-one Pi extension or a published npm package.
 
 ## Packages
 
@@ -20,6 +20,7 @@ One repository, five separately versioned Pi packages. Install only the extensio
 - **[@rcsaquino/pi-image](packages/pi-image/README.md)**: text-to-image and image-to-image generation via the OpenRouter Images API, using the stored OpenRouter login.
 - **[pi-idle-compaction](packages/pi-idle-compaction/README.md)**: native compaction after an eligible idle period, with conservative background-work checks.
 - **[@rcsaquino/pi-subagents](packages/pi-subagents/README.md)**: supervised headless Pi workers in separate processes, with steerable runs, session-scoped notices, and final reports. Linux only; ships no agent definitions.
+- **[pi-skill-workshop](packages/pi-skill-workshop/README.md)**: foreground skill lifecycle management with snapshots, reversible archive/restore, change history, and manual idle cleanup. No background reviewer or timers.
 
 Each package owns its manifest, entry point, runtime dependencies, tests, README, and agent instructions. Versions and release readiness are independent; inclusion here does not imply npm publication or production activation.
 
@@ -27,14 +28,14 @@ Each package owns its manifest, entry point, runtime dependencies, tests, README
 
 For all packages and the complete test suite:
 
-- **Node.js 26.10.x or newer within the 26.x line**: required by the current idle-compaction manifest. Other packages have lower minimums.
-- A Node-based **Pi** installation using the `@earendil-works` packages. The combined offline suite is exercised against Pi 1.2.0; earlier 1.0.x/1.1.x compatibility depends on each package's declared peer range and notes.
+- **Node.js 26.12.x or newer within the 26.x line**: the maintained offline suite is exercised on Node 26.12.0; the current idle-compaction manifest requires 26.12+. Other packages have lower minimums.
+- A Node-based **Pi** installation using the `@earendil-works` packages. The maintained offline suite is exercised against Pi 1.3.0; other compatibility depends on each package's declared peer range and notes.
 - **npm** for development tooling.
 - **ripgrep (`rg`)** for memoria session search and its tests.
 - On Linux, util-linux-compatible **`flock --no-fork`** for Telegram ownership. **ffmpeg** is needed for long speech assembly and the corresponding offline tests.
 
 > [!NOTE]
-> Package peer ranges are not uniform. Some manifests retain 0.x development baselines even though this checkout passes offline checks on Pi 1.2.0. Read the package requirements before installing; a successful combined test run is not proof of every matching runtime or platform.
+> Package peer ranges are not uniform. Some manifests retain wider or legacy peer branches even though this checkout passes offline checks on Pi 1.3.0. Read the package requirements before installing; a successful combined test run is not proof of every matching runtime or platform.
 
 ## Installation
 
@@ -61,7 +62,7 @@ pi remove /absolute/path/to/pi-extensions/packages/pi-subagents
 Removal does not erase that extension's runtime data.
 
 > [!IMPORTANT]
-> Do not install the repository root expecting all five extensions to load. Do not register a package and a copied extension-directory entry for the same implementation. Cloning or editing files is not activation, and a service restart needs separate approval.
+> Do not install the repository root expecting all six extensions to load. Do not register a package and a copied extension-directory entry for the same implementation. Cloning or editing files is not activation, and a service restart needs separate approval.
 
 ## Development
 
@@ -89,7 +90,9 @@ npm test
 npm run verify
 ```
 
-The runner invokes each package's `check` or `typecheck` and `test` scripts sequentially. Root checks also run `npm run check:publication`, an offline regression suite for names, release metadata, distributable files, and documentation links. It sets `PI_OFFLINE=1`, `TMPDIR`, `PI_BACKGROUND_TEST_ROOT`, and `TELEGRAM_TEST_DIR` for isolated tests. Shared scratch defaults to disposable `/tmp/pi-extensions-tests`; override it with `PI_EXTENSIONS_TEST_ROOT`.
+The runner invokes each package's `check` or `typecheck` and `test` scripts sequentially. Root checks also run `npm run check:integration`, a two-package contract test for the neutral idle-compaction/subagents provider, and `npm run check:publication`, an offline regression suite for names, release metadata, distributable files, and documentation links. They set `PI_OFFLINE=1`, `TMPDIR`, `PI_BACKGROUND_TEST_ROOT`, and `TELEGRAM_TEST_DIR` for isolated tests. Shared scratch defaults to disposable `/tmp/pi-extensions-tests`; override it with `PI_EXTENSIONS_TEST_ROOT`.
+
+Package development and test scripts are checkout-only: they reference `tests/` or local `scripts/` files that are excluded from published tarballs. `npm pack`/`npm install` of a release is not expected to run them.
 
 To focus on one package:
 
@@ -111,7 +114,7 @@ Extensions execute with Pi's OS permissions. They are not sandboxes, and in-proc
 - Keep credentials, real memory, conversation archives, Telegram downloads/cursors/locks, and private runtime state outside source control.
 - Keep tests isolated from live providers, Telegram pollers, the real skill library, and global agent settings.
 - Background tasks incur normal model/tool usage and stop when their host exits. Idle compaction can incur a native summarization request when it runs.
-- Background-task source does not lock workspace/resources or gate authorized foreground operations behind workers. Other integrations retain their independent admission/ownership contracts (for example Telegram's single poller). Staged publication validates detected stale bases but has no multi-file transaction or exclusion against concurrent edits.
+- Background-task source does not lock workspace/resources or gate authorized foreground operations behind workers. Other integrations retain their independent admission/ownership contracts (for example Telegram's single poller).
 - Never delete an unknown active lock, automatically replay uncertain work, or describe an offline check as live acceptance.
 
 On the maintained deployment, old workspace source names remain compatibility symlinks into `packages/`. Existing registrations and deployed copies were preserved during migration. Review dependent settings, lazy imports, and helper scripts before removing those aliases. Local history archives and private migration reports are not part of the shareable source tree.

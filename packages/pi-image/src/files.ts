@@ -1,6 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { link, lstat, mkdir, open, realpath, rename, rm, unlink } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { SafeError } from "./errors.ts";
+import { OUTPUT_ESCAPE, rejectSymlinkComponents, within } from "./paths.ts";
 
 export const MIN_IMAGE_BYTES = 1024;
 
@@ -45,17 +48,99 @@ export interface SavedImage {
   mime: SavedMime;
 }
 
+export interface SaveImageOptions {
+  /** Canonical working directory; when present the created directory is rechecked against it. */
+  root?: string;
+  /** Replace an existing regular file. Off by default, so a save never destroys an earlier image implicitly. */
+  overwrite?: boolean;
+}
+
 /**
  * Verify PNG/JPEG bytes and size, then save under the workspace directory.
+ * When a root is supplied, the actual destination parent is canonicalized and
+ * rechecked after creation; symlink parents and a symlink final component are
+ * refused. O_NOFOLLOW closes the final-component check/write race on Linux.
  * Returns the saved path and metadata only, never the bytes.
  */
-export async function saveImage(directory: string, data: Buffer, prompt: string, filename?: string): Promise<SavedImage> {
+export async function saveImage(
+  directory: string,
+  data: Buffer,
+  prompt: string,
+  filename?: string,
+  options: SaveImageOptions = {},
+): Promise<SavedImage> {
   const mime = detectSavedMime(data);
   if (!mime) throw new SafeError("The provider did not return PNG or JPEG image bytes.");
   if (data.length < MIN_IMAGE_BYTES) throw new SafeError("The provider returned an image too small to be usable.");
+  const root = options.root;
+  if (root && !within(root, resolve(directory))) throw new SafeError(OUTPUT_ESCAPE);
   await mkdir(directory, { recursive: true });
-  const name = filename ? safeFilename(filename.replace(/\.[a-z0-9]+$/i, ""), mime) : `image-${slugify(prompt)}-${stampSlug()}.${mime === "image/png" ? "png" : "jpg"}`;
-  const path = join(directory, name);
-  await writeFile(path, data, { mode: 0o600 });
+  const actual = await realpath(directory).catch(() => { throw new SafeError("The output directory could not be resolved."); });
+  if (root) {
+    if (!within(root, actual)) throw new SafeError(OUTPUT_ESCAPE);
+    // Recheck the lexical path after creation so a symlinked parent (including
+    // the default artifacts/ directory) is refused even when it points inside.
+    await rejectSymlinkComponents(root, resolve(directory));
+    await rejectSymlinkComponents(root, actual);
+  } else {
+    const inspected = await lstat(directory);
+    if (inspected.isSymbolicLink()) throw new SafeError("Output paths must not traverse a symbolic link.");
+  }
+  const extension = mime === "image/png" ? "png" : "jpg";
+  const name = filename
+    ? safeFilename(filename.replace(/\.[a-z0-9]+$/i, ""), mime)
+    : `image-${slugify(prompt)}-${stampSlug()}-${randomBytes(3).toString("hex")}.${extension}`;
+  const path = join(actual, name);
+  let existing;
+  try {
+    existing = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (existing) {
+    if (existing.isSymbolicLink()) throw new SafeError("Output paths must not be symbolic links.");
+    if (existing.isDirectory()) throw new SafeError("Output path must be a regular file.");
+    if (!existing.isFile()) throw new SafeError("Output path must be a regular file.");
+    if (!options.overwrite) throw new SafeError("Output file already exists; pass overwrite: true to replace it.");
+  }
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  // Never truncate the destination in place: a complete, fsynced temp file is
+  // linked (new name) or renamed (explicit overwrite) only after the write.
+  const temporary = join(actual, `.${name}.${randomBytes(6).toString("hex")}.tmp`);
+  let handle;
+  try {
+    handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new SafeError("Output paths must not be symbolic links.");
+    throw error;
+  }
+  try {
+    await handle.writeFile(data);
+    await handle.chmod(0o600);
+    await handle.sync();
+  } catch (error) {
+    await handle.close().catch(() => {});
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  await handle.close();
+  try {
+    if (options.overwrite) {
+      await rename(temporary, path);
+    } else {
+      try {
+        await link(temporary, path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new SafeError("Output file already exists; pass overwrite: true to replace it.");
+        }
+        throw error;
+      }
+      await unlink(temporary);
+    }
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
   return { path, bytes: data.length, mime };
 }

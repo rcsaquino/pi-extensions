@@ -54,7 +54,7 @@ test("real SDK image normalization preserves admitted reply ownership, queues, s
   const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager: settings, noExtensions: true, noSkills: true, noThemes: true,
     noPromptTemplates: true, noContextFiles: true, extensionFactories: [pi => {
       pi.on("session_start", (_event, ctx: ExtensionContext) => {
-        bridge = new TelegramBridge(pi, ctx, { token: "INERT-IMAGE-FIXTURE", allowed: new Set(["123", "456"]), dataDir: resolve(root, "downloads") }, async (url, init) => {
+        bridge = new TelegramBridge(pi, ctx, { token: "INERT-IMAGE-FIXTURE", allowed: new Set(["123", "456"]), destination: 123, dataDir: resolve(root, "downloads") }, async (url, init) => {
           const method = String(url).split("/").at(-1);
           assert.ok(method === "sendMessage" || method === "sendChatAction", "No poller or live HTTP is allowed");
           if (method === "sendMessage") sent.push(JSON.parse(init!.body as string));

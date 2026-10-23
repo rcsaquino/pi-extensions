@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, mkdir, open, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { readOpenRouterKey } from "../src/auth.ts";
-import { generateImageBytes } from "../src/client.ts";
+import { agentDir, readOpenRouterKey } from "../src/auth.ts";
+import { assertSafeDownloadUrl, generateImageBytes, isPrivateAddress } from "../src/client.ts";
 import { redactKey, safeError, SafeError } from "../src/errors.ts";
 import { detectSavedMime, saveImage, slugify } from "../src/files.ts";
-import { readReferenceImages, resolveOutputPath, validateModel, validatePrompt, validateSize } from "../src/validate.ts";
+import { MAX_REFERENCE_TOTAL_BYTES, readReferenceImages, resolveOutputPath, validateModel, validatePrompt, validateSize } from "../src/validate.ts";
 
 const scratch = process.env.PI_IMAGE_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-image-tests");
 await mkdir(scratch, { recursive: true });
@@ -22,6 +22,7 @@ function fakeJpeg(bytes = 2048): Buffer {
   return Buffer.concat([JPEG_MAGIC, Buffer.alloc(bytes - JPEG_MAGIC.length)]);
 }
 const imageJson = (b64: string, mediaType = "image/png") => Response.json({ data: [{ b64_json: b64, media_type: mediaType }] });
+const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 
 test("txt2img success posts JSON to the Images endpoint and saves verified bytes", async t => {
   const root = await mkdtemp(join(scratch, "txt2img-"));
@@ -43,7 +44,7 @@ test("txt2img success posts JSON to the Images endpoint and saves verified bytes
   const saved = await saveImage(join(root, "artifacts"), generated.data, "A Red Circle!!");
   assert.equal(saved.mime, "image/png");
   assert.equal(saved.bytes, 2048);
-  assert.match(saved.path, /artifacts\/image-a-red-circle-\d{8}-\d{6}\.png$/);
+  assert.match(saved.path, /artifacts\/image-a-red-circle-\d{8}-\d{6}-[0-9a-f]{6}\.png$/);
   assert.deepEqual(await readFile(saved.path), generated.data);
   assert.equal((await stat(saved.path)).mode & 0o777 & 0o077, 0);
 });
@@ -76,13 +77,13 @@ test("url fallback downloads without credentials and rejects non-images", async 
     assert.equal((init?.headers as Record<string, string> | undefined)?.["authorization"], undefined);
     return new Response(new Uint8Array(image), { headers: { "content-type": "image/png" } });
   }) as typeof globalThis.fetch;
-  const ok = await generateImageBytes({ key: "K", model: "m", prompt: "p" }, fetch);
+  const ok = await generateImageBytes({ key: "K", model: "m", prompt: "p" }, fetch, publicLookup);
   assert.deepEqual(ok.data, image);
   const bad = (async (url: string) => {
     if (String(url).includes("images/generations")) return Response.json({ data: [{ url: "https://cdn.example/x.txt" }] });
     return new Response("nope", { headers: { "content-type": "text/plain" } });
   }) as typeof globalThis.fetch;
-  await assert.rejects(generateImageBytes({ key: "K", model: "m", prompt: "p" }, bad), /did not return image bytes/);
+  await assert.rejects(generateImageBytes({ key: "K", model: "m", prompt: "p" }, bad, publicLookup), /did not return image bytes/);
 });
 
 test("credentials resolve .env first, then environment, then stored login, and fail closed when missing", async t => {
@@ -150,15 +151,74 @@ test("reference images stay inside the workspace with bounded count and size", a
 });
 
 test("output paths stay inside the workspace with lowercase hyphenated names", async t => {
-  const root = await mkdtemp(join(scratch, "out-"));
+  const root = await realpath(await mkdtemp(join(scratch, "out-")));
   t.after(() => rm(root, { recursive: true, force: true }));
-  assert.deepEqual(await resolveOutputPath(root, undefined), { directory: resolve(root, "artifacts") });
+  const fallback = await resolveOutputPath(root, undefined);
+  assert.equal(fallback.root, root);
+  assert.equal(fallback.directory, join(root, "artifacts"));
+  assert.equal(fallback.filename, undefined);
+  const savedFallback = await saveImage(fallback.directory, fakePng(), "default", fallback.filename, { root: fallback.root });
+  assert.match(savedFallback.path, /artifacts\/image-default-\d{8}-\d{6}-[0-9a-f]{6}\.png$/);
   await assert.rejects(resolveOutputPath(root, "../evil.png"), /inside the Pi working directory/);
   const out = await resolveOutputPath(root, "My Shots/EVE Portrait.PNG");
-  const saved = await saveImage(out.directory, fakePng(), "ignored", out.filename);
+  const saved = await saveImage(out.directory, fakePng(), "ignored", out.filename, { root: out.root });
   assert.match(saved.path, /My Shots\/eve-portrait\.png$/);
   assert.equal(detectSavedMime(Buffer.from("not bytes")), undefined);
   assert.equal(slugify("!!!"), "image");
+});
+
+test("outputPath accepts an existing directory or a trailing separator", async t => {
+  const root = await realpath(await mkdtemp(join(scratch, "out-dir-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "album"));
+  const album = await resolveOutputPath(root, "album");
+  assert.equal(album.directory, join(root, "album"));
+  assert.equal(album.filename, undefined);
+  const saved = await saveImage(album.directory, fakePng(), "Red Circle", album.filename, { root: album.root });
+  assert.match(saved.path, /album\/image-red-circle-\d{8}-\d{6}-[0-9a-f]{6}\.png$/);
+  const trailing = await resolveOutputPath(root, "new-album/");
+  assert.equal(trailing.filename, undefined);
+  const nested = await saveImage(trailing.directory, fakePng(), "Blue Sky", trailing.filename, { root: trailing.root });
+  assert.match(nested.path, /new-album\/image-blue-sky-\d{8}-\d{6}-[0-9a-f]{6}\.png$/);
+  await writeFile(join(root, "plain.png"), fakePng());
+  await assert.rejects(resolveOutputPath(root, "plain.png/"), /existing file, not a directory/);
+});
+
+test("symlinked output directories and final files are refused", async t => {
+  const root = await realpath(await mkdtemp(join(scratch, "out-links-")));
+  const outside = await realpath(await mkdtemp(join(scratch, "out-outside-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await symlink(outside, join(root, "artifacts"));
+  await assert.rejects(resolveOutputPath(root, undefined), /symbolic link/);
+  await assert.rejects(resolveOutputPath(root, "artifacts/escape.png"), /symbolic link/);
+  await rm(join(root, "artifacts"));
+  await symlink(outside, join(root, "shots"));
+  await assert.rejects(resolveOutputPath(root, "shots/escape.png"), /symbolic link/);
+  await writeFile(join(outside, "original.png"), fakePng());
+  await symlink(join(outside, "original.png"), join(root, "linked.png"));
+  await assert.rejects(resolveOutputPath(root, "linked.png"), /symbolic link/);
+});
+
+test("saveImage rechecks the created parent against the workspace", async t => {
+  const root = await realpath(await mkdtemp(join(scratch, "out-race-")));
+  const outside = await realpath(await mkdtemp(join(scratch, "out-race-outside-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const output = await resolveOutputPath(root, "safe/out.png");
+  await mkdir(output.directory, { recursive: true });
+  await rm(output.directory, { recursive: true, force: true });
+  await symlink(outside, output.directory);
+  await assert.rejects(
+    saveImage(output.directory, fakePng(), "escape", output.filename, { root: output.root }),
+    /inside the Pi working directory|symbolic link/,
+  );
+});
+
+test("agent directory environment expands ~ and refuses relative paths", () => {
+  assert.equal(agentDir({}), join(homedir(), ".pi", "agent"));
+  assert.equal(agentDir({ PI_CODING_AGENT_DIR: "~/pi-agent" }), join(homedir(), "pi-agent"));
+  assert.throws(() => agentDir({ PI_CODING_AGENT_DIR: "relative/agent" }), /absolute path/);
 });
 
 test("saved outputs reject non-PNG/JPEG bytes and tiny payloads", async t => {
@@ -168,17 +228,80 @@ test("saved outputs reject non-PNG/JPEG bytes and tiny payloads", async t => {
   await assert.rejects(saveImage(root, Buffer.concat([PNG_MAGIC, Buffer.alloc(10)]), "p"), /too small/);
 });
 
-test("errors never expose the key and cap provider detail", async t => {
+test("default filenames are collision resistant and existing outputs need explicit overwrite", async t => {
+  const root = await realpath(await mkdtemp(join(scratch, "overwrite-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const first = await saveImage(root, fakePng(), "same prompt");
+  const second = await saveImage(root, fakePng(2600), "same prompt");
+  assert.notEqual(first.path, second.path, "same-second generations must not collide");
+  assert.deepEqual(await readFile(first.path), fakePng(), "the earlier image must survive");
+
+  const target = join(root, "fixed.png");
+  const original = fakePng(3000);
+  await writeFile(target, original);
+  await assert.rejects(saveImage(root, fakePng(4096), "ignored", "fixed", { root }), /already exists/);
+  assert.deepEqual(await readFile(target), original, "a refused overwrite leaves the file byte-for-byte intact");
+  const replaced = await saveImage(root, fakePng(4096), "ignored", "fixed", { root, overwrite: true });
+  assert.equal(replaced.path, target);
+  assert.deepEqual(await readFile(target), fakePng(4096));
+});
+
+test("provider download URLs must be public HTTPS and never private addresses", async t => {
+  const response = (url: string) => (async () => Response.json({ data: [{ url }] })) as typeof globalThis.fetch;
+  await assert.rejects(
+    generateImageBytes({ key: "K", model: "m", prompt: "p" }, response("https://127.0.0.1/x.png"), publicLookup),
+    /private, loopback, or link-local/,
+  );
+  await assert.rejects(
+    generateImageBytes({ key: "K", model: "m", prompt: "p" }, response("https://cdn.example/x.png"), async () => [{ address: "10.0.0.1", family: 4 }]),
+    /private, loopback, or link-local/,
+  );
+  await assert.rejects(
+    generateImageBytes({ key: "K", model: "m", prompt: "p" }, response("http://cdn.example/x.png"), publicLookup),
+    /HTTPS on the default port/,
+  );
+  await assert.rejects(
+    generateImageBytes({ key: "K", model: "m", prompt: "p" }, response("https://cdn.example/x.png"), async () => { throw new Error("dns"); }),
+    /resolved safely/,
+  );
+  assert.equal(isPrivateAddress("93.184.216.34"), false);
+  assert.equal(isPrivateAddress("::1"), true);
+  assert.equal(isPrivateAddress("fe80::1"), true);
+  assert.equal(isPrivateAddress("fec0::1"), true);
+  assert.equal(isPrivateAddress("::ffff:7f00:1"), true);
+  assert.equal(isPrivateAddress("::ffff:5db8:d822"), false);
+  assert.equal((await assertSafeDownloadUrl("https://cdn.example/x.png", publicLookup)).hostname, "cdn.example");
+});
+
+test("reference images have an aggregate byte budget", async t => {
+  const root = await mkdtemp(join(scratch, "refs-total-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const names: string[] = [];
+  const size = Math.floor(MAX_REFERENCE_TOTAL_BYTES / 3) + 1024;
+  for (let index = 0; index < 3; index++) {
+    const name = `large-${index}.png`;
+    names.push(name);
+    const path = join(root, name);
+    await writeFile(path, PNG_MAGIC);
+    const handle = await open(path, "r+");
+    await handle.truncate(size);
+    await handle.close();
+  }
+  await assert.rejects(readReferenceImages(root, names), /32 MB in total/);
+});
+
+test("errors never expose the key or echo arbitrary provider prompt text", async t => {
   const key = "sk-or-v1-SECRET-KEY";
   assert.ok(!redactKey(`auth failed for ${key} ok`, key).includes(key));
   assert.equal(redactKey("plain", undefined), "plain");
   assert.equal(safeError(new Error("boom")), "Image generation failed. Check the stored OpenRouter login and connectivity.");
   assert.equal(safeError(new SafeError("careful")).length > 0, true);
-  const fetch = (async () => Response.json({ error: { message: `bad key ${key} rejected` } }, { status: 401 })) as typeof globalThis.fetch;
-  await assert.rejects(generateImageBytes({ key, model: "m", prompt: "p" }, fetch), error => {
+  const fetch = (async () => Response.json({ error: { message: `bad key ${key} rejected for PRIVATE PROMPT` } }, { status: 401 })) as typeof globalThis.fetch;
+  await assert.rejects(generateImageBytes({ key, model: "m", prompt: "PRIVATE PROMPT" }, fetch), error => {
     assert.match((error as Error).message, /authentication failed/);
     assert.ok(!(error as Error).message.includes(key));
-    assert.match((error as Error).message, /\[REDACTED\]/);
+    assert.ok(!(error as Error).message.includes("PRIVATE PROMPT"), "provider error text must not echo the prompt");
+    assert.ok(!(error as Error).message.includes("bad key"), "provider messages are not included");
     return true;
   });
   const html = (async () => new Response("<html>nope</html>", { status: 500 })) as typeof globalThis.fetch;

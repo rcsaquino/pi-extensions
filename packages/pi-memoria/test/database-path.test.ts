@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
-import { databasePath } from "../src/database-path.ts";
+import { databasePath, pruneInspectionScratch } from "../src/database-path.ts";
 import { temporary } from "./helpers.ts";
 
 // Inject the precise stat result observed on Linux during SQLite last-close:
@@ -30,6 +30,25 @@ test("an unlinked companion stat is revalidated as absent, never accepted as a f
     finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
     assert.deepEqual(fs.readdirSync(join(path, "..")), ["memoria.sqlite"]);
   }
+});
+
+test("stale inspection scratch is pruned only when old and owned by this user", async (t) => {
+  const base = await temporary(t);
+  const old = join(base, "pi-memoria-inspection-old");
+  const recent = join(base, "pi-memoria-inspection-recent");
+  const foreign = join(base, "pi-memoria-inspection-foreign");
+  const unrelated = join(base, "ordinary-directory");
+  for (const directory of [old, recent, foreign, unrelated]) fs.mkdirSync(directory);
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  fs.utimesSync(old, twoHoursAgo, twoHoursAgo);
+  fs.utimesSync(foreign, twoHoursAgo, twoHoursAgo);
+  const ownedForeign = process.getuid?.() === 0;
+  if (ownedForeign) fs.chownSync(foreign, 1, 1);
+  assert.equal(pruneInspectionScratch(base), 1);
+  assert.equal(fs.existsSync(old), false);
+  assert.equal(fs.existsSync(recent), true);
+  assert.equal(fs.existsSync(unrelated), true);
+  if (ownedForeign) assert.equal(fs.existsSync(foreign), true, "another user's scratch directory is never removed");
 });
 
 test("main-file unlink and persistently unlinked companions remain fail-closed and bounded", async t => {

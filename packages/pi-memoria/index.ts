@@ -1,4 +1,5 @@
-import { dirname } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { configuration } from "./src/config.ts";
@@ -34,6 +35,8 @@ interface Runtime {
   database?: MemoryDatabase;
   context: ExtensionContext;
   databaseError?: unknown;
+  configurationError?: unknown;
+  rootsEvicted?: number;
 }
 
 export default function memoria(pi: ExtensionAPI) {
@@ -44,8 +47,27 @@ export default function memoria(pi: ExtensionAPI) {
   /** Configuration and hot memory never require SQLite; archive access is deferred and synchronous. */
   const stores = (ctx: ExtensionContext): Runtime => {
     if (!runtime) {
-      const config = configuration(getAgentDir());
-      const created: Runtime = { config, context: ctx, hot: undefined as unknown as HotMemoryStore };
+      let config: ReturnType<typeof configuration>;
+      let configurationError: unknown;
+      try {
+        config = configuration(getAgentDir());
+      } catch (error) {
+        // Malformed environment overrides must not escape the lifecycle handler.
+        // Fall back to the host default paths and report the invalid override.
+        configurationError = error;
+        // Drop only the malformed override when possible so a valid memory
+        // directory is preserved; fall back to the host default agent dir last.
+        const fallbackEnv = { ...process.env };
+        delete fallbackEnv.PI_MEMORIA_SESSION_DIRS;
+        try {
+          config = configuration(getAgentDir(), fallbackEnv);
+        } catch {
+          delete fallbackEnv.PI_MEMORIA_DIR;
+          try { config = configuration(getAgentDir(), fallbackEnv); }
+          catch { config = configuration(join(homedir(), ".pi", "agent"), fallbackEnv); }
+        }
+      }
+      const created: Runtime = { config, context: ctx, hot: undefined as unknown as HotMemoryStore, configurationError };
       created.hot = new HotMemoryStore(config.hotPath, (entries) => database(created).archive(entries, config.hotPath), withFileMutationQueue);
       runtime = created;
     }
@@ -57,7 +79,15 @@ export default function memoria(pi: ExtensionAPI) {
     const db = new MemoryDatabase(current.config.databasePath);
     try {
       const sessionFile = current.context.sessionManager.getSessionFile();
-      db.rememberRoots([...current.config.sessionRoots, current.context.sessionManager.getSessionDir(), ...(sessionFile ? [dirname(sessionFile)] : [])]);
+      // Session-derived roots go in first, then configured roots, so the newest-100
+      // bound can never evict a root an operator explicitly configured.
+      const sessionRoots = [current.context.sessionManager.getSessionDir(), ...(sessionFile ? [dirname(sessionFile)] : [])];
+      const configuredRoots = current.config.sessionRoots;
+      db.rememberRoots(sessionRoots);
+      db.rememberRoots(configuredRoots);
+      const kept = new Set(db.roots());
+      current.rootsEvicted = [...new Set([...sessionRoots, ...configuredRoots].map((root) => resolve(root)))]
+        .filter((root) => !kept.has(root)).length;
     } catch (error) { db.close(); throw error; }
     return db;
   };
@@ -103,6 +133,9 @@ export default function memoria(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     const current = stores(ctx);
+    if (current.configurationError && ctx.hasUI) {
+      ctx.ui.notify(`pi-memoria configuration: ${(current.configurationError as Error).message} Safe fallback paths are in use; invalid overrides were ignored.`, "warning");
+    }
     try { startupRepair = await current.hot.load(); }
     catch (error) { if (ctx.hasUI) ctx.ui.notify(`pi-memoria hot memory: ${(error as Error).message}`, "error"); }
     try { database(current); }
@@ -124,8 +157,16 @@ export default function memoria(pi: ExtensionAPI) {
     } catch (error) {
       status.push(`MEMORY UNAVAILABLE: ${(error as Error).message}. Hot instructions were not loaded; tell the user and do not assume that memory is empty.`);
     }
+    if (current.configurationError) {
+      status.push(`MEMORY CONFIGURATION INVALID: ${(current.configurationError as Error).message} Safe fallback memory paths and session roots are in use; invalid overrides were ignored.`);
+    }
     if (!current.database && current.databaseError !== undefined) {
       status.push(`SQLITE LONG-TERM MEMORY UNAVAILABLE: ${(current.databaseError as Error).message}. Any successfully loaded hot memory remains valid; SQLite add/edit/delete/search and archive operations fail until the store is fixed. Session search uses default, configured, and current roots only, so remembered custom roots may be missing.`);
+    }
+    if (current.rootsEvicted) {
+      const count = current.rootsEvicted;
+      current.rootsEvicted = undefined;
+      status.push(`REMEMBERED SESSION ROOTS EVICTED: ${count} older custom root(s) fell outside the newest-100 bound. Configured roots are retained; add older archives to PI_MEMORIA_SESSION_DIRS to search them again.`);
     }
     if (status.length) text += `\n\n<status>\n${status.join("\n")}\n</status>`;
     event.systemPromptOptions.sections.pi_memoria = text;

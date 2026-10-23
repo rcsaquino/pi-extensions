@@ -16,7 +16,7 @@ import { references } from "./reply-context-fixture.ts";
 
 const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(workspace, { recursive: true });
-const config: Config = { token: "TEST-BOT-TOKEN", allowed: new Set(["123", "456"]), groqKey: "TEST-GROQ", elevenKey: "TEST-ELEVEN", voiceId: "voice-id", modelId: "exact-model-id", dataDir: workspace };
+const config: Config = { token: "TEST-BOT-TOKEN", allowed: new Set(["123", "456"]), destination: 123, groqKey: "TEST-GROQ", elevenKey: "TEST-ELEVEN", voiceId: "voice-id", modelId: "exact-model-id", dataDir: workspace };
 const ok = (result: unknown) => Response.json({ ok: true, result });
 const message = (id = 1, text = "Hello", user = 123): TgMessage => ({ message_id: id, date: 1_791_000_000, chat: { id: user, type: "private" }, from: { id: user }, text });
 
@@ -228,6 +228,28 @@ test("authenticate before replying, downloading, STT or Pi dispatch; reject grou
   assert.ok(!h.server.calls.some(call => call.method === "getFile"));
 });
 
+test("malformed numeric identities are rejected before any download path or dispatch", async t => {
+  const h = await fixture(t);
+  await until(() => h.bridge.status === "connected");
+  const malformed = [
+    { ...message(1), message_id: "../../escape", photo: [{ file_id: "never-download" }] },
+    { ...message(2), date: Number.NaN, photo: [{ file_id: "never-download" }] },
+    { ...message(3), chat: { id: "../../escape", type: "private" }, photo: [{ file_id: "never-download" }] },
+    { ...message(4), from: { id: -5 }, photo: [{ file_id: "never-download" }] },
+  ];
+  for (const item of malformed) h.server.feed(item as unknown as TgMessage);
+  await delay(350);
+  assert.equal(h.submissions.length, 0);
+  assert.ok(!h.server.calls.some(call => call.method === "getFile"));
+});
+
+test("speech and attachment aggregate limits reject before any provider call", async t => {
+  const h = await fixture(t);
+  await until(() => h.bridge.status === "connected");
+  await assert.rejects(h.bridge.send({ speech: "x".repeat(20_001) }), /exceeds 20000 characters/);
+  assert.equal(h.server.calls.filter(call => String(call.method).includes("elevenlabs")).length, 0);
+});
+
 test("inbound text ends with only one multi-line second-only host-local current_time element; plain final only after settlement", async t => {
   const h = await fixture(t);
   h.server.feed(message());
@@ -322,6 +344,18 @@ test("adjunct custom context during an admitted reply changes neither the destin
   assert.equal(h.server.calls.filter(call => call.method === "sendDocument").length, 1);
 });
 
+test("a non-notice custom continuation preserves an earlier final regardless of timestamp", async t => {
+  const h = await fixture(t);
+  h.server.feed(message());
+  await until(() => h.submissions.length === 1);
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "First final." }], stopReason: "stop" });
+  // A custom message may carry a later creation timestamp when queued as a follow-up;
+  // delivery order, not the timestamp or customType, decides whether it supersedes.
+  h.bridge.userStart({ role: "custom", customType: "web-search-content-ready", content: "Synthetic later context", timestamp: Date.now() + 120_000 });
+  await h.finish("Continuation final.");
+  assert.deepEqual(h.server.texts().map(item => item.text), ["First final.", "Continuation final."]);
+});
+
 test("automatic retries/continuations replace intermediate replies without duplicate sends", async t => {
   const h = await fixture(t);
   h.server.feed(message());
@@ -382,6 +416,20 @@ test("a genuinely stalled start still warns and aborts", async t => {
   assert.equal(h.server.texts()[0].text, "Pi did not start this request. Check the TUI for configuration or extension errors.");
   const records = await ledgerRecords(h);
   assert.ok(records.some(record => record.reason === "start_watchdog"));
+});
+
+test("a notice queued before the final still preserves it when delivered later", async t => {
+  const h = await fixture(t);
+  h.server.feed(message(1, "Run the audit"));
+  await until(() => h.submissions.length === 1);
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Audit stopped at 16:15:03." }], stopReason: "stop" });
+  // A follow-up notice keeps the timestamp from when it was queued, which can
+  // predate the final it is delivered after.
+  h.bridge.userStart({ role: "custom", customType: "subagent-notice", content: "[Subagent settled]\nStatus: done", timestamp: Date.now() - 120_000 });
+  h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Cancelled audit has settled." }], stopReason: "stop" });
+  h.setIdle(true);
+  await h.bridge.settled();
+  assert.deepEqual(h.server.texts().map(item => item.text), ["Audit stopped at 16:15:03.", "Cancelled audit has settled."]);
 });
 
 test("a later notice turn preserves an already generated final", async t => {
@@ -888,7 +936,8 @@ test("incoming albums across separate polls retain the earliest sent second, one
   const text = (h.submissions[0][0] as TextContent).text;
   const paths = attachmentPaths(text);
   assert.equal(paths.length, 2);
-  assert.ok(paths[0].includes("10-") && paths[1].includes("11-"));
+  assert.match(paths[0]!, /[\\/][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-first\.ogg$/);
+  assert.match(paths[1]!, /[\\/][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-second\.ogg$/);
   assert.equal(h.submissions[0].filter(block => block.type === "image").length, 2);
   assert.equal((text.match(/<attachments>/g) || []).length, 1);
   const iso = text.match(/\n\n<current_time>\n(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\n<\/current_time>$/)?.[1];

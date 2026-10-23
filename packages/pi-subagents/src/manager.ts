@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { basename, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { buildNotice, formatDuration, truncateCodePoints } from './notice.ts';
+import { buildNotice, formatDuration } from './notice.ts';
 import { currentBootId, groupAlive, identityAlive, killGroup, procStat, signal } from './proc.ts';
 import { findDefinition, loadConfig, promptText, subagentsRoot } from './registry.ts';
 import { resolveSelection, type Selection } from './model.ts';
@@ -23,8 +23,14 @@ const SETTLING_STALE_MS = 60000;
 const POLL_MS = 1000;
 const REPORT_PAGE = 12000;
 const LIST_PAGE = 20;
+const NOTICE_MAX_ATTEMPTS = 5;
+const NOTICE_RETRY_BASE_MS = 1000;
+const NOTICE_RETRY_MAX_MS = 60000;
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
 
 export interface ListedRun {
   id: string;
@@ -50,13 +56,45 @@ export interface ResultPage {
 interface LocatedRun { dir: string; record?: RunRecord }
 
 function scanRunDirs(root: string): { agent: string; dir: string }[] {
-  let agents: { name: string; dir: string }[] = [];
+  try {
+    return scanRunDirsStrict(root);
+  } catch {
+    return [];
+  }
+}
+
+/** Fail-closed scan for the idle-compaction provider: only an absent root is empty. */
+function scanRunDirsStrict(root: string): { agent: string; dir: string }[] {
+  let agents: { name: string; dir: string }[];
   try {
     agents = readdirSync(root, { withFileTypes: true })
       .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'runs')
       .map(entry => ({ name: entry.name, dir: join(root, entry.name) }));
-  } catch { return []; }
-  return agents.flatMap(agent => listRunDirs(agent.dir).map(dir => ({ agent: agent.name, dir })));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new Error('Cannot inspect subagent run state safely.');
+  }
+  const runs: { agent: string; dir: string }[] = [];
+  for (const agent of agents) {
+    try {
+      for (const dir of listRunDirsStrict(agent.dir)) runs.push({ agent: agent.name, dir });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Cannot inspect')) throw error;
+      throw new Error('Cannot inspect subagent run state safely.');
+    }
+  }
+  return runs;
+}
+
+function listRunDirsStrict(agentDir: string): string[] {
+  try {
+    return readdirSync(join(agentDir, 'runs'), { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map(entry => join(agentDir, 'runs', entry.name));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new Error('Cannot inspect subagent run state safely.');
+  }
 }
 
 function readReady(dir: string): ReadyInfo | undefined {
@@ -125,8 +163,10 @@ function buildBrief(input: { agent: string; cwd: string; body: string }, dispatc
 export class SubagentsManager {
   private readonly pi: ExtensionAPI;
   private ctx?: ExtensionContext;
-  private readonly root: string;
+  private readonly explicitRoot?: string;
+  private resolvedRoot?: string;
   private timer?: NodeJS.Timeout;
+  private noticeTimer?: NodeJS.Timeout;
   private ticking = false;
   private readonly dirs = new Map<string, string>();
   private readonly notified = new Set<string>();
@@ -135,9 +175,14 @@ export class SubagentsManager {
   private readonly chains = new Map<string, Promise<unknown>>();
   private shut = false;
 
-  constructor(pi: ExtensionAPI, root = subagentsRoot()) {
+  constructor(pi: ExtensionAPI, root?: string) {
     this.pi = pi;
-    this.root = root;
+    this.explicitRoot = root;
+  }
+
+  /** Resolve lazily so a malformed PI_CODING_AGENT_DIR fails at use, not extension load. */
+  private get root(): string {
+    return this.explicitRoot ?? (this.resolvedRoot ??= subagentsRoot());
   }
 
   get closed(): boolean { return this.shut; }
@@ -171,7 +216,13 @@ export class SubagentsManager {
   }
 
   private rememberDirs(): void {
-    for (const { dir } of scanRunDirs(this.root)) this.dirs.set(basename(dir), dir);
+    const seen = new Set<string>();
+    for (const { dir } of scanRunDirs(this.root)) {
+      const id = basename(dir);
+      this.dirs.set(id, dir);
+      seen.add(id);
+    }
+    for (const id of this.dirs.keys()) if (!seen.has(id)) this.dirs.delete(id);
   }
 
   private locate(id: string): LocatedRun {
@@ -188,6 +239,37 @@ export class SubagentsManager {
     return { dir, ...(record ? { record } : {}) };
   }
 
+  /** Synchronous snapshot for the neutral idle-compaction background-work provider. */
+  activeWork(sessionId: string): { id: string; sessionId: string }[] {
+    const active: { id: string; sessionId: string }[] = [];
+    for (const { dir } of scanRunDirsStrict(this.root)) {
+      let text: string;
+      try {
+        text = readFileSync(join(dir, 'task.json'), 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        // An unreadable record can belong to a live worker; never report idle.
+        throw new Error('Subagent run state is unreadable; refusing to report idle.');
+      }
+      let record: RunRecord;
+      try {
+        record = JSON.parse(text) as RunRecord;
+      } catch {
+        // Unknown state must never be reported as idle: a malformed record can
+        // still belong to a live worker. The guard fails closed on this error.
+        throw new Error('Subagent run state is unreadable; refusing to report idle.');
+      }
+      if (!record || typeof record !== 'object' || record.schemaVersion !== SCHEMA_VERSION ||
+          typeof record.id !== 'string' || typeof record.sessionId !== 'string' || typeof record.status !== 'string') {
+        throw new Error('Subagent run state is unsupported or malformed; refusing to report idle.');
+      }
+      if (record.status === 'running' && (record.sessionId === sessionId || record.sessionFile === sessionId)) {
+        active.push({ id: record.id, sessionId: record.sessionId });
+      }
+    }
+    return active;
+  }
+
   private ownedRunning(): { dir: string; record: RunRecord }[] {
     const sessionId = this.sessionId();
     const running: { dir: string; record: RunRecord }[] = [];
@@ -202,7 +284,9 @@ export class SubagentsManager {
   private chain<T>(id: string, work: () => Promise<T>): Promise<T> {
     const previous = this.chains.get(id) ?? Promise.resolve();
     const next = previous.then(work, work);
-    this.chains.set(id, next.catch(() => undefined));
+    const tracked = next.catch(() => undefined);
+    this.chains.set(id, tracked);
+    void tracked.finally(() => { if (this.chains.get(id) === tracked) this.chains.delete(id); });
     return next;
   }
 
@@ -452,9 +536,15 @@ export class SubagentsManager {
       };
     }
     const totalChars = report.length;
-    const start = Math.max(0, Math.min(offset, totalChars));
-    const text = report.slice(start, start + REPORT_PAGE);
-    const next = start + REPORT_PAGE < totalChars ? start + REPORT_PAGE : undefined;
+    let start = Math.max(0, Math.min(offset, totalChars));
+    // UTF-16 offsets are public, but a page boundary must not split a surrogate
+    // pair. Back the start up (and pull the end back) by one code unit.
+    if (start > 0 && isLowSurrogate(report.charCodeAt(start))) start -= 1;
+    let end = Math.min(start + REPORT_PAGE, totalChars);
+    if (end > start && end < totalChars && isHighSurrogate(report.charCodeAt(end - 1))) end -= 1;
+    if (end <= start) end = Math.min(totalChars, start + 1);
+    const text = report.slice(start, end);
+    const next = end < totalChars ? end : undefined;
     return {
       id, status: record.status, text, totalChars,
       ...(next !== undefined ? { nextOffset: next } : {}),
@@ -554,6 +644,7 @@ export class SubagentsManager {
 
   private async finish(dir: string, record: RunRecord, outcome: { status: RunStatus; reason?: string; code?: number }): Promise<void> {
     this.clearCancelTimer(record.id);
+    this.exitSeen.delete(record.id);
     this.dirs.set(record.id, dir);
     const updated = await this.updateRecord(dir, record, current => {
       current.status = outcome.status;
@@ -581,17 +672,47 @@ export class SubagentsManager {
     const sessionId = this.sessionId();
     for (const { dir } of scanRunDirs(this.root)) {
       const record = readRecord(dir);
-      if (!record || record.sessionId !== sessionId || record.notice !== 'pending') continue;
+      if (!record || record.sessionId !== sessionId) continue;
+      if (record.notice !== 'pending' && record.notice !== 'failed') continue;
       await this.injectNotice(dir, record);
     }
+  }
+
+  private noticeBackoff(attempts: number): number {
+    return Math.min(NOTICE_RETRY_MAX_MS, NOTICE_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1));
+  }
+
+  private scheduleNoticeRetry(delayMs: number): void {
+    if (this.shut || this.noticeTimer) return;
+    this.noticeTimer = setTimeout(() => {
+      this.noticeTimer = undefined;
+      void this.injectPending().catch(() => {});
+    }, Math.max(25, Math.min(delayMs, NOTICE_RETRY_MAX_MS)));
+    this.noticeTimer.unref?.();
   }
 
   private async injectNotice(dir: string, record: RunRecord): Promise<void> {
     if (this.shut) return;
     if (this.notified.has(record.id)) return;
     if (record.status === 'running') return;
-    if (record.notice === 'sent' || record.notice === 'failed') return;
+    if (record.notice === 'sent') return;
     if (record.sessionId !== this.sessionId()) return;
+
+    const attempts = record.noticeAttempts ?? 0;
+    if (attempts >= NOTICE_MAX_ATTEMPTS) {
+      if (record.notice !== 'failed') {
+        await this.updateRecord(dir, record, current => {
+          current.notice = 'failed';
+          delete current.noticeNextAttemptAt;
+        });
+      }
+      return;
+    }
+    const due = record.noticeNextAttemptAt ? Date.parse(record.noticeNextAttemptAt) : NaN;
+    if (Number.isFinite(due) && due > Date.now()) {
+      this.scheduleNoticeRetry(due - Date.now());
+      return;
+    }
 
     const reportPath = join(dir, 'report.md');
     const report = readText(reportPath);
@@ -605,24 +726,44 @@ export class SubagentsManager {
     let attempted: RunRecord;
     try {
       attempted = await this.updateRecord(dir, record, current => {
-        current.noticeAttempts = (current.noticeAttempts ?? 0) + 1;
+        current.notice = 'pending';
+        current.noticeAttempts = (current.noticeAttempts ?? attempts) + 1;
+        delete current.noticeNextAttemptAt;
       });
     } catch {
       this.notified.delete(record.id);
       throw new Error(`Could not record the notice attempt for ${record.id}`);
     }
     if (record.sessionId !== this.sessionId()) { this.notified.delete(record.id); return; }
-    let state: 'sent' | 'failed' = 'sent';
+    let delivered = false;
     try {
       this.pi.sendMessage(
         { customType: 'subagent-notice', content: text, display: false, details: { subagentNoticeId: record.id } },
         { triggerTurn: true, deliverAs: 'followUp' },
       );
-    } catch { state = 'failed'; }
-    await this.updateRecord(dir, attempted, current => {
-      current.notice = state;
-      if (state === 'sent') current.noticeAt = new Date().toISOString();
+      delivered = true;
+    } catch { delivered = false; }
+    const updated = await this.updateRecord(dir, attempted, current => {
+      if (delivered) {
+        current.notice = 'sent';
+        current.noticeAt = new Date().toISOString();
+        delete current.noticeNextAttemptAt;
+      } else {
+        const tries = current.noticeAttempts ?? attempts + 1;
+        if (tries >= NOTICE_MAX_ATTEMPTS) {
+          current.notice = 'failed';
+          delete current.noticeNextAttemptAt;
+        } else {
+          current.notice = 'pending';
+          current.noticeNextAttemptAt = new Date(Date.now() + this.noticeBackoff(tries)).toISOString();
+        }
+      }
     });
+    if (!delivered) {
+      this.notified.delete(record.id);
+      const next = updated.noticeNextAttemptAt ? Date.parse(updated.noticeNextAttemptAt) : NaN;
+      if (updated.notice === 'pending' && Number.isFinite(next)) this.scheduleNoticeRetry(next - Date.now());
+    }
   }
 
   // --------------------------------------------------------------- retention
@@ -637,7 +778,10 @@ export class SubagentsManager {
       const raw = readJson<Record<string, unknown>>(join(dir, 'task.json'));
       if (!raw) {
         const modified = mtimeMs(dir) ?? now;
-        if (now - modified > 14 * day) { try { rmSync(dir, { recursive: true, force: true }); } catch {} }
+        if (now - modified > 14 * day) {
+          try { rmSync(dir, { recursive: true, force: true }); } catch {}
+          this.forget(basename(dir));
+        }
         continue;
       }
       if (raw.schemaVersion !== SCHEMA_VERSION) continue;
@@ -648,6 +792,7 @@ export class SubagentsManager {
       const created = Date.parse(record.createdAt);
       if (Number.isFinite(created) && now - created > 14 * day) {
         try { rmSync(dir, { recursive: true, force: true }); } catch {}
+        this.forget(record.id);
         continue;
       }
       const bucket = groups.get(agent) ?? [];
@@ -657,10 +802,20 @@ export class SubagentsManager {
 
     for (const bucket of groups.values()) {
       bucket.sort((a, b) => (a.record.createdAt < b.record.createdAt ? 1 : -1));
-      for (const { dir } of bucket.slice(100)) {
+      for (const { dir, record } of bucket.slice(100)) {
         try { rmSync(dir, { recursive: true, force: true }); } catch {}
+        this.forget(record.id);
       }
     }
+  }
+
+  /** Drop per-run bookkeeping once the run directory is pruned or the manager closes. */
+  private forget(id: string): void {
+    this.dirs.delete(id);
+    this.notified.delete(id);
+    this.exitSeen.delete(id);
+    this.chains.delete(id);
+    this.clearCancelTimer(id);
   }
 
   // ------------------------------------------------------------------ timers
@@ -689,8 +844,13 @@ export class SubagentsManager {
   async shutdown(): Promise<void> {
     this.shut = true;
     this.stopTimer();
+    if (this.noticeTimer) { clearTimeout(this.noticeTimer); this.noticeTimer = undefined; }
     for (const timer of this.cancelTimers.values()) clearTimeout(timer);
     this.cancelTimers.clear();
+    this.dirs.clear();
+    this.notified.clear();
+    this.exitSeen.clear();
+    this.chains.clear();
   }
 }
 

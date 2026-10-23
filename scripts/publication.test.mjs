@@ -13,6 +13,7 @@ const identities = new Map([
   ['pi-memoria', 'pi-memoria'],
   ['pi-telegram', '@rcsaquino/pi-telegram'],
   ['pi-image', '@rcsaquino/pi-image'],
+  ['pi-skill-workshop', 'pi-skill-workshop'],
 ]);
 const read = path => readFileSync(path, 'utf8');
 const manifest = path => JSON.parse(read(path));
@@ -63,12 +64,12 @@ function headingIds(text) {
 test('root stays private and publication checks join shared verification', () => {
   const data = manifest(join(root, 'package.json'));
   assert.equal(data.private, true);
-  assert.equal(data.engines.node, '>=26.10.0 <27');
+  assert.equal(data.engines.node, '>=26.12.0 <27');
   for (const command of ['check', 'test', 'verify']) assert.match(data.scripts[command], /check:publication/);
   assert.equal(data.scripts['check:publication'], 'node --test scripts/publication.test.mjs');
 });
 
-test('five independent identities use the scoped names only where needed', () => {
+test('six independent identities use the scoped names only where needed', () => {
   const directories = readdirSync(join(root, 'packages'), { withFileTypes: true })
     .filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   assert.deepEqual(directories, [...identities.keys()].sort());
@@ -154,7 +155,7 @@ test('package documentation local links also resolve without the monorepo', () =
 test('environment example is inert and interrupted test scratch stays ignored', () => {
   const example = read(join(root, 'packages/pi-telegram/.env.example'));
   const fields = Object.fromEntries(example.split('\n').filter(line => /^[A-Z_]+=/.test(line)).map(line => line.split('=')));
-  assert.deepEqual(fields, { TELEGRAM_BOT_TOKEN: '', TELEGRAM_ALLOWED_ID: '', GROQ_API_KEY: '',
+  assert.deepEqual(fields, { TELEGRAM_BOT_TOKEN: '', TELEGRAM_ALLOWED_ID: '', TELEGRAM_DESTINATION_ID: '', GROQ_API_KEY: '',
     ELEVENLABS_API_KEY: '', ELEVENLABS_VOICE_ID: '', ELEVENLABS_MODEL_ID: 'eleven_v4' });
   const ignore = read(join(root, '.gitignore')).split('\n');
   for (const pattern of ['node_modules/', '.env', '.env.*', '!.env.example', '.test-tmp/', '.tmp/',
@@ -175,7 +176,7 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   for (const match of workflow.matchAll(/uses:\s*(\S+)/g)) {
     assert.match(match[1], /^actions\/[a-z-]+@[0-9a-f]{40}$/, `Unpinned action ${match[1]}`);
   }
-  assert.match(workflow, /node-version: '26\.10\.0'/);
+  assert.match(workflow, /node-version: '26\.12\.0'/);
   assert.match(workflow, /package-manager-cache: false/);
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /persist-credentials: false/);
@@ -185,7 +186,7 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /working-directory: packages\/pi-memoria/);
   assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);
-  for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-subagents']) {
+  for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-subagents', 'pi-skill-workshop']) {
     assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
   }
 });

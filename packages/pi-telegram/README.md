@@ -14,7 +14,7 @@ A transport, not a second agent. It uses the active Pi model and conversation, f
 
 ## Requirements
 
-- Node.js **22.6+**, as declared by this package; the maintained offline suite uses Node 26.10.0 and Pi 1.2.0.
+- Node.js **22.6+**, as declared by this package; the maintained offline suite uses Node 26.12.0 and Pi 1.3.0.
 - A Node-based Pi host using the `@earendil-works` namespace.
 - On Linux, util-linux-compatible **`flock --no-fork`** for exclusive bot ownership.
 - **Linux with procfs** for secure outgoing file attachments and diagnostics. Diagnostics also require util-linux-compatible **`/usr/bin/flock`** supporting inherited numeric file descriptors, and a shared local filesystem supporting kernel flock, atomic same-directory rename and sync. Other platforms fail closed; there is no insecure pathname fallback.
@@ -54,6 +54,8 @@ File values override inherited environment values, including explicitly empty va
 ```dotenv
 TELEGRAM_BOT_TOKEN=your-bot-token
 TELEGRAM_ALLOWED_ID=123456789
+# Required only when more than one user is allowlisted.
+TELEGRAM_DESTINATION_ID=123456789
 ELEVENLABS_API_KEY=your-optional-elevenlabs-key
 ELEVENLABS_VOICE_ID=your-selected-voice
 GROQ_API_KEY=your-optional-groq-key
@@ -64,11 +66,12 @@ ELEVENLABS_MODEL_ID=eleven_v4
 
 Keep real values private and out of the repository. On Unix, protect configuration with mode `0600`. Do not overwrite another extension's existing environment file to configure this one.
 
-`TELEGRAM_ALLOWED_ID` accepts one positive numeric user ID, delimited IDs, or a JSON array. Empty values, wildcards, malformed IDs, groups, and bot senders are rejected. Authentication happens before downloading, transcribing, typing, or dispatching a request.
+`TELEGRAM_ALLOWED_ID` accepts one positive numeric user ID, delimited IDs, or a JSON array. Empty values, wildcards, malformed IDs, groups, and bot senders are rejected. Authentication happens before downloading, transcribing, typing, or dispatching a request. The transport binds local/extension turns to exactly one destination chat: a single allowlisted user is used automatically, while multiple allowlisted users require `TELEGRAM_DESTINATION_ID` to name one of them. An ambiguous allowlist fails startup instead of silently choosing the first ID. `PI_CODING_AGENT_DIR` must be absolute (or start with `~/`); a relative override is rejected.
 
 - Telegram token and allowlist: required for chat.
 - Groq key: required only for incoming voice/audio transcription. Set `GROQ_API_KEY` in `.env`; a Pi `/login` groq key is used as a fallback.
 - ElevenLabs key, voice, and model: required only for synthesized replies. The exact configured voice/model is retained; it is never silently downgraded.
+- Speech scripts are capped at 20,000 characters before any ElevenLabs request, and one attachment album is capped at 100 MB aggregate (50 MB per file) before uploading. Oversized requests fail locally with no provider call.
 
 ## Message behavior
 
@@ -133,7 +136,7 @@ During a Telegram run, the same chat's corrections use Pi **steering** at the ne
 
 An inbound request must still pass the private-chat allowlist and uses one-use reply admission. The run's final is delivered once at settlement; thinking, intermediate commentary, tool results and streaming deltas are not. Other chats stay FIFO queued behind the active run, and only a message from the active request's own chat may steer it. A local/RPC input during an in-flight Telegram run no longer cancels the reply: it joins the same Pi conversation, and the turn settles once.
 
-`telegram_send` is available during any started, unsettled turn, including a mirrored notice turn, and always targets that turn's destination. Attachments and explicitly requested voice remain part of the same run; a successful voice send suppresses trailing text. Custom context messages inside a run do not reset the final or voice state, and a custom message that starts an idle run is mirrored like any other turn. Workers and subagents still cannot send Telegram messages.
+`telegram_send` is available during any started, unsettled turn, including a mirrored notice turn, and always targets that turn's destination. Attachments and explicitly requested voice remain part of the same run; a successful voice send suppresses trailing text. Custom context messages inside a run do not reset the final or voice state; this preservation deliberately applies to every custom message type and to a follow-up whose creation timestamp is later than the final, because delivery order rather than clock order decides what was superseded. A custom message that starts an idle run is mirrored like any other turn. `pi-subagents` does not load this package in its workers by default. A definition that explicitly lists `pi-telegram` in `agent.json.extensions` would create a separate bridge and session in that worker process; it would not gain the parent's delivery context or destination.
 
 Only the final answer after `agent_settled` is forwarded. Thinking, intermediate commentary, tool results, retry output, and streaming deltas are not delivered. Markdown becomes plain text plus native Telegram entities, not raw Markdown or `parse_mode`. Formatting handles UTF-16 offsets, emoji-safe splitting, non-overlapping code entities, and Telegram's 4,096-unit text limit. Tables become labeled rows; raw HTML stays literal.
 
@@ -174,7 +177,7 @@ ElevenLabs returns native `opus_48000_64`; OGG/Opus headers are validated. Long 
 └── tmp/
 ```
 
-Directories use `0700`; downloads, cursors and the local media index use `0600` on Unix. Downloads persist until removed. The cursor is persistent polling state, not disposable scratch. The bounded, best-effort media index maps message IDs to local copies this bridge itself sent or downloaded; it stores no file bytes, file IDs or URLs, expires entries after 90 days, and only covers media seen while it was running.
+Directories use `0700`; downloads, cursors and the local media index use `0600` on Unix. Downloads persist until removed. The cursor is persistent polling state, not disposable scratch; it is saved after an update is queued, so a cursor-write failure or crash in that window can replay one accepted update after restart. Inbound delivery is at-least-once, not exactly-once. The bounded, best-effort media index maps message IDs to local copies this bridge itself sent or downloaded; it stores no file bytes, file IDs or URLs, expires entries after 90 days, and only covers media seen while it was running.
 
 A kernel-backed lease is acquired before any Telegram API call. The first instance retains ownership, including during transient backoff; losing instances make no API calls or take over. Fatal failures and shutdown drain resources before release. Bot identity survives ordinary token rotation. Active webhooks are not deleted.
 
@@ -223,7 +226,7 @@ npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```
 
-`TELEGRAM_TEST_DIR` selects isolated scratch. Root `npm run verify` supplies this automatically. Tests use fake HTTP/providers plus real Pi loader/SDK checks (including reply/quote context through current voice transcription, steering/FIFO, automatic retry and persisted session reconstruction; real 1928×2560 image normalization, conversion/omission hints, image steering/FIFO and local-input handling; and standalone mirroring of Telegram, local and extension-notice turns in one session), private fixtures, and local synthetic audio. They never require a second live poller or paid speech synthesis.
+`TELEGRAM_TEST_DIR` selects isolated scratch. Root `npm run verify` supplies this automatically. Tests use fake HTTP/providers plus real Pi loader/SDK checks (including reply/quote context through current voice transcription, steering/FIFO, automatic retry and persisted session reconstruction; real 1928×2560 image normalization, conversion/omission hints, image steering/FIFO and local-input handling; and standalone mirroring of Telegram, local and extension-notice turns in one session), private fixtures, and local synthetic audio. They never require a second live poller or paid speech synthesis. Test files are checkout-only and excluded from the published tarball.
 
 Read [AGENTS.md](AGENTS.md) for module boundaries, invariants, and targeted checks. Live Telegram/STT/TTS acceptance requires separate approval and is not implied by offline tests.
 

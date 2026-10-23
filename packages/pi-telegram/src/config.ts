@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import type { CauseCode } from "./delivery-ledger.ts";
 
@@ -50,6 +50,8 @@ export function safeError(error: unknown): string {
 export interface Config {
   token: string;
   allowed: Set<string>;
+  /** The one chat that receives local/extension turns; required only when several users are allowlisted. */
+  destination?: number;
   groqKey?: string;
   elevenKey?: string;
   voiceId?: string;
@@ -92,12 +94,24 @@ async function authFileGroqKey(agentDir: string): Promise<string | undefined> {
   }
 }
 
+/** Normalize PI_CODING_AGENT_DIR like memoria: expand ~ and refuse a relative path. */
+export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.PI_CODING_AGENT_DIR?.trim();
+  if (!configured) return resolve(homedir(), ".pi", "agent");
+  const expanded = configured === "~" ? homedir()
+    : configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
+  if (!expanded || !isAbsolute(expanded)) {
+    throw new SafeError("PI_CODING_AGENT_DIR must be an absolute path (or start with ~/).");
+  }
+  return resolve(expanded);
+}
+
 export async function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.env): Promise<Config> {
   // Read only known fields. Never inject .env contents into Pi's process or model context.
-  const agentDir = env.PI_CODING_AGENT_DIR || resolve(homedir(), ".pi", "agent");
-  const home = resolve(agentDir, "pi-telegram");
+  const agent = agentDir(env);
+  const home = resolve(agent, "pi-telegram");
   // The dedicated home contains generated/runtime data, not source or configuration.
-  const paths = env.TELEGRAM_ENV_FILE ? [resolve(cwd, env.TELEGRAM_ENV_FILE)] : [resolve(cwd, ".env"), resolve(agentDir, ".env")];
+  const paths = env.TELEGRAM_ENV_FILE ? [resolve(cwd, env.TELEGRAM_ENV_FILE)] : [resolve(cwd, ".env"), resolve(agent, ".env")];
   let file: Record<string, string | undefined> = {};
   for (const path of [...new Set(paths)]) {
     try {
@@ -113,10 +127,27 @@ export async function loadConfig(cwd: string, env: NodeJS.ProcessEnv = process.e
   const token = get("TELEGRAM_BOT_TOKEN");
   if (!token) throw new SafeError("TELEGRAM_BOT_TOKEN is missing; Telegram is disconnected.");
   // Prefer the configured .env/environment key; fall back to a key stored via Pi /login.
-  const groqKey = get("GROQ_API_KEY") ?? await authFileGroqKey(agentDir);
+  const groqKey = get("GROQ_API_KEY") ?? await authFileGroqKey(agent);
+  const allowed = parseAllowed(get("TELEGRAM_ALLOWED_ID") || "");
+  const configuredDestination = get("TELEGRAM_DESTINATION_ID");
+  let destination: number | undefined;
+  if (configuredDestination !== undefined) {
+    if (!/^[1-9]\d*$/.test(configuredDestination) || !Number.isSafeInteger(Number(configuredDestination))) {
+      throw new SafeError("TELEGRAM_DESTINATION_ID must be a positive numeric user ID.");
+    }
+    destination = Number(configuredDestination);
+    if (!allowed.has(String(destination))) {
+      throw new SafeError("TELEGRAM_DESTINATION_ID must be one of the allowlisted TELEGRAM_ALLOWED_ID users.");
+    }
+  } else if (allowed.size === 1) {
+    destination = Number([...allowed][0]);
+  } else {
+    throw new SafeError("TELEGRAM_ALLOWED_ID lists multiple users; set TELEGRAM_DESTINATION_ID to the one chat that receives local turns.");
+  }
   return {
     token,
-    allowed: parseAllowed(get("TELEGRAM_ALLOWED_ID") || ""),
+    allowed,
+    destination,
     groqKey,
     elevenKey: get("ELEVENLABS_API_KEY"),
     voiceId: get("ELEVENLABS_VOICE_ID"),

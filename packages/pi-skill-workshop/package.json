@@ -1,0 +1,30 @@
+{
+  "name": "pi-skill-workshop",
+  "version": "0.1.0",
+  "description": "Foreground skill lifecycle management for Pi with reversible versions and safe, isolated state",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/rcsaquino/pi-extensions.git", "directory": "packages/pi-skill-workshop" },
+  "homepage": "https://github.com/rcsaquino/pi-extensions/tree/main/packages/pi-skill-workshop#readme",
+  "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
+  "publishConfig": { "access": "public" },
+  "keywords": ["pi-package", "skills", "skill-workshop"],
+  "files": ["index.ts", "src", "README.md", "AGENTS.md", "LICENSE"],
+  "pi": { "extensions": ["./index.ts"] },
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test --test-concurrency=1 tests/*.test.ts",
+    "verify": "npm run check && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.2.0 <2",
+    "typebox": ">=1.3.0 <2"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@types/node": "^22.19.0",
+    "typebox": "1.3.27",
+    "typescript": "^5.9.0"
+  }
+}

@@ -4,6 +4,14 @@ import { resolve } from "node:path";
 import { SafeError } from "./config.ts";
 import { telegramFormat } from "./format.ts";
 
+/** Bound total speech work before any paid provider request. */
+export const MAX_SPEECH_CHARS = 20_000;
+
+export function assertSpeechLength(text: string): void {
+  if (!text.trim()) throw new SafeError("Speech text cannot be empty.");
+  if (text.length > MAX_SPEECH_CHARS) throw new SafeError(`Speech script exceeds ${MAX_SPEECH_CHARS} characters.`);
+}
+
 /** Bracketed v4 performance directions are atomic, not words to split between requests. */
 export function speechChunks(text: string, modelId: string, limit = 1800): string[] {
   text = telegramFormat(text.replace(/<break\b[^>]*\/?\s*>/gi, "[pause]")).text.trim();

@@ -1,15 +1,22 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { ApiError, DOWNLOAD_LIMIT, TelegramApi, imageMime, outboundFile, readLimited, safeFilename, type Fetch } from "../src/api.ts";
-import { type Config, SafeError, loadConfig, parseAllowed, redact, safeError, splitText, stamp } from "../src/config.ts";
+import { agentDir, type Config, SafeError, loadConfig, parseAllowed, redact, safeError, splitText, stamp } from "../src/config.ts";
 
 const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(workspace, { recursive: true });
 const config: Config = { token: "TEST-BOT-SECRET", allowed: new Set(["123"]), groqKey: "TEST-GROQ-SECRET", elevenKey: "TEST-ELEVEN-SECRET", voiceId: "chosen-voice", modelId: "configured-model", dataDir: workspace };
 const signal = new AbortController().signal;
 const ok = (result: unknown) => Response.json({ ok: true, result });
+
+test("agent directory normalizes ~ and rejects relative PI_CODING_AGENT_DIR values", () => {
+  assert.equal(agentDir({}), join(homedir(), ".pi", "agent"));
+  assert.equal(agentDir({ PI_CODING_AGENT_DIR: "~/telegram-agent" }), join(homedir(), "telegram-agent"));
+  assert.throws(() => agentDir({ PI_CODING_AGENT_DIR: "relative/agent" }), SafeError);
+});
 
 test("allowlist accepts single, delimited and JSON IDs", () => {
   for (const value of ["123,456", "123 456", "123;456", '[123,"456"]']) assert.deepEqual([...parseAllowed(value)], ["123", "456"]);
@@ -23,13 +30,28 @@ test("allowlist fails closed for empty, wildcards, malformed and unsafe IDs", ()
 test(".env takes precedence, supports quotes and does not mutate process.env", async () => {
   const dir = await mkdtemp(resolve(workspace, "telegram-config-"));
   try {
-    await writeFile(resolve(dir, ".env"), 'TELEGRAM_BOT_TOKEN="file-token"\nTELEGRAM_ALLOWED_ID="123,456"\nELEVENLABS_MODEL_ID=configured-v4\n');
+    await writeFile(resolve(dir, ".env"), 'TELEGRAM_BOT_TOKEN="file-token"\nTELEGRAM_ALLOWED_ID="123,456"\nTELEGRAM_DESTINATION_ID=123\nELEVENLABS_MODEL_ID=configured-v4\n');
     const before = process.env.TELEGRAM_BOT_TOKEN;
     const cfg = await loadConfig(dir, { PI_CODING_AGENT_DIR: resolve(dir, "agent"), TELEGRAM_BOT_TOKEN: "stale-token", TELEGRAM_ALLOWED_ID: "789" });
     assert.equal(cfg.token, "file-token");
     assert.equal(cfg.groqKey, undefined);
     assert.equal(cfg.modelId, "configured-v4");
+    assert.equal(cfg.destination, 123);
     assert.equal(process.env.TELEGRAM_BOT_TOKEN, before);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("an ambiguous allowlist requires an explicit destination chat", async () => {
+  const dir = await mkdtemp(resolve(workspace, "telegram-destination-"));
+  try {
+    await writeFile(resolve(dir, ".env"), "TELEGRAM_BOT_TOKEN=t\nTELEGRAM_ALLOWED_ID=123,456\n");
+    await assert.rejects(loadConfig(dir), /TELEGRAM_DESTINATION_ID/);
+    await writeFile(resolve(dir, ".env"), "TELEGRAM_BOT_TOKEN=t\nTELEGRAM_ALLOWED_ID=123,456\nTELEGRAM_DESTINATION_ID=999\n");
+    await assert.rejects(loadConfig(dir), /must be one of the allowlisted/);
+    await writeFile(resolve(dir, ".env"), "TELEGRAM_BOT_TOKEN=t\nTELEGRAM_ALLOWED_ID=123,456\nTELEGRAM_DESTINATION_ID=456\n");
+    assert.equal((await loadConfig(dir)).destination, 456);
+    await writeFile(resolve(dir, ".env"), "TELEGRAM_BOT_TOKEN=t\nTELEGRAM_ALLOWED_ID=123\n");
+    assert.equal((await loadConfig(dir)).destination, 123);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

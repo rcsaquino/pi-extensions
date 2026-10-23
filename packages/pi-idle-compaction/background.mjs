@@ -74,6 +74,18 @@ export function registeredWorkIdle(sessionIds, scope = globalThis, nowMs = Date.
 }
 
 const SUBAGENT_TOOLS = new Set(['subagent', 'subagents_enable', 'subagent_supervisor', 'bg_wait']);
+// Current pi-subagents exposes these names and a provider, not the retired RPC.
+const CURRENT_SUBAGENT_TOOLS = new Set(['subagent_dispatch', 'subagent_steer', 'subagent_tasks']);
+const SUBAGENTS_PROVIDER = 'pi-subagents';
+function hasRegisteredProvider(scope, name) {
+  for (const key of [REGISTRY_KEY, LEGACY_REGISTRY_KEY]) {
+    const registry = scope[Symbol.for(key)];
+    if (registry === undefined) continue;
+    validateRegistry(registry);
+    if (registry.providers.has(name)) return true;
+  }
+  return false;
+}
 export function createBackgroundGuard({ getTools, rpc, scope = globalThis }) {
   return async ctx => {
     const sessionId = ctx.sessionManager.getSessionId();
@@ -82,9 +94,14 @@ export function createBackgroundGuard({ getTools, rpc, scope = globalThis }) {
     const tools = getTools();
     if (!Array.isArray(tools) || tools.some(tool => !text(tool?.name, 256)))
       throw Error('Background capability inventory unavailable');
+    const hasCurrentSubagents = tools.some(tool => CURRENT_SUBAGENT_TOOLS.has(tool.name));
     if (!registeredWorkIdle(sessionIds, scope)) return null;
-    // Only a PRESENT subagent runner requires its RPC owner. Absent package is
-    // a supported standalone mode; present-but-broken remains fail-closed.
+    // Current pi-subagents coordinates through the neutral provider, never the
+    // retired RPC. With its tools present but no provider, fail closed rather
+    // than assume an invisible runner is idle.
+    if (hasCurrentSubagents && !hasRegisteredProvider(scope, SUBAGENTS_PROVIDER)) return null;
+    // Only a PRESENT legacy subagent runner requires its RPC owner. Absent
+    // package is a supported standalone mode; present-but-broken is unsafe.
     if (tools.some(tool => SUBAGENT_TOOLS.has(tool.name))) {
       const ping = await rpc('ping');
       if ((ping?.session?.sessionFile ?? ping?.session?.sessionId) !== sessionIds[0]) return null;

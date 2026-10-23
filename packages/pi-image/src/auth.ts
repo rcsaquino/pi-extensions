@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { SafeError } from "./errors.ts";
 
 export const OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images/generations";
@@ -11,9 +11,16 @@ export const DEFAULT_MODEL = "openai/gpt-image-2.5-sunburst";
 const MISSING_KEY =
   "OpenRouter key is missing (set OPENROUTER_API_KEY in .env or run /login for openrouter); image generation is unavailable.";
 
-/** Resolve the agent directory the same way sibling extensions do. */
+/** Normalize PI_CODING_AGENT_DIR like memoria: expand ~ and refuse a relative path. */
 export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PI_CODING_AGENT_DIR || resolve(homedir(), ".pi", "agent");
+  const configured = env.PI_CODING_AGENT_DIR?.trim();
+  if (!configured) return resolve(homedir(), ".pi", "agent");
+  const expanded = configured === "~" ? homedir()
+    : configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
+  if (!expanded || !isAbsolute(expanded)) {
+    throw new SafeError("PI_CODING_AGENT_DIR must be an absolute path (or start with ~/).");
+  }
+  return resolve(expanded);
 }
 
 /**

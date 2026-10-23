@@ -13,12 +13,13 @@ Prepared versions are independent and are not claims of publication:
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.1**, preserving authenticated reply ownership through in-run custom context while keeping unrelated custom-origin runs unowned.
 - `packages/pi-image`: `@rcsaquino/pi-image` **0.1.0**, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-subagents`: `@rcsaquino/pi-subagents` **0.1.0**, supervised headless Pi workers with steerable runs, session-scoped notices and reports.
+- `packages/pi-skill-workshop`: `pi-skill-workshop` **0.1.0**, foreground learned-skill lifecycle with snapshots, reversible archive/restore, a change feed, and manual idle cleanup.
 
 The scoped identities avoid unrelated unscoped npm packages. The source folder, Pi entry point, tool/command names, and private runtime paths do not change with an npm scope. All packages declare public publication access; the root remains private.
 
 ## Preparation and dry runs
 
-From the monorepo root, follow [README.md](README.md) and the target package's setup instructions. The complete suite requires Node `>=26.10.0 <27`, npm, a Node-based Pi host, rg, flock, and ffmpeg. Install package-local dependencies with lifecycle scripts disabled; do not hoist or update the host as a release side effect.
+From the monorepo root, follow [README.md](README.md) and the target package's setup instructions. The complete suite is exercised on Node 26.12.0 within the required `>=26.12.0 <27` range, npm, a Node-based Pi 1.3.0 host, rg, flock, and ffmpeg. Install package-local dependencies with lifecycle scripts disabled; do not hoist or update the host as a release side effect.
 
 No package lockfile is currently committed. Use the documented package-local `npm install --ignore-scripts --legacy-peer-deps --workspaces=false` commands. If a usable lockfile is deliberately introduced later, generate/update it through npm and review it before choosing `npm ci`.
 
@@ -71,10 +72,12 @@ If the workflow fails after a successful publish (for example during the confirm
 
 After Git has deliberately been initialized, review the intended diff and commit only authorized source files. Use package-specific tags, for example:
 
-- `pi-memoria-v0.4.4`
+- `pi-memoria-v0.4.5`
 - `pi-telegram-v0.2.1`
 - `pi-image-v0.1.0`
+- `pi-idle-compaction-v0.1.0`
 - `pi-subagents-v0.1.0`
+- `pi-skill-workshop-v0.1.0`
 
 The folder identifier keeps tag names distinct even for scoped npm packages. Do not create an ambiguous root `vX.Y.Z` tag for independently versioned packages. Do not recreate deleted Git history automatically.
 
@@ -97,7 +100,7 @@ Public access is explicit for the scoped packages. Do not use a root `npm publis
 After publication, confirm the exact version, dist-tag, and downloadable tarball from the public registry. For memoria, for example:
 
 ```sh
-npm view pi-memoria@0.4.4 version dist.tarball
+npm view "pi-memoria@$(node -p "require('./packages/pi-memoria/package.json').version")" version dist.tarball
 npm view pi-memoria dist-tags
 ```
 

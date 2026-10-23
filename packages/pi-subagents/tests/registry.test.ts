@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { discover, parseConfig } from '../src/registry.ts';
+import { agentDir, discover, parseConfig } from '../src/registry.ts';
 import { renderSubagentsSection } from '../src/context.ts';
 import { scratch, cleanup } from './helpers.ts';
 
@@ -114,7 +115,13 @@ test('description.md supplies a one-line summary and stays optional', async t =>
   assert.equal(renderSubagentsSection(definitions), '- alpha: First line. Second line.');
 });
 
-test('long descriptions are capped on a word boundary', async t => {
+test('agent directory normalizes ~ and rejects relative PI_CODING_AGENT_DIR values', () => {
+  assert.equal(agentDir({}), join(homedir(), '.pi', 'agent'));
+  assert.equal(agentDir({ PI_CODING_AGENT_DIR: '~/custom-agent' }), join(homedir(), 'custom-agent'));
+  assert.throws(() => agentDir({ PI_CODING_AGENT_DIR: 'relative/agent' }), /absolute path/);
+});
+
+test('long descriptions are capped inside the 400-code-point budget', async t => {
   const root = await scratch('sub-desc-long-');
   t.after(() => cleanup(root));
   const dir = join(root, 'wordy');
@@ -122,7 +129,7 @@ test('long descriptions are capped on a word boundary', async t => {
   await writeFile(join(dir, 'prompt.md'), 'prompt');
   await writeFile(join(dir, 'description.md'), 'word '.repeat(200));
   const description = discover(root).definitions[0]?.description ?? '';
-  assert.ok(description.length <= 401);
+  assert.ok(description.length <= 400);
   assert.ok(description.endsWith('…'));
   assert.doesNotMatch(description, /wor…$/);
 });

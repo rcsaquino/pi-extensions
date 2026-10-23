@@ -86,6 +86,12 @@ test("cancellation before descriptor reads cleans up, and unsupported platforms 
     await assert.rejects(outboundFile(f.cwd, 'allowed/report.txt'), /Linux.*procfs/);
   } finally { Object.defineProperty(process, 'platform', platform); }
 });
+test("an aggregate attachment budget refuses a file larger than the remaining album bytes", async t => {
+  const f = await fixture(t);
+  await assert.rejects(outboundFile(f.cwd, "allowed/report.txt", undefined, undefined, undefined, 1), /size|50 MB/);
+  assert.equal((await outboundFile(f.cwd, "allowed/report.txt", undefined, undefined, undefined, UPLOAD_LIMIT)).data.toString(), "approved");
+});
+
 test("ordinary files, in-root symlink targets and downloaded attachments retain byte/type/name policy", async t => {
   const f = await fixture(t);
   await fs.symlink(f.path, join(f.cwd, "link.txt"));

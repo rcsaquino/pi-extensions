@@ -151,8 +151,13 @@ export class SessionSearch {
     let hasMore = false;
     let timedOut = false;
     let outputBytes = 0;
+    let escaped = 0;
+    let vanished = 0;
     if (coverage.roots.length) {
-      const args = ["--no-config", "--json", "--fixed-strings", "--ignore-case", "--hidden", "--no-ignore", "--text", "--follow", "--sort", "path", "--glob", "*.jsonl"];
+      // No --follow: recursive search never traverses a symlink. A link whose
+      // real target is inside a root stays searchable through that target's
+      // canonical path, and an escaping target is never read at all.
+      const args = ["--no-config", "--json", "--fixed-strings", "--ignore-case", "--hidden", "--no-ignore", "--text", "--sort", "path", "--glob", "*.jsonl"];
       // Raw and JSON-escaped spellings are both candidates. Decode every line
       // containing a Unicode escape, so escaped characters cannot disappear.
       const rawTerms = terms.flatMap((term) => term.split(/[\r\n]/u).filter(Boolean));
@@ -194,9 +199,25 @@ export class SessionSearch {
           if (!matches(decoded.text)) continue;
           const path = rgText(data.path);
           let canonical = canonicalFiles.get(path);
-          if (!canonical) {
-            canonical = await realpath(path);
+          if (canonical === undefined) {
+            try {
+              canonical = await realpath(path);
+            } catch {
+              // A file rotated or deleted between rg output and canonicalization
+              // is a bounded per-file skip, not a failed whole search.
+              canonical = "";
+              vanished++;
+            }
             canonicalFiles.set(path, canonical);
+          }
+          if (canonical === "") continue;
+          // Canonical containment stays authoritative even though rg never
+          // follows links: an explicit path or a future traversal change cannot
+          // turn an escaping target into a result.
+          if (!canonical.endsWith(".jsonl") || !coverage.roots.some((root) => within(canonical, root))) {
+            canonicalFiles.set(path, "");
+            escaped++;
+            continue;
           }
           const lineNumber = Number(data.line_number);
           const key = `${canonical}\0${lineNumber}`;
@@ -225,6 +246,8 @@ export class SessionSearch {
         signal?.removeEventListener("abort", abort);
       }
       signal?.throwIfAborted();
+      if (escaped) coverage.warnings.push(`${escaped} session file(s) outside the configured roots were skipped.`);
+      if (vanished) coverage.warnings.push(`${vanished} session file(s) disappeared or could not be resolved during the search and were skipped.`);
       if (spawnError) throw new Error(`Cannot run ripgrep (${executable}): ${spawnError.message}. Session search is incomplete.`);
       const code = await completion;
       if (stderr.trim()) coverage.warnings.push(`ripgrep: ${stderr.trim()}`);
@@ -248,7 +271,9 @@ export class SessionSearch {
     const coverage = await rootsForSearch(this.roots());
     const requested = resolve(path);
     const canonical = await realpath(path);
-    if (!canonical.endsWith(".jsonl") || !coverage.roots.some((root) => within(canonical, root) || within(requested, root))) {
+    // Authorization uses the canonical target only. A lexical in-root path that
+    // resolves through a symlink to an outside file must not be readable.
+    if (!canonical.endsWith(".jsonl") || !coverage.roots.some((root) => within(canonical, root))) {
       throw new Error("Session reads must target a .jsonl file inside a configured session root.");
     }
     const stream = createReadStream(canonical, { encoding: "utf8", signal });

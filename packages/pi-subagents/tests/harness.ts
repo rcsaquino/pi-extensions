@@ -30,6 +30,7 @@ export async function createHarness(options: {
   ephemeral?: boolean;
   setup?: boolean;
   maxRunning?: string;
+  noticeFailures?: number;
 } = {}): Promise<Harness> {
   const root = options.root ?? await scratch('sub-ext-');
   const agent = options.agent ?? 'worker';
@@ -53,12 +54,17 @@ export async function createHarness(options: {
   const tools = new Map<string, { execute: (...args: never[]) => Promise<unknown> }>();
   const handlers = new Map<string, ((...args: never[]) => unknown)[]>();
   const notices: Harness['notices'] = [];
+  let sendAttempts = 0;
   const pi = {
     registerTool: (tool: { name: string }) => { tools.set(tool.name, tool as never); },
     registerFlag: () => {},
     getFlag: (name: string) => name === 'subagents-max-running' ? options.maxRunning ?? '4' : undefined,
     getThinkingLevel: () => 'medium',
-    sendMessage: (message: Record<string, unknown>, sendOptions: Record<string, unknown>) => { notices.push({ message, options: sendOptions }); },
+    sendMessage: (message: Record<string, unknown>, sendOptions: Record<string, unknown>) => {
+      sendAttempts++;
+      if (sendAttempts <= (options.noticeFailures ?? 0)) throw new Error('synthetic transport failure');
+      notices.push({ message, options: sendOptions });
+    },
     on: (event: string, handler: (...args: never[]) => unknown) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },

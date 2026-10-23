@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { databasePath } from "./database-path.ts";
 import { APPLICATION_ID, INITIAL_SCHEMA, VERSION_TWO, attestSchema } from "./database-schema.ts";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { ExpectedError, isSqliteError, sqliteInfo, storeUnavailable } from "./errors.ts";
 import { chunk, excerpt, integer, MEMORY_LIMIT, nonempty, tags as validateTags } from "./text.ts";
+
+const MAX_SESSION_ROOTS = 100;
 
 export interface Memory {
   id: string;
@@ -256,9 +258,16 @@ export class MemoryDatabase {
     };
   }
 
-  rememberRoots(paths: string[]): void {
-    this.attempt("remember_roots", () => this.transaction(() => {
+  /** Add remembered roots and return those evicted by the newest-100 bound. */
+  rememberRoots(paths: string[]): string[] {
+    return this.attempt("remember_roots", () => this.transaction(() => {
       for (const path of paths) this.statement("INSERT OR IGNORE INTO session_roots(path) VALUES(?)").run(resolve(path));
+      const inserted = new Set(this.statement("SELECT path FROM session_roots").all().map((row) => String(row.path)));
+      // Bound the append-only registry to the newest roots, oldest rowids first.
+      this.statement("DELETE FROM session_roots WHERE rowid NOT IN (SELECT rowid FROM session_roots ORDER BY rowid DESC LIMIT ?)")
+        .run(MAX_SESSION_ROOTS);
+      const kept = new Set(this.statement("SELECT path FROM session_roots").all().map((row) => String(row.path)));
+      return [...inserted].filter((path) => !kept.has(path));
     }));
   }
 

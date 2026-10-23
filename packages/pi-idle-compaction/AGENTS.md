@@ -14,7 +14,7 @@ npm --prefix packages/pi-idle-compaction test
 npm --prefix packages/pi-idle-compaction run verify
 ```
 
-Install dependencies only when needed. Node `>=26.10.0 <27` and coding-agent `^0.99.2 || ^1.0.0` are declared. Runtime requires no npm dependencies; tooling/host links are development-only.
+Install dependencies only when needed. Node `>=26.12.0 <27` and coding-agent `^0.99.2 || ^1.0.0` are declared; the maintained offline baseline is Node 26.12.0 on Pi 1.3.0. Runtime requires no npm dependencies; tooling/host links are checkout-only development helpers excluded from the tarball.
 
 ## Module boundaries
 
@@ -33,7 +33,7 @@ Install dependencies only when needed. Node `>=26.10.0 <27` and coding-agent `^0
 - Recheck provider snapshots after asynchronous RPC admission. Do not admit a second overlapping compaction or imply that a snapshot excludes future work.
 - Never edit another extension's state/config/skills or create foreign runtime leases.
 - Cleanup uncertainty fails closed and stops future admission rather than claiming success.
-- Missing optional subagent tooling requires no RPC. Present-but-broken RPC remains unsafe; absence and unhealthy presence are not interchangeable.
+- Missing optional subagent tooling requires no RPC. Present-but-broken legacy RPC remains unsafe; absence and unhealthy presence are not interchangeable. Current `subagent_dispatch`/`subagent_steer`/`subagent_tasks` tools require the neutral provider, never the retired RPC, and fail closed when that provider is absent.
 - Registry providers are bounded, synchronous, versioned, and validated. Preserve same-session filtering and replacement-safe disposal. Unknown/malformed/throwing state cannot mean idle.
 - Never imply complete coverage of OS jobs, remote work, or another package merely because it is co-installed. Integrations require explicit reviewed provider/admission contracts.
 - Commands are native Pi controls; on/off is session-local and resets with a fresh extension runtime. Do not add transport bot commands or silently persistent settings.
@@ -41,7 +41,7 @@ Install dependencies only when needed. Node `>=26.10.0 <27` and coding-agent `^0
 ## Tests
 
 - `controller.test.mjs`: timer thresholds, generation/history/token races, attempts, error paths, and lease lifetime.
-- `background.test.mjs`: standalone admission, optional RPC failures, and provider changes during asynchronous admission.
+- `background.test.mjs`: standalone admission, current-tool provider gating, optional legacy RPC failures, and provider changes during asynchronous admission.
 - `registry.test.mjs`: supported contracts, same-session visibility, limits, malformed providers, and replacement-safe disposal.
 - `adapter.test.mjs`: actual lifecycle adapter, modes, optional integrations, and mocked compaction.
 - `loader.test.mjs`: isolated public Pi loading without runtime dependencies or subagents.

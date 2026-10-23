@@ -10,6 +10,10 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 const MAX_LINE = 8 * 1024 * 1024;
+// One buffered-byte budget independent of newline framing. A worker that never
+// terminates a line must not grow supervisor memory past the advertised cap.
+const MAX_BUFFER = MAX_LINE;
+const PROTOCOL_EXIT_GRACE_MS = 1000;
 const REPORT_CAP = 2 * 1024 * 1024;
 const LOG_CAP = 1024 * 1024;
 const LOG_TAIL = 256 * 1024;
@@ -185,7 +189,10 @@ function waitWorkerExit(ms) {
 
 const inflight = new Map();
 let rpcId = 0;
+// Fixed-capacity framing buffer: chunks are copied into one bounded allocation
+// instead of concatenated, so a newline-free flood cannot grow RSS past the cap.
 let stdoutBuffer = Buffer.alloc(0);
+let stdoutLength = 0;
 let protocolFailed = false;
 
 function writeLine(line) {
@@ -212,28 +219,67 @@ function rpc(command, timeoutMs = 30000) {
   });
 }
 
+function stopReadingStdout() {
+  // Release buffered bytes before the stream can deliver another chunk; the
+  // listener guard also covers chunks already queued in the event loop.
+  stdoutLength = 0;
+  try { worker?.stdout?.removeListener('data', drainStdout); } catch {}
+  try { worker?.stdout?.destroy(); } catch {}
+}
+
 function protocolFailure(reason) {
   if (protocolFailed || finalizing) return;
   protocolFailed = true;
+  stopReadingStdout();
   note(`protocol failure: ${reason}`);
   void finalize(pending ?? { code: 4 });
 }
 
+function handleLine(line) {
+  if (line.length && line[line.length - 1] === 13) line = line.subarray(0, line.length - 1);
+  if (!line.length) return;
+  if (line.length > MAX_LINE) { protocolFailure('line over 8 MiB'); return; }
+  let message;
+  try { message = JSON.parse(line.toString('utf8')); }
+  catch { protocolFailure('invalid JSON line'); return; }
+  handleMessage(message);
+}
+
 function drainStdout(chunk) {
-  stdoutBuffer = stdoutBuffer.length ? Buffer.concat([stdoutBuffer, chunk]) : chunk;
-  let index;
-  while ((index = stdoutBuffer.indexOf(10)) !== -1) {
-    let line = stdoutBuffer.subarray(0, index);
-    stdoutBuffer = stdoutBuffer.subarray(index + 1);
-    if (line.length && line[line.length - 1] === 13) line = line.subarray(0, line.length - 1);
-    if (!line.length) continue;
-    if (line.length > MAX_LINE) { protocolFailure('line over 8 MiB'); return; }
-    let message;
-    try { message = JSON.parse(line.toString('utf8')); }
-    catch { protocolFailure('invalid JSON line'); return; }
-    handleMessage(message);
+  if (protocolFailed || finalizing) return;
+  let offset = 0;
+  while (offset < chunk.length) {
+    const newline = chunk.indexOf(10, offset);
+    if (newline === -1) {
+      const remaining = chunk.length - offset;
+      if (stdoutLength + remaining > MAX_BUFFER) {
+        protocolFailure('unterminated line over 8 MiB');
+        return;
+      }
+      if (stdoutBuffer.length < MAX_BUFFER) stdoutBuffer = Buffer.allocUnsafe(MAX_BUFFER);
+      chunk.copy(stdoutBuffer, stdoutLength, offset);
+      stdoutLength += remaining;
+      return;
+    }
+    const segment = chunk.subarray(offset, newline);
+    if (stdoutLength + segment.length > MAX_LINE) {
+      protocolFailure('line over 8 MiB');
+      return;
+    }
+    let line;
+    if (stdoutLength === 0) {
+      line = segment;
+    } else {
+      if (stdoutBuffer.length < MAX_BUFFER) stdoutBuffer = Buffer.allocUnsafe(MAX_BUFFER);
+      segment.copy(stdoutBuffer, stdoutLength);
+      stdoutLength += segment.length;
+      line = stdoutBuffer.subarray(0, stdoutLength);
+    }
+    stdoutLength = 0;
+    handleLine(line);
+    if (protocolFailed) return;
+    offset = newline + 1;
   }
-  if (stdoutBuffer.length > MAX_LINE) protocolFailure('unterminated line over 8 MiB');
 }
 
 // ---------------------------------------------------------------- run state
@@ -366,7 +412,7 @@ async function finalize(code) {
 
   if (workerPid) {
     try { worker?.stdin?.end(); } catch {}
-    await waitWorkerExit(10000);
+    await waitWorkerExit(protocolFailed ? PROTOCOL_EXIT_GRACE_MS : 10000);
     killWorkerGroup();
   }
   process.exit(finalCode);

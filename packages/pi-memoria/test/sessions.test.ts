@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { SessionSearch } from "../src/sessions.ts";
@@ -124,6 +124,42 @@ test("long entries remain fully readable and citations cannot read outside sessi
   await assert.rejects(search.read(outside), /inside a configured/u);
 });
 
+test("in-root symlinks cannot expose session files outside a configured root", async (t) => {
+  const root = await temporary(t);
+  const outside = await temporary(t);
+  const secret = join(outside, "secret.jsonl");
+  await file(secret, [message("secret", "escalation phrase outside the root")]);
+  await symlink(secret, join(root, "linked.jsonl"));
+  await symlink(outside, join(root, "linked-directory"));
+  const search = new SessionSearch(() => [root]);
+  const page = await search.search({ query: "escalation phrase" });
+  assert.equal(page.results.length, 0);
+  await assert.rejects(search.read(join(root, "linked.jsonl")), /inside a configured/u);
+});
+
+test("session search never asks ripgrep to follow symlinks", async (t) => {
+  const root = await temporary(t);
+  const argsFile = join(root, "args.json");
+  const executable = join(root, "fake-rg");
+  await writeFile(executable, `#!${process.execPath}\nconst fs = require("node:fs");fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o700 });
+  await new SessionSearch(() => [root], executable).search({ query: "x" });
+  const args = JSON.parse(await readFile(argsFile, "utf8")) as string[];
+  assert.ok(!args.includes("--follow"), "rg must not traverse symlinks before containment filtering");
+  assert.ok(args.some((value) => value.endsWith(".jsonl") && value === "*.jsonl"));
+});
+
+test("a session file that disappears during canonicalization is skipped with a warning", async (t) => {
+  const root = await temporary(t);
+  const missing = join(root, "rotated-away.jsonl");
+  const executable = join(root, "fake-rg");
+  const record = { type: "match", data: { path: { text: missing }, lines: { text: "needle\n" }, line_number: 1 } };
+  await writeFile(executable, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(JSON.stringify(record))} + "\\n");\n`, { mode: 0o700 });
+  const page = await new SessionSearch(() => [root], executable).search({ query: "needle" });
+  assert.equal(page.results.length, 0);
+  assert.equal(page.exhausted, false);
+  assert.ok(page.warnings.some((warning) => warning.includes("disappeared or could not be resolved")));
+});
+
 test("missing roots, malformed entries and rg failures are explicit, never clean no-match results", async (t) => {
   const root = await temporary(t);
   await file(join(root, "partial.jsonl"), ['{"type":"message","broken":"needle"', message("good", "needle")]);
@@ -150,9 +186,9 @@ test("session search cancels child processes and reports timeouts", async (t) =>
   await assert.rejects(work, /abort/iu);
 });
 
-test("symlinked archives are searchable, deduplicated, and readable through their scoped path", async (t) => {
+test("in-root symlinked archives are searchable, deduplicated, and readable through their scoped path", async (t) => {
   const root = await temporary(t);
-  const archive = await temporary(t);
+  const archive = join(root, "real-archive");
   await file(join(archive, "old.jsonl"), [message("linked", "archived needle " + "x".repeat(8_000))]);
   await symlink(archive, join(root, "archive"), "dir");
   await symlink(archive, join(root, "duplicate"), "dir");

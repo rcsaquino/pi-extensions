@@ -19,7 +19,7 @@ async function fixture(t: test.TestContext, mode: Mode) {
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(resolve(scratch, "context-sdk-"));
   const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=CONTEXT-OFFLINE\nTELEGRAM_ALLOWED_ID=123,456\nELEVENLABS_API_KEY=\n", { mode: 0o600 });
+  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=CONTEXT-OFFLINE\nTELEGRAM_ALLOWED_ID=123,456\nTELEGRAM_DESTINATION_ID=123\nELEVENLABS_API_KEY=\n", { mode: 0o600 });
   const previousFetch = globalThis.fetch;
   const previous = { PI_OFFLINE: process.env.PI_OFFLINE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, TELEGRAM_ENV_FILE: process.env.TELEGRAM_ENV_FILE };
   process.env.PI_OFFLINE = "1"; process.env.PI_CODING_AGENT_DIR = agentDir; delete process.env.TELEGRAM_ENV_FILE;

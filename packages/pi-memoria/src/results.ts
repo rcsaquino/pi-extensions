@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
@@ -77,6 +77,36 @@ export interface SessionSearchDetails {
   hint: string;
 }
 
+const SPILL_PREFIX = "pi-memoria-result-";
+const SPILL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const SPILL_MAX_COUNT = 100;
+const SPILL_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+let lastSpillPrune = 0;
+
+/** Keep private response spills bounded: at most 100 directories, none older than 24 hours. */
+export async function pruneSpillFiles(base: string = tmpdir(), now = Date.now()): Promise<number> {
+  let entries;
+  try { entries = await readdir(base, { withFileTypes: true }); } catch { return 0; }
+  const spills: { path: string; modified: number }[] = [];
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(SPILL_PREFIX)) continue;
+    const path = join(base, entry.name);
+    try {
+      const info = await stat(path);
+      // Never remove another user's same-prefix directory on a shared /tmp.
+      if (info.isDirectory() && (uid === undefined || info.uid === uid)) spills.push({ path, modified: info.mtimeMs });
+    } catch { /* another process may have removed it */ }
+  }
+  spills.sort((left, right) => right.modified - left.modified);
+  let removed = 0;
+  for (const [index, spill] of spills.entries()) {
+    if (index < SPILL_MAX_COUNT && now - spill.modified <= SPILL_MAX_AGE_MS) continue;
+    try { await rm(spill.path, { recursive: true, force: true }); removed++; } catch { /* best effort */ }
+  }
+  return removed;
+}
+
 export interface SessionReadDetails {
   entry_type: string;
   entry_id: string | null;
@@ -110,7 +140,12 @@ async function capped(text: string, details: unknown, purpose: string): Promise<
   const serialized = JSON.stringify(details, null, 2);
   let notice: string;
   try {
-    const directory = await mkdtemp(join(tmpdir(), "pi-memoria-result-"));
+    const now = Date.now();
+    if (now - lastSpillPrune > SPILL_PRUNE_INTERVAL_MS) {
+      lastSpillPrune = now;
+      await pruneSpillFiles(tmpdir(), now).catch(() => 0);
+    }
+    const directory = await mkdtemp(join(tmpdir(), SPILL_PREFIX));
     const path = join(directory, "result.json");
     await withFileMutationQueue(path, () => writeFile(path, serialized, { mode: 0o600 }));
     notice = `\n\n[Response clipped to the ${RESULT_BYTES}-byte model-facing budget. ${purpose} (${Buffer.byteLength(serialized)} bytes) is at ${path}. Follow next_offset/next_text_offset or archived IDs in that file to retrieve the rest.]`;

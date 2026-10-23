@@ -15,11 +15,12 @@ export default function piImage(pi: ExtensionAPI): void {
     parameters: Type.Object({
       prompt: Type.String({ minLength: 1, maxLength: 4000, description: "Text description of the desired image" }),
       model: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "OpenRouter image model id; defaults to openai/gpt-image-2.5-sunburst" })),
-      inputPaths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 3, description: "Workspace-relative reference images (max 3, 20 MB each) for image-to-image" })),
+      inputPaths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 3, description: "Workspace-relative reference images (max 3, 20 MB each, 32 MB total) for image-to-image" })),
       size: Type.Optional(Type.String({ description: "Output size like 1024x1024, a tier (1K, 2K, 4K), or auto" })),
-      outputPath: Type.Optional(Type.String({ minLength: 1, description: "Workspace-relative output file or directory; defaults to artifacts/" })),
+      outputPath: Type.Optional(Type.String({ minLength: 1, description: "Workspace-relative output file or directory; defaults to artifacts/. An existing file is refused unless overwrite is true." })),
+      overwrite: Type.Optional(Type.Boolean({ description: "Replace an existing output file atomically. Defaults to false." })),
     }, { additionalProperties: false }),
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     async execute(_id, params, signal, _onUpdate, ctx) {
       try {
         const prompt = validatePrompt(params.prompt);
@@ -30,7 +31,7 @@ export default function piImage(pi: ExtensionAPI): void {
         const output = await resolveOutputPath(cwd, params.outputPath);
         const key = await readOpenRouterKey(agentDir(), cwd);
         const generated = await generateImageBytes({ key, model, prompt, size, references, signal });
-        const saved = await saveImage(output.directory, generated.data, prompt, output.filename);
+        const saved = await saveImage(output.directory, generated.data, prompt, output.filename, { root: output.root, overwrite: params.overwrite === true });
         const summary = { path: saved.path, bytes: saved.bytes, mime: saved.mime, model, ...(size ? { size } : {}), references: references.length };
         return { content: [{ type: "text", text: JSON.stringify(summary) }], details: summary };
       } catch (error) {

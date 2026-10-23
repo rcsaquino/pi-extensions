@@ -6,10 +6,12 @@ import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type Config, SafeError, TransportFailure, redact } from "./config.ts";
 import { formattedChunks, telegramFormat } from "./format.ts";
-import { isOpus, joinSpeech, speechChunks } from "./voice.ts";
+import { assertSpeechLength, isOpus, joinSpeech, speechChunks } from "./voice.ts";
 
 export const DOWNLOAD_LIMIT = 20 * 1024 * 1024;
 export const UPLOAD_LIMIT = 50 * 1024 * 1024;
+/** One album may not exceed this aggregate, regardless of ten 50 MB files. */
+export const MAX_ATTACHMENT_TOTAL_BYTES = 100 * 1024 * 1024;
 export type MediaKind = "document" | "photo" | "video" | "voice";
 export type Fetch = typeof globalThis.fetch;
 
@@ -284,6 +286,7 @@ export class TelegramApi {
   async generateSpeech(text: string, signal: AbortSignal): Promise<Buffer> {
     const { elevenKey, voiceId, modelId } = this.config;
     if (!elevenKey || !voiceId || !modelId) throw new SafeError("ElevenLabs API key, voice ID and model ID are required for voice replies.");
+    assertSpeechLength(text);
     const chunks = speechChunks(redact(text, this.config), modelId);
     const parts: Buffer[] = [];
     let total = 0;
@@ -325,7 +328,14 @@ export function audioUpload(data: Buffer, filename: string): { filename: string;
   return { filename: `${safeFilename(basename(filename, extname(filename)))}.${extension}`, mime: mimes[extension] };
 }
 
-export async function outboundFile(cwd: string, path: string, kind?: MediaKind, downloads?: string, signal?: AbortSignal): Promise<OutgoingFile> {
+export async function outboundFile(
+  cwd: string,
+  path: string,
+  kind?: MediaKind,
+  downloads?: string,
+  signal?: AbortSignal,
+  maxBytes: number = UPLOAD_LIMIT,
+): Promise<OutgoingFile> {
   signal?.throwIfAborted();
   const root = await realpath(cwd);
   const resolved = await realpath(resolve(root, path));
@@ -337,7 +347,9 @@ export async function outboundFile(cwd: string, path: string, kind?: MediaKind, 
   if (rel.split(/[\\/]/).some(part => /^(\.env(?:\..*)?|\.ssh|\.gnupg|auth\.json|credentials(?:\..*)?|secrets?(?:\..*)?)$/i.test(part))) {
     throw new SafeError("Refusing to send a credential or secret file.");
   }
-  const data = await readAttachment(resolved, UPLOAD_LIMIT, signal);
+  const budget = Math.min(UPLOAD_LIMIT, maxBytes);
+  if (!Number.isSafeInteger(budget) || budget <= 0) throw new SafeError(`Attachments exceed the ${MAX_ATTACHMENT_TOTAL_BYTES / (1024 * 1024)} MB album limit.`);
+  const data = await readAttachment(resolved, budget, signal);
   const extension = extname(resolved).toLowerCase();
   kind ??= [".jpg", ".jpeg", ".png"].includes(extension) && data.length <= 10 * 1024 * 1024 ? "photo"
     : extension === ".mp4" ? "video" : [".ogg", ".opus"].includes(extension) ? "voice" : "document";

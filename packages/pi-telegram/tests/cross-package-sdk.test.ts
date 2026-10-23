@@ -106,7 +106,8 @@ test("two extensions coexist: the foreground replies and the unrelated extension
   await until(() => f.sent.length >= 1, "settled final");
   await f.session.waitForIdle();
   await delay(60);
-  // A notice injected mid-run joins that settlement; the final answer is the only mirrored message.
-  assert.deepEqual(f.sent.map(message => [message.chat_id, message.text]), [[123, "Synthetic notice acknowledged."]]);
+  // The notice starts a continuation after the foreground final; both are user-visible
+  // in the TUI, so both are mirrored in order instead of dropping the earlier answer.
+  assert.deepEqual(f.sent.map(message => [message.chat_id, message.text]), [[123, "Synthetic foreground final."], [123, "Synthetic notice acknowledged."]]);
   assert.deepEqual(f.errors, []);
 });

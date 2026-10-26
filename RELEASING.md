@@ -13,7 +13,6 @@ Prepared versions are independent and are not claims of publication:
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.1**, preserving authenticated reply ownership through in-run custom context while keeping unrelated custom-origin runs unowned.
 - `packages/pi-image`: `@rcsaquino/pi-image` **0.1.0**, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-subagents`: `@rcsaquino/pi-subagents` **0.1.0**, supervised headless Pi workers with steerable runs, session-scoped notices and reports.
-- `packages/pi-skill-workshop`: `pi-skill-workshop` **0.1.0**, foreground learned-skill lifecycle with snapshots, reversible archive/restore, a change feed, and manual idle cleanup.
 
 The scoped identities avoid unrelated unscoped npm packages. The source folder, Pi entry point, tool/command names, and private runtime paths do not change with an npm scope. All packages declare public publication access; the root remains private.
 
@@ -77,7 +76,6 @@ After Git has deliberately been initialized, review the intended diff and commit
 - `pi-image-v0.1.0`
 - `pi-idle-compaction-v0.1.0`
 - `pi-subagents-v0.1.0`
-- `pi-skill-workshop-v0.1.0`
 
 The folder identifier keeps tag names distinct even for scoped npm packages. Do not create an ambiguous root `vX.Y.Z` tag for independently versioned packages. Do not recreate deleted Git history automatically.
 

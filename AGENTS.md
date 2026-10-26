@@ -2,14 +2,13 @@
 
 ## Project and scope
 
-This is a private npm workspace containing six independent Pi extension packages. The root supplies navigation and verification tooling, not an extension entry point. Read the target package's README and AGENTS.md before changing it; package-local instructions refine these rules for that subtree.
+This is a private npm workspace containing five independent Pi extension packages. The root supplies navigation and verification tooling, not an extension entry point. Read the target package's README and AGENTS.md before changing it; package-local instructions refine these rules for that subtree.
 
 - `packages/pi-memoria`: global memory and original-session retrieval.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram`, transport, media, and explicit speech delivery.
 - `packages/pi-image`: `@rcsaquino/pi-image`, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-idle-compaction`: native idle compaction and admission guards.
 - `packages/pi-subagents`: `@rcsaquino/pi-subagents`, supervised external Pi workers with steering, session-scoped notices, and reports; Linux procfs required.
-- `packages/pi-skill-workshop`: `pi-skill-workshop`, foreground learned-skill lifecycle with snapshots, reversible archive/restore, a change feed, and manual idle cleanup.
 - `scripts/workspaces.mjs`: sequential shared verification runner.
 - `scripts/link-host.mjs`: development-only missing/broken host dependency links.
 - `scripts/publication.test.mjs`: offline release-metadata, included-file, import-closure, documentation, and publication-workflow regression checks.

@@ -11,7 +11,7 @@
 
 </div>
 
-One repository, six separately versioned Pi packages. Install only the extensions you need. The root is a private npm development workspace, not an all-in-one Pi extension or a published npm package.
+One repository, five separately versioned Pi packages. Install only the extensions you need. The root is a private npm development workspace, not an all-in-one Pi extension or a published npm package.
 
 ## Packages
 
@@ -20,7 +20,6 @@ One repository, six separately versioned Pi packages. Install only the extension
 - **[@rcsaquino/pi-image](packages/pi-image/README.md)**: text-to-image and image-to-image generation via the OpenRouter Images API, using the stored OpenRouter login.
 - **[pi-idle-compaction](packages/pi-idle-compaction/README.md)**: native compaction after an eligible idle period, with conservative background-work checks.
 - **[@rcsaquino/pi-subagents](packages/pi-subagents/README.md)**: supervised headless Pi workers in separate processes, with steerable runs, session-scoped notices, and final reports. Linux only; ships no agent definitions.
-- **[pi-skill-workshop](packages/pi-skill-workshop/README.md)**: foreground skill lifecycle management with snapshots, reversible archive/restore, change history, and manual idle cleanup. No background reviewer or timers.
 
 Each package owns its manifest, entry point, runtime dependencies, tests, README, and agent instructions. Versions and release readiness are independent; inclusion here does not imply npm publication or production activation.
 
@@ -62,7 +61,7 @@ pi remove /absolute/path/to/pi-extensions/packages/pi-subagents
 Removal does not erase that extension's runtime data.
 
 > [!IMPORTANT]
-> Do not install the repository root expecting all six extensions to load. Do not register a package and a copied extension-directory entry for the same implementation. Cloning or editing files is not activation, and a service restart needs separate approval.
+> Do not install the repository root expecting all five extensions to load. Do not register a package and a copied extension-directory entry for the same implementation. Cloning or editing files is not activation, and a service restart needs separate approval.
 
 ## Development
 

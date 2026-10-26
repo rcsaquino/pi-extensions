@@ -13,7 +13,6 @@ const identities = new Map([
   ['pi-memoria', 'pi-memoria'],
   ['pi-telegram', '@rcsaquino/pi-telegram'],
   ['pi-image', '@rcsaquino/pi-image'],
-  ['pi-skill-workshop', 'pi-skill-workshop'],
 ]);
 const read = path => readFileSync(path, 'utf8');
 const manifest = path => JSON.parse(read(path));
@@ -69,7 +68,7 @@ test('root stays private and publication checks join shared verification', () =>
   assert.equal(data.scripts['check:publication'], 'node --test scripts/publication.test.mjs');
 });
 
-test('six independent identities use the scoped names only where needed', () => {
+test('five independent identities use the scoped names only where needed', () => {
   const directories = readdirSync(join(root, 'packages'), { withFileTypes: true })
     .filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   assert.deepEqual(directories, [...identities.keys()].sort());
@@ -186,7 +185,7 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /working-directory: packages\/pi-memoria/);
   assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);
-  for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-subagents', 'pi-skill-workshop']) {
+  for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-subagents']) {
     assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
   }
 });

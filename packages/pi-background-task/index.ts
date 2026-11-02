@@ -5,7 +5,7 @@ import { existsSync, statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { buildNotice } from "./src/notice.ts";
-import { forceKill, launchDetached, terminate } from "./src/launch.ts";
+import { buildWorkerPrompt, forceKill, launchDetached, terminate } from "./src/launch.ts";
 import {
   formatDuration, listRuns, processAlive, prepareRun, pruneRuns, readMeta, readText,
   reportPath, stderrPath, taskPath, writeMeta, type RunMeta,
@@ -166,7 +166,8 @@ export default function backgroundTask(pi: ExtensionAPI): void {
         status: "running",
       };
       await prepareRun(meta);
-      await writeFile(taskPath(parentSessionId, id), `# Task\n\n${params.task}\n`, { mode: 0o600 });
+      const prompt = buildWorkerPrompt(params.task);
+      await writeFile(taskPath(parentSessionId, id), `# Task\n\n${prompt}\n`, { mode: 0o600 });
 
       let launched;
       try {
@@ -174,7 +175,7 @@ export default function backgroundTask(pi: ExtensionAPI): void {
           sessionFile,
           childSessionId,
           title: meta.title,
-          task: params.task,
+          prompt,
           cwd,
           reportPath: reportPath(parentSessionId, id),
           stderrPath: stderrPath(parentSessionId, id),

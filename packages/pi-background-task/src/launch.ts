@@ -1,11 +1,23 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 
+export const WORKER_NOTE =
+  "[Background job] This session was started detached by the background_task tool. " +
+  "No one will read intermediate output or answer questions; do not ask for confirmation. " +
+  "Carry out the assignment below and finish with a concise plain-text report: what you did, " +
+  "files or paths produced, verification, and any blockers. Do not dispatch another background " +
+  "task unless the assignment explicitly requires it.";
+
+/** Prefix a task with the operational contract a fork cannot guarantee. */
+export function buildWorkerPrompt(task: string): string {
+  return `${WORKER_NOTE}\n\n---\n\n${task}`;
+}
+
 export interface LaunchOptions {
   sessionFile: string;
   childSessionId: string;
   title: string;
-  task: string;
+  prompt: string;
   cwd: string;
   reportPath: string;
   stderrPath: string;
@@ -26,7 +38,7 @@ export function launchDetached(options: LaunchOptions): LaunchResult {
       "--fork", options.sessionFile,
       "--session-id", options.childSessionId,
       "--name", options.title,
-      "-p", options.task,
+      "-p", options.prompt,
     ], {
       cwd: options.cwd,
       detached: true,

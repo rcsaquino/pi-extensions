@@ -17,7 +17,8 @@ A fork keeps full context and capability, and the session file lives in the norm
 
 ## Behavior
 
-- Command: `pi --fork <session file> --session-id <run id> --name <title> -p <task>` with `detached: true`, so the worker survives this process.
+- Command: `pi --fork <session file> --session-id <run id> --name <title> -p <prompt>` with `detached: true`, so the worker survives this process. `<prompt>` is the caller's task prefixed by a fixed operational note: the worker is detached, cannot ask questions, must end with a report, and must not nest dispatch unless the task requires it.
+- The note travels in the user message, so the system prompt and forked history stay byte-identical to the parent for prompt caching.
 - One notice per run, injected with `pi.sendMessage(..., { triggerTurn: true, deliverAs: "followUp" })`, carrying a 1,200 character excerpt and the run id.
 - At most four concurrent runs per session, and at most two nesting levels.
 - No timeout. A stuck run is stopped with `background_kill`.
@@ -31,7 +32,7 @@ Artifacts live outside the session store:
 ```
 <agent dir>/background/<parent session id>/<run id>/
   meta.json    status, pid, timestamps, exit code, notified flag
-  task.md      the dispatched task
+  task.md      the dispatched prompt (note plus task)
   report.md    worker stdout (the final answer)
   stderr.log   worker stderr
 ```

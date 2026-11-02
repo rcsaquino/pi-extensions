@@ -65,6 +65,8 @@ export async function writeMeta(meta: RunMeta): Promise<void> {
 }
 
 export async function readMeta(parentSessionId: string, id: string): Promise<RunMeta | undefined> {
+  // Caller-supplied ids are joined into paths; only run dir names may pass.
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(id) || id === "." || id === "..") return undefined;
   try {
     const raw = await readFile(metaPath(parentSessionId, id), "utf8");
     const parsed = JSON.parse(raw) as RunMeta;
@@ -72,6 +74,12 @@ export async function readMeta(parentSessionId: string, id: string): Promise<Run
   } catch {
     return undefined;
   }
+}
+
+/** Exit code and kill note decide the settled status in one place. */
+export function settleMeta(meta: RunMeta, exitCode: number | null, note?: string, now = new Date().toISOString()): RunMeta {
+  const status = note === "killed" ? "killed" : exitCode === 0 ? "done" : exitCode === null ? "unknown" : "failed";
+  return { ...meta, status, exitCode, finishedAt: now, ...(note ? { note } : {}) };
 }
 
 export async function readText(path: string): Promise<string | undefined> {

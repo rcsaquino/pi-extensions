@@ -8,13 +8,21 @@ import { buildNotice } from "./src/notice.ts";
 import { buildWorkerPrompt, forceKill, launchDetached, terminate } from "./src/launch.ts";
 import {
   formatDuration, listRuns, processAlive, prepareRun, pruneRuns, readMeta, readText,
-  reportPath, stderrPath, taskPath, writeMeta, type RunMeta,
+  reportPath, settleMeta, stderrPath, taskPath, writeMeta, type RunMeta,
 } from "./src/store.ts";
 
 const MAX_CONCURRENT = 4;
 const MAX_DEPTH = 2;
 const POLL_MS = 2000;
 const RESULT_LIMIT = 12000;
+// Count-then-create must not interleave: parallel tool calls would exceed the cap.
+let dispatchGate: Promise<unknown> = Promise.resolve();
+function exclusive<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = dispatchGate;
+  let release!: () => void;
+  dispatchGate = new Promise<void>(resolve => { release = resolve; });
+  return previous.then(async () => { try { return await operation(); } finally { release(); } });
+}
 
 interface SessionRef { id: string; file: string }
 
@@ -67,14 +75,7 @@ export default function backgroundTask(pi: ExtensionAPI): void {
     const current = (await readMeta(meta.parentSessionId, meta.id)) ?? meta;
     if (current.status !== "running") return;
 
-    const status = note === "killed" ? "killed" : exitCode === 0 ? "done" : exitCode === null ? "unknown" : "failed";
-    const updated: RunMeta = {
-      ...current,
-      status,
-      exitCode,
-      finishedAt: new Date().toISOString(),
-      ...(note ? { note } : {}),
-    };
+    const updated = settleMeta(current, exitCode, note);
     await writeMeta(updated);
 
     const report = await readText(reportPath(updated.parentSessionId, updated.id));
@@ -139,62 +140,64 @@ export default function backgroundTask(pi: ExtensionAPI): void {
     }, { additionalProperties: false }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     async execute(_callId, params, _signal, _update, ctx) {
-      if (depth() >= MAX_DEPTH) {
-        throw new Error(`Background depth limit ${MAX_DEPTH} reached; finish this task instead of nesting further.`);
-      }
-      const { id: parentSessionId, file: sessionFile } = sessionRef(ctx);
-      const running = (await listRuns(parentSessionId)).filter(run => run.status === "running" && processAlive(run.pid, run.childSessionId));
-      if (running.length >= MAX_CONCURRENT) {
-        throw new Error(`${running.length} background tasks are already running (limit ${MAX_CONCURRENT}). Wait for a notice or kill one with background_kill.`);
-      }
+      return exclusive(async () => {
+        if (depth() >= MAX_DEPTH) {
+          throw new Error(`Background depth limit ${MAX_DEPTH} reached; finish this task instead of nesting further.`);
+        }
+        const { id: parentSessionId, file: sessionFile } = sessionRef(ctx);
+        const running = (await listRuns(parentSessionId)).filter(run => run.status === "running" && processAlive(run.pid, run.childSessionId));
+        if (running.length >= MAX_CONCURRENT) {
+          throw new Error(`${running.length} background tasks are already running (limit ${MAX_CONCURRENT}). Wait for a notice or kill one with background_kill.`);
+        }
 
-      const cwd = resolve(params.cwd ?? ctx.cwd);
-      if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
-        throw new Error(`Working directory does not exist: ${cwd}`);
-      }
+        const cwd = resolve(params.cwd ?? ctx.cwd);
+        if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+          throw new Error(`Working directory does not exist: ${cwd}`);
+        }
 
-      const id = newId();
-      const childSessionId = id;
-      const meta: RunMeta = {
-        id,
-        title: params.title.trim() || id,
-        parentSessionId,
-        childSessionId,
-        pid: 0,
-        cwd,
-        startedAt: new Date().toISOString(),
-        status: "running",
-      };
-      await prepareRun(meta);
-      const prompt = buildWorkerPrompt(params.task);
-      await writeFile(taskPath(parentSessionId, id), `# Task\n\n${prompt}\n`, { mode: 0o600 });
-
-      let launched;
-      try {
-        launched = launchDetached({
-          sessionFile,
+        const id = newId();
+        const childSessionId = id;
+        const meta: RunMeta = {
+          id,
+          title: params.title.trim() || id,
+          parentSessionId,
           childSessionId,
-          title: meta.title,
-          prompt,
+          pid: 0,
           cwd,
-          reportPath: reportPath(parentSessionId, id),
-          stderrPath: stderrPath(parentSessionId, id),
-          depth: depth() + 1,
-        });
-      } catch (error) {
-        await writeMeta({ ...meta, status: "failed", finishedAt: new Date().toISOString(), note: "launch failed" });
-        throw error;
-      }
+          startedAt: new Date().toISOString(),
+          status: "running",
+        };
+        await prepareRun(meta);
+        const prompt = buildWorkerPrompt(params.task);
+        await writeFile(taskPath(parentSessionId, id), `# Task\n\n${prompt}\n`, { mode: 0o600 });
 
-      const started: RunMeta = { ...meta, pid: launched.pid };
-      await writeMeta(started);
-      watch(ctx, started);
-      void launched.exited.then(code => finalize(ctx, started, code)).catch(() => {});
+        let launched;
+        try {
+          launched = launchDetached({
+            sessionFile,
+            childSessionId,
+            title: meta.title,
+            prompt,
+            cwd,
+            reportPath: reportPath(parentSessionId, id),
+            stderrPath: stderrPath(parentSessionId, id),
+            depth: depth() + 1,
+          });
+        } catch (error) {
+          await writeMeta({ ...meta, status: "failed", finishedAt: new Date().toISOString(), note: "launch failed" });
+          throw error;
+        }
 
-      return {
-        content: [{ type: "text", text: `Started ${id} (pid ${launched.pid}) in ${cwd}. A notice arrives when it settles; do not poll.` }],
-        details: { ...started, report: reportPath(parentSessionId, id) },
-      };
+        const started: RunMeta = { ...meta, pid: launched.pid };
+        await writeMeta(started);
+        watch(ctx, started);
+        void launched.exited.then(code => finalize(ctx, started, code)).catch(() => {});
+
+        return {
+          content: [{ type: "text", text: `Started ${id} (pid ${launched.pid}) in ${cwd}. A notice arrives when it settles; do not poll.` }],
+          details: { ...started, report: reportPath(parentSessionId, id) },
+        };
+      });
     },
   });
 

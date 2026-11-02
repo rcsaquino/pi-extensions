@@ -1,0 +1,111 @@
+import { strict as assert } from "node:assert";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { test } from "node:test";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import backgroundTask from "../index.ts";
+import { prepareRun, readMeta, reportPath, type RunMeta } from "../src/store.ts";
+
+const root = await mkdtemp(join(tmpdir(), "pi-background-task-recovery-"));
+process.env.PI_CODING_AGENT_DIR = root;
+
+const PARENT = "parent-session";
+const deadPid = 2_147_483_646;
+
+function meta(id: string, overrides: Partial<RunMeta> = {}): RunMeta {
+  return {
+    id, title: id, parentSessionId: PARENT, childSessionId: id, pid: deadPid,
+    cwd: root, startedAt: "2026-11-02T00:00:00.000Z", status: "running", ...overrides,
+  };
+}
+
+/** The extension reaches Pi through on/registerTool/sendMessage only. */
+function harness() {
+  const handlers = new Map<string, (...args: never[]) => unknown>();
+  const notices: string[] = [];
+  const pi = {
+    on(event: string, handler: (...args: never[]) => unknown) { handlers.set(event, handler); },
+    registerTool() {},
+    sendMessage(message: { content: string }) { notices.push(message.content); },
+  } as unknown as ExtensionAPI;
+  backgroundTask(pi);
+  const ctx = { sessionManager: { getSessionId: () => PARENT, getSessionFile: () => join(root, "session.jsonl") }, cwd: root } as unknown as ExtensionContext;
+  const start = () => handlers.get("session_start")!({} as never, ctx as never);
+  return { notices, start };
+}
+
+async function until(predicate: () => boolean, timeout = 4000): Promise<void> {
+  const begin = Date.now();
+  while (!predicate()) {
+    if (Date.now() - begin > timeout) assert.fail("timed out waiting for a recovered notice");
+    await delay(20);
+  }
+  await delay(200);
+}
+
+test("recover finalizes a run whose process died, once, and never announces it again", async (t) => {
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const run = meta("bg-20261102-000000-dead01");
+  await prepareRun(run);
+  const { notices, start } = harness();
+
+  await start();
+  await until(() => notices.length > 0);
+
+  const settled = await readMeta(PARENT, run.id);
+  assert.equal(settled?.status, "unknown");
+  assert.equal(settled?.exitCode, null);
+  assert.equal(settled?.notified, true);
+  assert.ok(settled?.finishedAt);
+  assert.equal(notices.length, 1);
+
+  await start();
+  await delay(900);
+  assert.equal(notices.length, 1, "a settled run must not be announced again");
+});
+
+test("two overlapping recoveries settle one dead run with one notice", async (t) => {
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const run = meta("bg-20261102-000000-race01");
+  await prepareRun(run);
+  const { notices, start } = harness();
+
+  await Promise.all([start(), start()]);
+  await until(() => notices.length > 0);
+  assert.equal(notices.length, 1, "the second settle must be a no-op");
+
+  const settled = await readMeta(PARENT, run.id);
+  assert.equal(settled?.status, "unknown");
+  assert.equal(settled?.notified, true);
+});
+
+test("recover announces a settled but unnotified run, and leaves notified or live runs alone", async (t) => {
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const unnotified = meta("bg-20261102-000000-unnot1", { status: "done", exitCode: 0, finishedAt: "2026-11-02T00:10:00.000Z", notified: false });
+  const notified = meta("bg-20261102-000000-notif1", { status: "failed", exitCode: 1, finishedAt: "2026-11-02T00:11:00.000Z", notified: true });
+  const live = meta("bg-20261102-000000-live01");
+  const child = spawn("sleep", ["30"], { stdio: "ignore", env: { ...process.env, PI_BACKGROUND_RUN: live.childSessionId } });
+  live.pid = child.pid!;
+  t.after(() => child.kill("SIGKILL"));
+  for (const run of [unnotified, notified, live]) await prepareRun(run);
+  await writeFile(reportPath(PARENT, unnotified.id), "recovered report\n");
+  const { notices, start } = harness();
+
+  await start();
+  await until(() => notices.length > 0);
+
+  assert.equal(notices.length, 1, "only the unnotified run is announced");
+  assert.match(notices[0], new RegExp(unnotified.id));
+  assert.match(notices[0], /recovered report/);
+  assert.equal((await readMeta(PARENT, unnotified.id))?.notified, true);
+  assert.equal((await readMeta(PARENT, unnotified.id))?.status, "done", "announcing must not rewrite the status");
+  assert.equal((await readMeta(PARENT, notified.id))?.notified, true);
+  assert.equal((await readMeta(PARENT, live.id))?.status, "running", "a live run is left running");
+
+  await start();
+  await delay(900);
+  assert.equal(notices.length, 1, "recovery is idempotent");
+});

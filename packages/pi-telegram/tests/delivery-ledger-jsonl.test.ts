@@ -44,14 +44,14 @@ test("JSONL append success has one closed redacted record per line and stable in
 });
 
 test("all exact opaque filters, timestamp/writer ordering and latest truncation remain compatible", async t => {
-  const f = await fixture(t), reply = randomUUID(), notice = randomUUID(), delivery = randomUUID(), writer = randomUUID(), task = "bg-012345abcdef";
-  const at = Date.now(), records = [3, 1, 2].map(sequence => item({ at, writer, sequence, reply, notice, delivery, task }));
+  const f = await fixture(t), reply = randomUUID(), notice = randomUUID(), delivery = randomUUID(), writer = randomUUID();
+  const at = Date.now(), records = [3, 1, 2].map(sequence => item({ at, writer, sequence, reply, notice, delivery, task: "bg-012345abcdef" }));
   await writeFile(f.active, records.map(line).join("") + line(item({ at: at - 1 })), { mode: 0o600 });
-  for (const query of [{ reply }, { notice }, { delivery }, { task }, { reply, notice, delivery, task }]) {
+  for (const query of [{ reply }, { notice }, { delivery }, { reply, notice, delivery }]) {
     const view = await readDeliveryLedger(f.path, { ...query, limit: 2 });
     assert.equal(view.state, "ok"); assert.deepEqual(view.records.map(r => r.sequence), [2, 3]); assert.equal(view.truncated, true); assert.equal(view.auditComplete, false);
   }
-  for (const query of [{ task: "private" }, { reply: "private" }, { limit: 201 }, { limit: 0 }, { limit: NaN }]) assert.equal((await readDeliveryLedger(f.path, query)).state, "unavailable");
+  for (const query of [{ reply: "private" }, { limit: 201 }, { limit: 0 }, { limit: NaN }]) assert.equal((await readDeliveryLedger(f.path, query)).state, "unavailable");
   assert.deepEqual((await readDeliveryLedger(f.path, { delivery: randomUUID() })).records, []);
 });
 

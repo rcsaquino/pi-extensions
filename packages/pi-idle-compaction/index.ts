@@ -1,53 +1,14 @@
-import { randomUUID } from 'node:crypto';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { createIdleCompactor } from './controller.mjs';
 import { createBackgroundGuard } from './background.mjs';
 
 // Standalone runtime: Node built-ins + the host's public Pi API only.
-interface RpcReply {
-  version?: unknown;
-  requestId?: unknown;
-  success?: unknown;
-  data?: unknown;
-}
-
 export default function idleCompaction(pi: ExtensionAPI) {
-  const pending = new Set<() => void>();
-  let stopped = false;
-  const rpc = (method: string): Promise<unknown> => new Promise(resolve => {
-    if (stopped) { resolve(null); return; }
-    const requestId = randomUUID();
-    let done = false;
-    let off = () => {};
-    let timeout: ReturnType<typeof setTimeout>;
-    const finish = (value: unknown) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timeout);
-      off();
-      pending.delete(cancel);
-      resolve(value);
-    };
-    const cancel = () => finish(null);
-    off = pi.events.on(`subagents:rpc:v1:reply:${requestId}`, (reply: unknown) => {
-      const value = reply as RpcReply | null;
-      finish(value?.version === 1 && value.requestId === requestId && value.success ? value.data : null);
-    });
-    pending.add(cancel);
-    timeout = setTimeout(cancel, 5000);
-    timeout.unref?.();
-    try { pi.events.emit('subagents:rpc:v1:request', { version: 1, requestId, method, params: {} }); }
-    catch { cancel(); }
-  });
   const controller = createIdleCompactor({
-    acquireBackgroundLease: createBackgroundGuard({
-      getTools: () => pi.getAllTools(),
-      rpc,
-    }),
+    acquireBackgroundLease: createBackgroundGuard({ getTools: () => pi.getAllTools() }),
   });
 
   pi.on('session_start', (_event, ctx) => {
-    stopped = false;
     // Do not run timers in noninteractive batch/child sessions.
     if (ctx.mode === 'tui' || ctx.mode === 'rpc') controller.reset(ctx);
     else controller.setEnabled(false, ctx);
@@ -65,11 +26,7 @@ export default function idleCompaction(pi: ExtensionAPI) {
   pi.on('session_before_compact', () => { controller.suspend(); });
   pi.on('session_compact', (_event, ctx) => { controller.resume(ctx); controller.compacted(); });
   pi.on('session_compact_failed', () => { controller.failed(); });
-  pi.on('session_shutdown', async () => {
-    stopped = true;
-    for (const cancel of [...pending]) cancel();
-    await controller.shutdown();
-  });
+  pi.on('session_shutdown', () => controller.shutdown());
   pi.registerCommand('idle-compact', {
     description: 'Standalone idle compaction status or session-local on/off',
     handler: async (args, ctx) => {

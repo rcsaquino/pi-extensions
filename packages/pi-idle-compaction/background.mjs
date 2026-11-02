@@ -73,8 +73,7 @@ export function registeredWorkIdle(sessionIds, scope = globalThis, nowMs = Date.
   return true;
 }
 
-const SUBAGENT_TOOLS = new Set(['subagent', 'subagents_enable', 'subagent_supervisor', 'bg_wait']);
-// The retired pi-subagents exposed these names and a provider, not the retired RPC.
+// The retired pi-subagents exposed these names and a provider, never RPC.
 const CURRENT_SUBAGENT_TOOLS = new Set(['subagent_dispatch', 'subagent_steer', 'subagent_tasks']);
 const SUBAGENTS_PROVIDER = 'pi-subagents';
 function hasRegisteredProvider(scope, name) {
@@ -86,7 +85,7 @@ function hasRegisteredProvider(scope, name) {
   }
   return false;
 }
-export function createBackgroundGuard({ getTools, rpc, scope = globalThis }) {
+export function createBackgroundGuard({ getTools, scope = globalThis }) {
   return async ctx => {
     const sessionId = ctx.sessionManager.getSessionId();
     const sessionFile = ctx.sessionManager.getSessionFile();
@@ -100,15 +99,6 @@ export function createBackgroundGuard({ getTools, rpc, scope = globalThis }) {
     // the retired RPC. With its tools present but no provider, fail closed
     // rather than assume an invisible runner is idle.
     if (hasCurrentSubagents && !hasRegisteredProvider(scope, SUBAGENTS_PROVIDER)) return null;
-    // Only a PRESENT legacy subagent runner requires its RPC owner. Absent
-    // package is a supported standalone mode; present-but-broken is unsafe.
-    if (tools.some(tool => SUBAGENT_TOOLS.has(tool.name))) {
-      const ping = await rpc('ping');
-      if ((ping?.session?.sessionFile ?? ping?.session?.sessionId) !== sessionIds[0]) return null;
-      const status = await rpc('status');
-      if (status?.isError || status?.fleet?.version !== 1 || status.fleet.totalActive !== 0
-        || status.fleet.topLevelAsyncCapacity?.used !== 0) return null;
-    }
     if (!registeredWorkIdle(sessionIds, scope)) return null;
     // Controller retains its admission-token interface. Snapshots are not an
     // exclusion lease and do not write any other extension's runtime state.

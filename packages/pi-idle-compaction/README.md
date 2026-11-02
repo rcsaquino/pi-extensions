@@ -13,7 +13,7 @@ A standalone extension using Node built-ins and the public Pi API. No runtime np
 ## Requirements
 
 - **Node.js `>=26.12.0 <27`**, as declared by this package.
-- Pi coding-agent peer **`^0.99.2 || ^1.0.0`**.
+- Pi coding-agent peer **`>=1.5.0 <2`**.
 - Maintained offline baseline: Linux x64, Node 26.12.0, Pi 1.5.0. Earlier 26.10/26.11 runs and Pi 1.1/1.2 are historical; other platforms and future APIs require their own checks.
 
 Production does not need a package-local `node_modules` directory. Development tests need only this package's tools and the Pi host.

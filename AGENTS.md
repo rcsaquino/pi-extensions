@@ -19,7 +19,7 @@ Keep package versions, APIs, dependencies, and installability independent unless
 
 ## Environment and setup
 
-The full suite currently requires Node 26.12.x or newer in the 26.x line, npm, and a Node-based Pi host. The validated combined offline host is Pi 1.5.0 on Node 26.12.0. Read package manifests for their different engines and peer ranges. Memoria needs `rg`; Telegram ownership needs util-linux-compatible `flock`, and long-speech tests need ffmpeg.
+The full suite currently requires Node 26.12.x or newer in the 26.x line, npm, and a Node-based Pi host. The validated combined offline host is Pi 1.5.0 on Node 26.12.0; every package declares the same Pi peer range, `>=1.5.0 <2`. Read package manifests for their different Node engines. Memoria needs `rg`; Telegram ownership needs util-linux-compatible `flock`, and long-speech tests need ffmpeg.
 
 Install dependencies package by package, using that package's README. For example:
 

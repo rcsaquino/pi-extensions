@@ -19,7 +19,7 @@
     "link-host": "node scripts/link-host.mjs"
   },
   "dependencies": {},
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "^0.99.2 || ^1.0.0" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.5.0 <2" },
   "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
   "devDependencies": {
     "@types/node": "22.19.19",

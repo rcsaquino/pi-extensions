@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { agentDir, readOpenRouterKey } from "./src/auth.ts";
 import { generateImageBytes } from "./src/client.ts";

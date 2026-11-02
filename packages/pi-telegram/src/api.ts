@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { DeliveryLedger, methods, transportCause, type DeliveryContext, type DeliveryEvent } from "./delivery-ledger.ts";
+import { DeliveryLedger, methods, transportCause, type CauseCode, type DeliveryContext, type DeliveryEvent } from "./delivery-ledger.ts";
 import { readAttachment } from "./attachment.ts";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -14,6 +14,10 @@ export const UPLOAD_LIMIT = 50 * 1024 * 1024;
 export const MAX_ATTACHMENT_TOTAL_BYTES = 100 * 1024 * 1024;
 export type MediaKind = "document" | "photo" | "video" | "voice";
 export type Fetch = typeof globalThis.fetch;
+/** Failures that occur before a TCP connection, so no HTTP request bytes reached Telegram. */
+const preConnectCauses: ReadonlySet<CauseCode> = new Set([
+  "UND_ERR_CONNECT_TIMEOUT", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH",
+]);
 
 export interface TgFile {
   file_id: string;
@@ -141,8 +145,10 @@ export class TelegramApi {
       });
     } catch (error) {
       // Observed signals establish cancellation/deadline. Only allowlisted own cause codes survive.
+      const cause = transportCause(error);
+      const notDelivered = outgoing && !signal.aborted && !deadline.aborted && preConnectCauses.has(cause);
       const failure = new TransportFailure(signal.aborted ? "TG_TRANSPORT_CANCELLED" : deadline.aborted ? "TG_TRANSPORT_TIMEOUT" : "TG_TRANSPORT_FAILED",
-        outgoing ? "unknown" : "not_applicable", transportCause(error));
+        outgoing && !notDelivered ? "unknown" : "not_applicable", cause);
       if (operation) this.observe({ operation: operation === "generateSpeech" ? "service" : "incoming", method: operation, phase: "api_failed",
         outcome: "not_applicable", code: failure.code, cause: failure.causeCode });
       throw failure;
@@ -182,11 +188,20 @@ export class TelegramApi {
         rejected = true;
         this.observe({ ...base, phase: "api_rejected", outcome: outgoing ? "rejected" : "not_applicable", attempt: attempt + 1,
           rejection: error.code === 429 ? "rate_limit" : error.code === 401 ? "authentication" : error.code === 403 ? "access" : error.code === 409 ? "conflict" : "other" });
-        // Only retry explicitly rejected 429s, never ambiguous network failures on sends.
+        // Only explicit 429s retry here; the catch below retries provably pre-connect failures once.
         if (error.code !== 429 || attempt >= 2) throw error;
         await delay(error.retryAfter * 1000, undefined, { signal });
       } catch (error) {
         if (!rejected) this.observe({ ...base, phase: "api_failed", attempt: attempt + 1, ...this.failure(error, outgoing) });
+        let retryable = false;
+        try {
+          retryable = !rejected && outgoing && attempt === 0 && !signal.aborted && error instanceof TransportFailure &&
+            error.code === "TG_TRANSPORT_FAILED" && error.deliveryOutcome === "not_applicable" && preConnectCauses.has(error.causeCode);
+        } catch { /* Hostile local errors keep their original identity. */ }
+        if (retryable) {
+          await delay(250, undefined, { signal });
+          continue;
+        }
         throw error;
       }
     }

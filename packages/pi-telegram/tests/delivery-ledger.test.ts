@@ -188,6 +188,63 @@ test("diagnostic persistence failures and throwing observers never change delive
   assert.equal(calls, 2);
 });
 
+test("provably pre-connect send failures retry once and never duplicate", async t => {
+  const f = await fixture(t); let calls = 0; const bodies: string[] = [];
+  const api = f.api(async (_url, init) => {
+    calls++;
+    if (calls === 1) throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+    bodies.push(String(init!.body)); return ok();
+  });
+  await api.sendText(123, "SYNTHETIC", new AbortController().signal);
+  assert.equal(calls, 2); assert.equal(bodies.length, 1);
+  const records = await f.read();
+  assert.deepEqual(records.map(r => r.phase), ["send_attempt", "api_attempt", "api_failed", "api_attempt", "api_ack", "sent"]);
+  const failed = records.find(r => r.phase === "api_failed")!;
+  assert.equal(failed.attempt, 1); assert.equal(failed.outcome, "not_applicable"); assert.equal(failed.cause, "UND_ERR_CONNECT_TIMEOUT");
+  assert.equal(records.find(r => r.phase === "api_ack")!.attempt, 2);
+  assert.ok(!records.some(r => r.phase === "send_failed"));
+  assert.ok(!JSON.stringify(records).includes("PRIVATE"));
+});
+
+test("exhausted pre-connect retries report a definite non-delivery", async t => {
+  const f = await fixture(t); let calls = 0;
+  const api = f.api(async () => { calls++; throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }); });
+  await assert.rejects(api.sendText(123, "SYNTHETIC", new AbortController().signal), error => {
+    assert.ok(error instanceof TransportFailure); assert.equal(error.deliveryOutcome, "not_applicable");
+    assert.doesNotMatch(error.message, /Delivery outcome unknown/); return true;
+  });
+  assert.equal(calls, 2);
+  const records = await f.read();
+  assert.deepEqual(records.filter(r => r.phase === "api_failed").map(r => [r.attempt, r.outcome, r.cause]),
+    [[1, "not_applicable", "UND_ERR_CONNECT_TIMEOUT"], [2, "not_applicable", "UND_ERR_CONNECT_TIMEOUT"]]);
+  assert.equal(records.at(-1)!.phase, "send_failed"); assert.equal(records.at(-1)!.outcome, "not_applicable");
+});
+
+test("ambiguous outgoing failures are never retried", async t => {
+  const f = await fixture(t); let calls = 0;
+  const api = f.api(async () => { calls++; throw new Error("PRIVATE", { cause: { code: "ECONNRESET" } }); });
+  await assert.rejects(api.sendText(123, "SYNTHETIC", new AbortController().signal), error => {
+    assert.ok(error instanceof TransportFailure); assert.equal(error.deliveryOutcome, "unknown");
+    assert.match(error.message, /Delivery outcome unknown/); return true;
+  });
+  assert.equal(calls, 1);
+});
+
+test("pre-connect retry reuses a media upload body without duplicating it", async t => {
+  const f = await fixture(t); let calls = 0; const bodies: FormData[] = [];
+  const api = f.api(async (_url, init) => {
+    calls++;
+    if (calls === 1) throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+    bodies.push(init!.body as FormData); return ok({ message_id: 1 });
+  });
+  await api.sendMedia(123, "document", Buffer.from("Synthetic"), "artifact.txt", new AbortController().signal);
+  assert.equal(calls, 2); assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].get("chat_id"), "123"); assert.ok(bodies[0].get("document") instanceof Blob);
+  const records = await f.read();
+  assert.deepEqual(records.map(r => r.phase), ["send_attempt", "api_attempt", "api_failed", "api_attempt", "api_ack", "sent"]);
+  assert.equal(records.at(-1)!.outcome, "acknowledged");
+});
+
 test("malformed success envelopes and secret-bearing API code fields cannot produce a false acknowledgment or raw error", async t => {
   const f = await fixture(t);
   for (const result of [undefined, null]) {

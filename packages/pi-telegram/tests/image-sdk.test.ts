@@ -5,7 +5,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { deflateSync, crc32 } from "node:zlib";
 import test from "node:test";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, Type, type Api, type AssistantMessage, type ImageContent, type Model, type TextContent } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type Api, type AssistantMessage, type ImageContent, type Model, type TextContent } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { TelegramBridge } from "../src/bridge.ts";
 import type { TgMessage } from "../src/api.ts";
 

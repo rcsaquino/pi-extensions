@@ -90,9 +90,15 @@ export function createIdleCompactor({ backgroundIdle = async () => false,
     state = 'idle timer armed';
     timer = setTimer(async () => {
       timer = undefined;
-      const task = attempt(ctx, version);
-      checks.add(task);
-      try { await task; } finally { checks.delete(task); }
+      try {
+        const task = attempt(ctx, version);
+        checks.add(task);
+        try { await task; } finally { checks.delete(task); }
+      } catch {
+        // Host getters can throw on a stale context. A skipped compaction is
+        // recoverable; an unhandled rejection would exit the whole Pi process.
+        state = 'skipped: idle check failed';
+      }
     }, delay);
     timer?.unref?.();
   };

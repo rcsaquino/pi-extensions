@@ -136,3 +136,19 @@ test('lease release failure disables rather than admitting more compactions', as
   assert.match(s.c.status(), /^Disabled:.*lease release failed/);
   s.set({ id: 'next' }); s.c.settled(s.ctx); assert.equal(s.timers.size, 0);
 });
+
+test('a throwing host getter skips compaction instead of crashing the process', async () => {
+  const s = setup();
+  const seen = [];
+  const onRejection = reason => seen.push(reason);
+  process.on('unhandledRejection', onRejection);
+  try {
+    s.ctx.isIdle = () => { throw Error('stale context'); };
+    s.c.settled(s.ctx);
+    await s.fire();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(seen, []);
+    assert.equal(s.calls.length, 0);
+    assert.match(s.c.status(), /idle check failed/);
+  } finally { process.off('unhandledRejection', onRejection); }
+});

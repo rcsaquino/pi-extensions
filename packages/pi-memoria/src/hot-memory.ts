@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { atomicWrite, isMissing } from "./files.ts";
@@ -104,7 +104,25 @@ export class HotMemoryStore {
     });
   }
 
+  /** MEMORY.md is replaced by rename, so a symlink would be swapped for a file and its target read as prompt input. */
+  private async assertPlainFile(): Promise<void> {
+    try {
+      if ((await lstat(this.path)).isSymbolicLink()) {
+        throw new ExpectedError("invalid_input", `MEMORY.md must be a regular file, not a symbolic link: ${this.path}`, { path: this.path });
+      }
+    } catch (error) {
+      if (isMissing(error)) return;
+      throw error;
+    }
+  }
+
+  private async write(text: string): Promise<void> {
+    await this.assertPlainFile();
+    await atomicWrite(this.path, text);
+  }
+
   private async read(): Promise<string | undefined> {
+    await this.assertPlainFile();
     try { return await readFile(this.path, "utf8"); }
     catch (error) { if (isMissing(error)) return undefined; throw error; }
   }
@@ -146,7 +164,7 @@ export class HotMemoryStore {
       }
       const result = this.snapshot(entries, archived, backup);
       // Ensure a real file exists even when the store is empty.
-      if (result.text !== previous || original === undefined) await atomicWrite(this.path, result.text);
+      if (result.text !== previous || original === undefined) await this.write(result.text);
       return result;
     });
   }
@@ -209,7 +227,7 @@ export class HotMemoryStore {
     }
     if (archived.length) this.archive(archived);
     const result = this.snapshot(entries, archived);
-    await atomicWrite(this.path, result.text);
+    await this.write(result.text);
     return { ...result, memory: entry };
   }
 
@@ -224,7 +242,7 @@ export class HotMemoryStore {
       }
       entries.splice(index, 1);
       const result = this.snapshot(entries, []);
-      await atomicWrite(this.path, result.text);
+      await this.write(result.text);
       return { ...result, deleted };
     }, signal);
   }

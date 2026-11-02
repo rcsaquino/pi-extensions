@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -297,4 +297,17 @@ test("expected hot failures expose stable codes and useful details", async (t) =
     && (error.details as { current_content?: string }).current_content === "A stable rule.");
   const oversized = `line one${String.fromCharCode(10)}line two`;
   await assert.rejects(hot.add(oversized), (error: unknown) => error instanceof ExpectedError && error.code === "invalid_input" && /single line/u.test(error.message));
+});
+
+test("a symlinked MEMORY.md is refused, never followed or replaced", async (t) => {
+  if (process.platform === "win32") return t.skip("symlink creation needs privileges");
+  const { directory, path, hot } = await store(t);
+  const target = join(directory, "outside.txt");
+  await writeFile(target, "SECRET OUTSIDE CONTENT\n");
+  await symlink(target, path);
+  const refused = (error: unknown) => error instanceof ExpectedError && error.code === "invalid_input";
+  await assert.rejects(hot.load(), refused);
+  await assert.rejects(hot.add("must not land in the target"), refused);
+  assert.equal(await readFile(target, "utf8"), "SECRET OUTSIDE CONTENT\n");
+  assert.ok((await lstat(path)).isSymbolicLink());
 });

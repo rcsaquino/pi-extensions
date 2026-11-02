@@ -52,3 +52,10 @@ npm --prefix packages/pi-background-task install --ignore-scripts --legacy-peer-
 npm --prefix packages/pi-background-task run check
 npm --prefix packages/pi-background-task test
 ```
+
+## Support and contact
+
+If these extensions are useful to you, you can support their development on
+[Ko-fi](https://ko-fi.com/rcsaquino).
+
+<a href='https://ko-fi.com/rcsaquino' target='_blank'><img height='72' style='border:0px;height:72px;' src='https://storage.ko-fi.com/cdn/kofi2.png?v=3' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>

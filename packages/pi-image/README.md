@@ -13,7 +13,7 @@ The npm package is `@rcsaquino/pi-image`; the source directory remains `pi-image
 ## Requirements
 
 - Node.js **22.6+**, as declared by this package; the maintained offline suite is exercised on Node 26.12.0.
-- A Node-based Pi host using the `@earendil-works` namespace. The maintained offline baseline is Pi 1.3.0.
+- A Node-based Pi host using the `@earendil-works` namespace. The maintained offline baseline is Pi 1.5.0.
 - An OpenRouter key, either `OPENROUTER_API_KEY` in a `.env` file or a login stored via Pi `/login` (`openrouter` entry in `<Pi agent directory>/auth.json`).
 
 Pi supplies the declared host peers. There are no runtime dependencies.
@@ -86,7 +86,7 @@ The result is metadata only, never image bytes:
 - Outputs must stay inside the Pi working directory and default to `<cwd>/artifacts/`. A directory target receives a generated timestamped filename with a random suffix, so two generations in the same second do not collide; file targets keep their normalized name. An existing file is refused unless `overwrite: true`. Writes go to a private temporary file in the destination directory, are fsynced, then linked (new file) or renamed (explicit overwrite) into place, so a failure cannot truncate the previous image. Symlinked output parents and symlinked final files are refused, including a symlinked default `artifacts/` directory. The actual parent is re-resolved after creation and the final open uses `O_NOFOLLOW`.
 - Saved bytes are verified as PNG/JPEG magic and must be at least 1 KB before the path is returned.
 - Errors are credential-safe: fixed local status text only, never keys, prompt/provider text, raw bodies, or URLs. Provider messages are deliberately not echoed.
-- A provider-supplied download URL must be HTTPS on the default port and must resolve only to public addresses; loopback, private, link-local, multicast, and unresolved hosts are refused. Redirects stay disabled, the `Authorization` header is never attached, and the response byte cap still applies.
+- A provider-supplied download URL must be HTTPS on the default port and must resolve only to public addresses; loopback, private, link-local, multicast, IPv4-compatible/mapped/translated, NAT64, 6to4 and unresolved hosts are refused. Redirects stay disabled, the `Authorization` header is never attached, and the response byte cap still applies. The name is re-resolved by the fetch, so a DNS-rebinding window remains; pinning the checked address needs a custom dispatcher and is not implemented.
 
 ## Development
 
@@ -100,3 +100,10 @@ npm --prefix packages/pi-image test
 `PI_IMAGE_TEST_DIR` selects isolated scratch. Root `npm run verify` supplies shared scratch automatically. Tests use fake fetch transports plus a real Pi loader check; they never use live network, real keys, real sessions, or production cursors. Development/test files are checkout-only and are not included in the published tarball.
 
 Read [AGENTS.md](AGENTS.md) for module boundaries, invariants, and targeted checks. Live generation acceptance requires separate approval and is not implied by offline tests.
+
+## Support and contact
+
+If these extensions are useful to you, you can support their development on
+[Ko-fi](https://ko-fi.com/rcsaquino).
+
+<a href='https://ko-fi.com/rcsaquino' target='_blank'><img height='72' style='border:0px;height:72px;' src='https://storage.ko-fi.com/cdn/kofi2.png?v=3' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>

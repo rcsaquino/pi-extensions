@@ -22,7 +22,7 @@ npm --prefix packages/pi-image run typecheck
 npm --prefix packages/pi-image test
 ```
 
-The package has no `verify` script; root `npm run verify` combines its typecheck/test commands. The maintained offline baseline is Node 26.12.0 on Pi 1.3.0. Set `PI_IMAGE_TEST_DIR` to approved isolated scratch when running tests directly. Keep real keys, `auth.json` contents, and generated images out of tests, output, and model context. Test files and development scripts are checkout-only and excluded from the tarball.
+The package has no `verify` script; root `npm run verify` combines its typecheck/test commands. The maintained offline baseline is Node 26.12.0 on Pi 1.5.0. Set `PI_IMAGE_TEST_DIR` to approved isolated scratch when running tests directly. Keep real keys, `auth.json` contents, and generated images out of tests, output, and model context. Test files and development scripts are checkout-only and excluded from the tarball.
 
 ## Non-negotiable behavior
 

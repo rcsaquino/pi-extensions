@@ -28,13 +28,13 @@ npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```
 
-The package has no `verify` script; root `npm run verify` combines its typecheck/test commands. The maintained offline baseline is Node 26.12.0 on Pi 1.3.0; use Linux `flock --no-fork` and ffmpeg for synthetic long-speech tests. Set `TELEGRAM_TEST_DIR` to approved isolated scratch when running tests directly. Test files are checkout-only and excluded from the tarball. Keep real `.env` values out of tests, output, and model context.
+The package has no `verify` script; root `npm run verify` combines its typecheck/test commands. The maintained offline baseline is Node 26.12.0 on Pi 1.5.0; use Linux `flock --no-fork` and ffmpeg for synthetic long-speech tests. Set `TELEGRAM_TEST_DIR` to approved isolated scratch when running tests directly. Test files are checkout-only and excluded from the tarball. Keep real `.env` values out of tests, output, and model context.
 
 ## Non-negotiable behavior
 
 - Authenticate private human-user messages before downloads, STT, typing, or agent dispatch. Invalid or missing allowlists fail closed.
 - Acquire ownership before every startup API sequence. No losing-instance polling, webhook deletion, lock-inode replacement, or automatic takeover. Drain resources before releasing ownership.
-- Keep state/downloads/locks under the stable agent-relative transport home. The polling cursor is persistent state, never cache. Saving it after queueing is an at-least-once replay window, never an exactly-once claim.
+- Keep state/downloads/locks under the stable agent-relative transport home. The polling cursor is persistent state, never cache. It is saved only after the admitted message reaches `queue.json`, so a crash during preparation replays instead of losing it; a crash between dispatch and spool removal can duplicate one update, so delivery is at-least-once, never exactly-once.
 - Bound aggregate work before provider calls: 20,000 speech characters and 100 MB per attachment album (50 MB per file), read sequentially. Validate inbound `message_id`, `date`, `chat.id` and sender ID as positive safe integers, and never interpolate a provider numeric field into a download path.
 - Use the first configured environment file with file-over-process precedence, including empty values. Never search the generated-data home for configuration or mutate the parent environment with credentials.
 - Forward only the settled final, never thinking, tools, intermediate commentary, retry output, or partial streaming text.

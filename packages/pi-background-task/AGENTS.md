@@ -13,7 +13,7 @@ npm --prefix packages/pi-background-task run check
 npm --prefix packages/pi-background-task test
 ```
 
-Tests are offline and cover notice framing and retention. The maintained baseline is Node 26.12.0 on Pi 1.3.0. Test files and package-local scripts are checkout-only and excluded from the tarball.
+Tests are offline and cover prompt composition, notice framing, retention, settled-status mapping, run-id containment and process-group kill escalation. The maintained baseline is Node 26.12.0 on Pi 1.5.0. Test files and package-local scripts are checkout-only and excluded from the tarball.
 
 ## Architecture
 

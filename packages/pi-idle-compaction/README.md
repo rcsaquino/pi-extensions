@@ -14,7 +14,7 @@ A standalone extension using Node built-ins and the public Pi API. No runtime np
 
 - **Node.js `>=26.12.0 <27`**, as declared by this package.
 - Pi coding-agent peer **`^0.99.2 || ^1.0.0`**.
-- Maintained offline baseline: Linux x64, Node 26.12.0, Pi 1.3.0. Earlier 26.10/26.11 runs and Pi 1.1/1.2 are historical; other platforms and future APIs require their own checks.
+- Maintained offline baseline: Linux x64, Node 26.12.0, Pi 1.5.0. Earlier 26.10/26.11 runs and Pi 1.1/1.2 are historical; other platforms and future APIs require their own checks.
 
 Production does not need a package-local `node_modules` directory. Development tests need only this package's tools and the Pi host.
 
@@ -57,11 +57,11 @@ On/off is session-local and in memory. A fresh extension runtime defaults to ena
 
 ## Background coordination
 
-### Optional subagents and providers
+### Optional background-work providers
 
-The retired `@rcsaquino/pi-subagents` package registered a synchronous `idle-compaction.background-work.v1` provider for its active runs and exposed `subagent_dispatch`, `subagent_steer`, or `subagent_tasks`. If those tools are present, the guard still requires the `pi-subagents` provider and fails closed if it is absent or reports work for the same session; it does not call the retired RPC.
+Any extension may register a synchronous `idle-compaction.background-work.v1` provider for its active runs. When the retired-subagent tools `subagent_dispatch`, `subagent_steer`, or `subagent_tasks` are present, the guard requires a `pi-subagents` provider and fails closed if it is absent or reports work for the same session. The retired RPC path is gone.
 
-When legacy `subagent`, `subagents_enable`, `subagent_supervisor`, or `bg_wait` tools are present, their same-session ping/fleet-idle RPC must be healthy. Missing/error replies remain unsafe. If those tools are absent, no subagent RPC is required or called.
+If none of those tools are present, no provider is required and compaction proceeds on its ordinary idle, history and token checks.
 
 The guard can read reviewed process-local v1 background registries. Unknown versions, malformed items, throwing providers, asynchronous results, duplicates, and same-session active work defer compaction.
 

@@ -9,7 +9,7 @@ The only automated publication path is `pi-memoria` through `.github/workflows/p
 Prepared versions are independent and are not claims of publication:
 
 - `packages/pi-idle-compaction`: `pi-idle-compaction` **0.1.0**.
-- `packages/pi-memoria`: `pi-memoria` **0.4.7**, carrying the 0.4.6 audit fixes plus a non-root test-fixture correction. Version 0.4.6 was tagged but never published because its verify gate failed on GitHub's non-root runner; 0.4.7 keeps canonical-path session containment without symlink traversal, remembered roots bounded to the newest 100, malformed-config fallback, bounded spill and inspection-snapshot hygiene, and a typebox peer floor of >=1.3.0 tested on Pi 1.3.0, and derives pruning expectations from whether a foreign-owned fixture was actually created.
+- `packages/pi-memoria`: `pi-memoria` **0.4.7**, carrying the 0.4.6 audit fixes plus a non-root test-fixture correction. Version 0.4.6 was tagged but never published because its verify gate failed on GitHub's non-root runner; 0.4.7 keeps canonical-path session containment without symlink traversal, remembered roots bounded to the newest 100, malformed-config fallback, bounded spill and inspection-snapshot hygiene, and a typebox peer floor of >=1.3.0 tested on Pi 1.5.0, and derives pruning expectations from whether a foreign-owned fixture was actually created.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.1**, preserving authenticated reply ownership through in-run custom context while keeping unrelated custom-origin runs unowned.
 - `packages/pi-image`: `@rcsaquino/pi-image` **0.1.0**, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-background-task`: `@rcsaquino/pi-background-task` **0.1.0**, detached background forks of the current Pi session with list, result, and kill tools plus settle notices.
@@ -18,7 +18,7 @@ The scoped identities avoid unrelated unscoped npm packages. The source folder, 
 
 ## Preparation and dry runs
 
-From the monorepo root, follow [README.md](README.md) and the target package's setup instructions. The complete suite is exercised on Node 26.12.0 within the required `>=26.12.0 <27` range, npm, a Node-based Pi 1.3.0 host, rg, flock, and ffmpeg. Install package-local dependencies with lifecycle scripts disabled; do not hoist or update the host as a release side effect.
+From the monorepo root, follow [README.md](README.md) and the target package's setup instructions. The complete suite is exercised on Node 26.12.0 within the required `>=26.12.0 <27` range, npm, a Node-based Pi 1.5.0 host, rg, flock, and ffmpeg. Install package-local dependencies with lifecycle scripts disabled; do not hoist or update the host as a release side effect.
 
 No package lockfile is currently committed. Use the documented package-local `npm install --ignore-scripts --legacy-peer-deps --workspaces=false` commands. If a usable lockfile is deliberately introduced later, generate/update it through npm and review it before choosing `npm ci`.
 
@@ -51,7 +51,7 @@ Before an approved release, query the public npm registry for the exact name and
 
 1. Requires the tag to match `packages/pi-memoria/package.json` exactly and the tagged commit to be an ancestor of `main`.
 2. Refuses a version that is already published or that does not advance the published `latest`.
-3. Installs every package's dependencies through the documented package-local commands, installs the pinned Pi 1.3.0 development host, runs `npm run link-host` to supply the peer packages a clean CI checkout lacks, then runs the full `npm run verify` gate (types/tests plus offline publication regressions).
+3. Installs every package's dependencies through the documented package-local commands, installs the pinned Pi 1.5.0 development host, runs `npm run link-host` to supply the peer packages a clean CI checkout lacks, then runs the full `npm run verify` gate (types/tests plus offline publication regressions).
 4. Publishes from `packages/pi-memoria` with `npm publish --ignore-scripts --access public --workspaces=false`, using npm trusted publishing (OIDC) and automatically generated provenance. No npm token is stored in the repository.
 5. Confirms the new version, tarball, and dist-tags from the public registry, retrying for five minutes because npm processing can lag behind the publish command.
 

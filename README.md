@@ -2,7 +2,7 @@
 
 # pi-extensions
 
-**Independent extensions for [Pi](https://github.com/earendil-works/pi): memory, Telegram, image generation, idle compaction, subagents, and skill lifecycle.**
+**Independent extensions for [Pi](https://github.com/earendil-works/pi): memory, Telegram, image generation, idle compaction, and background tasks.**
 
 [![Node.js](https://img.shields.io/badge/full%20suite-Node.js%2026.12%2B-3c873a?style=flat-square)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
@@ -28,13 +28,13 @@ Each package owns its manifest, entry point, runtime dependencies, tests, README
 For all packages and the complete test suite:
 
 - **Node.js 26.12.x or newer within the 26.x line**: the maintained offline suite is exercised on Node 26.12.0; the current idle-compaction manifest requires 26.12+. Other packages have lower minimums.
-- A Node-based **Pi** installation using the `@earendil-works` packages. The maintained offline suite is exercised against Pi 1.3.0; other compatibility depends on each package's declared peer range and notes.
+- A Node-based **Pi** installation using the `@earendil-works` packages. The maintained offline suite is exercised against Pi 1.5.0; other compatibility depends on each package's declared peer range and notes.
 - **npm** for development tooling.
 - **ripgrep (`rg`)** for memoria session search and its tests.
 - On Linux, util-linux-compatible **`flock --no-fork`** for Telegram ownership. **ffmpeg** is needed for long speech assembly and the corresponding offline tests.
 
 > [!NOTE]
-> Package peer ranges are not uniform. Some manifests retain wider or legacy peer branches even though this checkout passes offline checks on Pi 1.3.0. Read the package requirements before installing; a successful combined test run is not proof of every matching runtime or platform.
+> Package peer ranges are not uniform. Some manifests retain wider or legacy peer branches even though this checkout passes offline checks on Pi 1.5.0. Read the package requirements before installing; a successful combined test run is not proof of every matching runtime or platform.
 
 ## Installation
 

@@ -18,7 +18,7 @@ export interface DeliveryRecord {
   reason?: typeof reasons[number]; code?: typeof transportCodes[number]; cause?: CauseCode;
   rejection?: "rate_limit" | "authentication" | "access" | "conflict" | "other";
 }
-export type DeliveryContext = Pick<DeliveryRecord, "reply" | "delivery" | "parent" | "notice" | "task" | "revision" | "operation" | "kind" | "status">;
+export type DeliveryContext = Pick<DeliveryRecord, "reply" | "delivery" | "parent" | "notice" | "revision" | "operation" | "kind" | "status">;
 export type DeliveryEvent = Omit<DeliveryRecord, "v" | "at" | "event" | "writer" | "sequence">;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const taskId = /^bg-[a-f0-9]{12}$/;
@@ -59,18 +59,18 @@ export function transportCause(error: unknown): CauseCode {
   return "unknown";
 }
 
-export interface LedgerQuery { task?: string; reply?: string; notice?: string; delivery?: string; limit?: number }
+export interface LedgerQuery { reply?: string; notice?: string; delivery?: string; limit?: number }
 export interface LedgerView { state: "ok" | "missing" | "unavailable"; records: DeliveryRecord[]; skipped: number; truncated: boolean; auditComplete: false }
 export async function readDeliveryLedger(path: string, query: LedgerQuery = {}, now = Date.now()): Promise<LedgerView> {
   const view: LedgerView = { state: "ok", records: [], skipped: 0, truncated: false, auditComplete: false };
   try {
-    for (const key of ["task", "reply", "notice", "delivery"] as const) {
-      const value = query[key]; if (value !== undefined && !(key === "task" ? taskId : uuid).test(value)) throw new Error();
+    for (const key of ["reply", "notice", "delivery"] as const) {
+      const value = query[key]; if (value !== undefined && !uuid.test(value)) throw new Error();
     }
     const limit = query.limit ?? 100;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new Error();
     const result = await readRecords(path, record, now);
-    view.records = result.records.filter(item => !["task", "reply", "notice", "delivery"].some(key => query[key as keyof LedgerQuery] !== undefined && query[key as keyof LedgerQuery] !== item[key as keyof DeliveryRecord]));
+    view.records = result.records.filter(item => !["reply", "notice", "delivery"].some(key => query[key as keyof LedgerQuery] !== undefined && query[key as keyof LedgerQuery] !== item[key as keyof DeliveryRecord]));
     view.skipped = result.skipped;
     view.truncated = result.truncated || view.records.length > limit; view.records = view.records.slice(-limit);
   } catch (e) { view.state = (e as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unavailable"; view.records = []; }

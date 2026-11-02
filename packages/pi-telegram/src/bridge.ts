@@ -27,12 +27,10 @@ interface Reply {
   submittedAt?: number;
   prompt?: string;
   diagnosticId?: string;
-  taskId?: string;
   cancellation?: "foreign_input" | "unowned_user_start" | "custom_interruption";
   revision?: number;
   settling?: boolean;
   final?: string;
-  finalAt?: number;
   pendingFinals?: { text: string; revision: number }[];
   outcome: AgentActivityOutcome;
   spoke?: boolean;
@@ -314,7 +312,7 @@ export class TelegramBridge {
   private record(event: DeliveryEvent): void { try { void this.ledger.append(event).catch(() => {}); } catch {} }
   private correlation(reply: Reply, operation: DeliveryContext["operation"], parent?: string): DeliveryContext {
     reply.diagnosticId ||= randomUUID();
-    return { reply: reply.diagnosticId, operation, parent, revision: reply.revision || 0, task: reply.taskId };
+    return { reply: reply.diagnosticId, operation, parent, revision: reply.revision || 0 };
   }
 
   private validId(value: unknown): value is number {
@@ -568,7 +566,6 @@ export class TelegramBridge {
     const successful = ["stop", "length"].includes(message.stopReason || "");
     request.outcome = successful ? "completed" : message.stopReason === "aborted" ? "aborted" : "error";
     request.final = successful ? message.content.filter(block => block?.type === "text").map(block => block.text).join("\n").trim() : undefined;
-    request.finalAt = request.final ? (typeof message.timestamp === "number" ? message.timestamp : Date.now()) : undefined;
     this.record({ ...this.correlation(request, "reply"), phase: "generated", outcome: "not_applicable", reason: successful ? undefined : request.outcome === "aborted" ? "agent_aborted" : "agent_error" });
   }
 

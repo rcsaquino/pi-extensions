@@ -60,7 +60,6 @@ export default function telegram(pi: ExtensionAPI): void {
     description: "Read bounded credential-safe local delivery phases, optionally filtered by an opaque task/reply/notice/delivery ID. No network, replay, maintenance or alerts. API acknowledgment is not phone receipt. Missing records never prove non-delivery; this is a best-effort seven-day ring, not a complete audit.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     parameters: Type.Object({
-      task: Type.Optional(Type.String({ pattern: "^bg-[a-f0-9]{12}$" })),
       reply: Type.Optional(Type.String({ pattern: "^[a-f0-9-]{36}$" })),
       notice: Type.Optional(Type.String({ pattern: "^[a-f0-9-]{36}$" })),
       delivery: Type.Optional(Type.String({ pattern: "^[a-f0-9-]{36}$" })),

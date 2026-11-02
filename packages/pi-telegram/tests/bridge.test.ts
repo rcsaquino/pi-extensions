@@ -88,8 +88,8 @@ class Server {
   texts(): { chat_id: number; text: string }[] { return this.calls.filter(call => call.method === "sendMessage").map(call => call.args); }
 }
 
-async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; consumeReports?: boolean; deferDuringSettle?: boolean; mode?: string; lockDir?: string; start?: boolean } = {}) {
-  const dir = await mkdtemp(resolve(workspace, "telegram-bridge-"));
+async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; consumeReports?: boolean; deferDuringSettle?: boolean; mode?: string; lockDir?: string; start?: boolean; dir?: string } = {}) {
+  const dir = options.dir || await mkdtemp(resolve(workspace, "telegram-bridge-"));
   const server = options.server || new Server();
   const submissions: (TextContent | ImageContent)[][] = [];
   const deliveries: string[] = [];
@@ -137,7 +137,7 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
     if (options.consume !== false) consume();
   } } as unknown as ExtensionAPI;
   bridge = new TelegramBridge(pi, ctx, { ...config, allowed: new Set(config.allowed), dataDir: resolve(dir, "downloads"), stateDir: resolve(dir, "state"), tmpDir: resolve(dir, "tmp"), lockDir: options.lockDir }, server.fetch);
-  t.after(async () => { await bridge.stop(); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { await bridge.stop(); if (!options.dir) await rm(dir, { recursive: true, force: true }); });
   if (options.start !== false) await bridge.start();
   return {
     dir, server, bridge, submissions, deliveries, statuses, notices, events, reports,
@@ -1292,3 +1292,67 @@ test("throwing or rejecting ledger observers cannot alter successful delivery or
   await h.bridge.stop();
   assertConsoleSilent(terminal);
 });
+
+test("a local turn during attachment preparation never claims the Telegram request", { concurrency: false }, async t => {
+  const server = new Server();
+  const original = server.fetch;
+  let arrived!: () => void;
+  const downloading = new Promise<void>(resolve => { arrived = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  server.fetch = async (url, init) => {
+    if (String(url).split("/").pop() === "getFile") { arrived(); await gate; }
+    return original(url, init);
+  };
+  const h = await fixture(t, { server });
+  h.server.feed({ message_id: 1, date: 1_791_000_000, chat: { id: 456, type: "private" }, from: { id: 456 },
+    photo: [{ file_id: "incoming-photo", file_size: 10 }] });
+  await downloading;
+
+  // A local TUI prompt starts while the attachment is still downloading.
+  h.bridge.agentStart();
+  h.bridge.userStart({ role: "user", content: [{ type: "text", text: "local question" }] });
+  await h.finish("Local answer.");
+
+  release();
+  await until(() => h.submissions.length === 1);
+  await h.finish("Telegram answer for 456");
+
+  const sent = h.server.texts();
+  assert.deepEqual(sent.map(item => item.chat_id), [123, 456], "the asker keeps its own chat");
+  assert.equal(sent[1].text, "Telegram answer for 456");
+});
+
+test("admitted messages are durable before the cursor advances and replay on start", { concurrency: false }, async t => {
+  const server = new Server();
+  const original = server.fetch;
+  let arrived!: () => void;
+  const downloading = new Promise<void>(resolve => { arrived = resolve; });
+  server.fetch = async (url, init) => {
+    if (String(url).split("/").pop() === "getFile") {
+      arrived();
+      if (init?.signal?.aborted) throw new Error("aborted");
+      await new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    }
+    return original(url, init);
+  };
+  const h = await fixture(t, { server });
+  h.server.feed({ message_id: 7, date: 1_791_000_000, chat: { id: 456, type: "private" }, from: { id: 456 },
+    photo: [{ file_id: "queued-photo", file_size: 10 }] });
+  await downloading;
+  await h.bridge.stop();
+
+  const hash = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
+  const state = JSON.parse(await readFile(resolve(h.dir, "state", hash, "queue.json"), "utf8"));
+  assert.equal(state.queue.length, 1, "the message was persisted before the cursor advanced");
+  assert.equal(state.queue[0].messages[0].message_id, 7);
+
+  // A fresh process restores that queue and dispatches it.
+  const restarted = await fixture(t, { start: false });
+  await mkdir(resolve(restarted.dir, "state", hash), { recursive: true });
+  await writeFile(resolve(restarted.dir, "state", hash, "queue.json"), JSON.stringify({ queue: state.queue }));
+  await restarted.bridge.start();
+  await until(() => restarted.submissions.length === 1);
+  assert.match((restarted.submissions[0][0] as TextContent).text, /<attachments>/u);
+});
+

@@ -48,6 +48,8 @@ export class TelegramBridge {
   readonly ledger: DeliveryLedger;
   private controller = new AbortController();
   private queue: QueuedRequest[] = [];
+  private preparing?: Request;
+  private queueFile = "";
   private active?: Request;
   private run?: Reply;
   private foregroundRunning = false;
@@ -102,7 +104,9 @@ export class TelegramBridge {
     this.generation++;
     this.foregroundRunning = false;
     this.run?.controller.abort();
+    this.preparing?.controller.abort();
     this.run = this.active = undefined;
+    this.preparing = undefined;
     this.queue = [];
   }
 
@@ -155,6 +159,8 @@ export class TelegramBridge {
       this.controller.signal.throwIfAborted();
       await mkdir(this.directory, { recursive: true, mode: 0o700 });
       await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
+      this.queueFile = resolve(this.stateDirectory, "queue.json");
+      await this.restoreQueue();
       this.media = new SentMediaRegistry(resolve(this.stateDirectory, "media-index.json"));
       await this.media.load();
       const path = resolve(this.stateDirectory, "cursor.json");
@@ -186,6 +192,8 @@ export class TelegramBridge {
 
   stop(detail?: string): Promise<void> {
     if (this.stopTask) return this.stopTask;
+    // Accepted-but-undispatched messages survive a graceful stop; navigation drops them.
+    const pending = this.queue.slice();
     this.running = false;
     this.controller.abort();
     this.invalidate();
@@ -196,8 +204,10 @@ export class TelegramBridge {
     if (this.typing) clearInterval(this.typing);
     this.worker = this.typing = undefined;
     this.queue = [];
+    this.preparing = undefined;
     this.active = undefined;
     this.stopTask = (async () => {
+      await this.writeQueue(pending);
       await Promise.allSettled([this.pollTask, this.workTask, this.typingTask, this.sending]);
       await this.ledger.flush(2000);
       const lease = this.lease;
@@ -214,6 +224,35 @@ export class TelegramBridge {
     const temp = `${path}.${randomUUID()}.tmp`;
     await writeFile(temp, JSON.stringify({ offset: this.offset }), { mode: 0o600 });
     await rename(temp, path);
+  }
+
+  /** Admitted messages are durable before the cursor advances past them. */
+  private persistQueue(): Promise<void> {
+    return this.writeQueue(this.queue);
+  }
+
+  private async writeQueue(items: QueuedRequest[]): Promise<void> {
+    if (!this.queueFile) return;
+    const temp = `${this.queueFile}.${randomUUID()}.tmp`;
+    const queue = items.map(item => ({ messages: item.messages, readyAt: item.readyAt }));
+    await writeFile(temp, JSON.stringify({ queue }), { mode: 0o600 });
+    await rename(temp, this.queueFile);
+  }
+
+  private async restoreQueue(): Promise<void> {
+    let parsed: { queue?: unknown };
+    try { parsed = JSON.parse(await readFile(this.queueFile, "utf8")); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new SafeError("Telegram queue state is unreadable; refusing to guess which messages were admitted.");
+    }
+    if (!Array.isArray(parsed.queue)) throw new SafeError("Telegram queue state is malformed.");
+    for (const item of parsed.queue.slice(0, 32) as QueuedRequest[]) {
+      const messages = Array.isArray(item?.messages)
+        ? item.messages.filter(message => this.validId(message?.message_id) && this.validId(message?.chat?.id) && this.authorized(message))
+        : [];
+      if (messages.length) this.queue.push({ messages, readyAt: Number.isFinite(item.readyAt) ? item.readyAt : 0 });
+    }
   }
 
   private async poll(): Promise<void> {
@@ -293,6 +332,7 @@ export class TelegramBridge {
       await this.text(message.chat.id, "Send text, a file, photo, video or voice message.");
       return;
     }
+    if (this.queue.some(item => item.messages.some(queued => queued.chat.id === message.chat.id && queued.message_id === message.message_id))) return;
     const existing = message.media_group_id && this.queue.find(item =>
       item.messages[0].chat.id === message.chat.id && item.messages[0].media_group_id === message.media_group_id);
     if (existing) {
@@ -303,12 +343,14 @@ export class TelegramBridge {
       if (this.queue.length >= 32) { await this.text(message.chat.id, "Telegram request queue is full. Please try again later."); return; }
       this.queue.push({ messages: [message], readyAt: Date.now() + (message.media_group_id ? ALBUM_WAIT_MS : 0) });
     }
+    await this.persistQueue();
     this.refreshTyping();
   }
 
   private refreshTyping(): void {
     if (!this.running || !this.connected || this.typingTask) return;
     const chats = new Set(this.queue.map(item => item.messages[0].chat.id));
+    if (this.preparing) chats.add(this.preparing.chat);
     if (this.active) chats.add(this.active.chat);
     if (!chats.size) return;
     this.typingTask = Promise.all([...chats].map(chat_id => this.api.call("sendChatAction", { chat_id, action: "typing" }, this.controller.signal).catch(() => {})))
@@ -391,16 +433,18 @@ export class TelegramBridge {
       // rather than attaching it to a settled request or downloading it twice.
       if (this.active !== request || request.settling || this.ctx.isIdle()) {
         this.queue.unshift(followUp);
+        void this.persistQueue();
         return;
       }
       this.submit(request, followUp.content, "steer");
+      await this.persistQueue();
     } catch (error) {
       if (this.running) await this.text(followUp.messages[0].chat.id, safeError(error)).catch(() => {});
     }
   }
 
   private async processQueue(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running || this.preparing) return;
     if (this.active) {
       const request = this.active;
       if (!request.started && request.submittedAt && Date.now() - request.submittedAt > 10_000 && this.ctx.isIdle()) {
@@ -419,27 +463,44 @@ export class TelegramBridge {
     if (!this.connected || this.foregroundRunning || !this.ctx.isIdle() || this.ctx.hasPendingMessages()) return;
     if (!this.queue.length) return;
     if (this.queue[0].readyAt > Date.now()) return;
-    const queued = this.queue.shift()!;
+    const queued = this.queue[0];
     const request: Request = { ...queued, sessionId: this.ctx.sessionManager.getSessionId(), chat: queued.messages[0].chat.id,
       controller: new AbortController(), started: false, outcome: "completed" };
-    this.active = request;
-    this.run = request;
+    // A preparing request is not a run: agentStart must not attach a local turn
+    // to it, or the answer would be routed to the mirror destination chat.
+    this.preparing = request;
     this.refreshTyping();
+    const release = async (): Promise<void> => {
+      if (this.queue[0] === queued) this.queue.shift();
+      this.preparing = undefined;
+      await this.persistQueue();
+    };
     try {
       const content = request.content || await this.prepare(request);
       if (!this.running || request.controller.signal.aborted) throw new SafeError("Request cancelled.");
       const signal = AbortSignal.any([this.controller.signal, request.controller.signal]);
       while (!this.ctx.isIdle() || this.ctx.hasPendingMessages()) await delay(100, undefined, { signal });
       signal.throwIfAborted();
+      if (this.preparing !== request || this.active) throw new SafeError("Request cancelled.");
       request.prompt = content.filter(block => block.type === "text").map(block => block.text).join("\n");
       // The start budget begins at dispatch, not when the request joined the queue.
       request.submittedAt = Date.now();
+      this.preparing = undefined;
+      this.active = request;
+      this.run = request;
       this.submit(request, content, "followUp");
+      if (this.queue[0] === queued) this.queue.shift();
+      await this.persistQueue();
     } catch (error) {
       request.controller.abort();
+      if (this.preparing === request) this.preparing = undefined;
       if (this.active === request) this.active = undefined;
       if (this.run === request) this.run = undefined;
-      if (this.running) await this.text(request.chat, safeError(error)).catch(() => {});
+      if (this.running) {
+        await release();
+        await this.text(request.chat, safeError(error)).catch(() => {});
+      }
+      // On shutdown the stop snapshot already retains this admitted message.
     }
   }
 

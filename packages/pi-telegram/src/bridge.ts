@@ -97,7 +97,7 @@ export class TelegramBridge {
   }
 
   /** Navigation revokes ephemeral capabilities, including a switch that is later cancelled. */
-  invalidate(): void {
+  invalidate(persist = true): void {
     if (this.run) this.record({ ...this.correlation(this.run, "reply"), phase: "suppressed", outcome: "suppressed", reason: "navigation_or_shutdown" });
     this.generation++;
     this.foregroundRunning = false;
@@ -106,6 +106,8 @@ export class TelegramBridge {
     this.run = this.active = undefined;
     this.preparing = undefined;
     this.queue = [];
+    // Navigation drops queued work; a graceful stop keeps its own snapshot instead.
+    if (persist) void this.writeQueue([]);
   }
 
   private submit(request: Request, content: (TextContent | ImageContent)[], deliverAs: "steer" | "followUp"): void {
@@ -190,11 +192,12 @@ export class TelegramBridge {
 
   stop(detail?: string): Promise<void> {
     if (this.stopTask) return this.stopTask;
+    if (!this.running) return Promise.resolve();
     // Accepted-but-undispatched messages survive a graceful stop; navigation drops them.
     const pending = this.queue.slice();
     this.running = false;
     this.controller.abort();
-    this.invalidate();
+    this.invalidate(false);
     this.humanInput?.close();
     this.humanInput = undefined;
     this.media?.clear();

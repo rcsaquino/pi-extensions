@@ -19,7 +19,7 @@ One repository, five separately versioned Pi packages. Install only the extensio
 - **[@rcsaquino/pi-telegram](packages/pi-telegram/README.md)**: standalone Telegram transport for one Pi session and one destination chat, mirroring settled turns, with attachments, steering, and explicitly requested voice replies.
 - **[@rcsaquino/pi-image](packages/pi-image/README.md)**: text-to-image and image-to-image generation via the OpenRouter Images API, using the stored OpenRouter login.
 - **[pi-idle-compaction](packages/pi-idle-compaction/README.md)**: native compaction after an eligible idle period, with conservative background-work checks.
-- **[@rcsaquino/pi-subagents](packages/pi-subagents/README.md)**: supervised headless Pi workers in separate processes, with steerable runs, session-scoped notices, and final reports. Linux only; ships no agent definitions.
+- **[@rcsaquino/pi-background-task](packages/pi-background-task/README.md)**: detached background forks of the current Pi session, with list, result, and kill tools plus settle notices.
 
 Each package owns its manifest, entry point, runtime dependencies, tests, README, and agent instructions. Versions and release readiness are independent; inclusion here does not imply npm publication or production activation.
 
@@ -49,13 +49,13 @@ pi install ./packages/pi-telegram
 Or use a stable absolute path:
 
 ```sh
-pi install /absolute/path/to/pi-extensions/packages/pi-subagents
+pi install /absolute/path/to/pi-extensions/packages/pi-background-task
 ```
 
 Pi keeps local packages as references. Leave the checkout in place. Use `pi list` to inspect configured package declarations, then `/reload` in an idle Pi session when you intend to activate a change. Removing a package uses its installed source, for example:
 
 ```sh
-pi remove /absolute/path/to/pi-extensions/packages/pi-subagents
+pi remove /absolute/path/to/pi-extensions/packages/pi-background-task
 ```
 
 Removal does not erase that extension's runtime data.
@@ -89,7 +89,7 @@ npm test
 npm run verify
 ```
 
-The runner invokes each package's `check` or `typecheck` and `test` scripts sequentially. Root checks also run `npm run check:integration`, a two-package contract test for the neutral idle-compaction/subagents provider, and `npm run check:publication`, an offline regression suite for names, release metadata, distributable files, and documentation links. They set `PI_OFFLINE=1`, `TMPDIR`, `PI_BACKGROUND_TEST_ROOT`, and `TELEGRAM_TEST_DIR` for isolated tests. Shared scratch defaults to disposable `/tmp/pi-extensions-tests`; override it with `PI_EXTENSIONS_TEST_ROOT`.
+The runner invokes each package's `check` or `typecheck` and `test` scripts sequentially. Root checks also run `npm run check:publication`, an offline regression suite for names, release metadata, distributable files, and documentation links. They set `PI_OFFLINE=1`, `TMPDIR`, `PI_BACKGROUND_TEST_ROOT`, and `TELEGRAM_TEST_DIR` for isolated tests. Shared scratch defaults to disposable `/tmp/pi-extensions-tests`; override it with `PI_EXTENSIONS_TEST_ROOT`.
 
 Package development and test scripts are checkout-only: they reference `tests/` or local `scripts/` files that are excluded from published tarballs. `npm pack`/`npm install` of a release is not expected to run them.
 

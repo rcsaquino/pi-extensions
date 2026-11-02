@@ -1,5 +1,5 @@
 // Optional same-process contracts, not imports or npm dependencies. The legacy
-// key permits safe coexistence with pi-subagents while it is still installed.
+// key permits safe coexistence with the retired pi-subagents package.
 export const REGISTRY_KEY = 'idle-compaction.background-work.v1';
 export const LEGACY_REGISTRY_KEY = 'pi-subagents.background-work.v1';
 const LIMITS = { providers: 100, items: 10000 };
@@ -74,7 +74,7 @@ export function registeredWorkIdle(sessionIds, scope = globalThis, nowMs = Date.
 }
 
 const SUBAGENT_TOOLS = new Set(['subagent', 'subagents_enable', 'subagent_supervisor', 'bg_wait']);
-// Current pi-subagents exposes these names and a provider, not the retired RPC.
+// The retired pi-subagents exposed these names and a provider, not the retired RPC.
 const CURRENT_SUBAGENT_TOOLS = new Set(['subagent_dispatch', 'subagent_steer', 'subagent_tasks']);
 const SUBAGENTS_PROVIDER = 'pi-subagents';
 function hasRegisteredProvider(scope, name) {
@@ -96,9 +96,9 @@ export function createBackgroundGuard({ getTools, rpc, scope = globalThis }) {
       throw Error('Background capability inventory unavailable');
     const hasCurrentSubagents = tools.some(tool => CURRENT_SUBAGENT_TOOLS.has(tool.name));
     if (!registeredWorkIdle(sessionIds, scope)) return null;
-    // Current pi-subagents coordinates through the neutral provider, never the
-    // retired RPC. With its tools present but no provider, fail closed rather
-    // than assume an invisible runner is idle.
+    // The retired pi-subagents coordinated through the neutral provider, never
+    // the retired RPC. With its tools present but no provider, fail closed
+    // rather than assume an invisible runner is idle.
     if (hasCurrentSubagents && !hasRegisteredProvider(scope, SUBAGENTS_PROVIDER)) return null;
     // Only a PRESENT legacy subagent runner requires its RPC owner. Absent
     // package is a supported standalone mode; present-but-broken is unsafe.

@@ -1,0 +1,29 @@
+{
+  "name": "@rcsaquino/pi-background-task",
+  "version": "0.1.0",
+  "description": "Fork the current Pi session into a detached background worker, with list, result and kill tools plus settle notices.",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rcsaquino/pi-extensions.git",
+    "directory": "packages/pi-background-task"
+  },
+  "homepage": "https://github.com/rcsaquino/pi-extensions/tree/main/packages/pi-background-task#readme",
+  "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
+  "keywords": ["pi-package", "background", "delegation"],
+  "pi": { "extensions": ["./index.ts"] },
+  "files": ["index.ts", "src", "README.md", "AGENTS.md", "LICENSE"],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "os": ["linux"],
+  "engines": { "node": ">=22.19.0" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.2.0 <2",
+    "@earendil-works/pi-ai": ">=1.2.0 <2"
+  },
+  "devDependencies": { "@types/node": "^22.19.0", "typescript": "^5.9.0" }
+}

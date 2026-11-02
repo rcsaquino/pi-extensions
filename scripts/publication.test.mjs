@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repository = 'git+https://github.com/rcsaquino/pi-extensions.git';
 const identities = new Map([
-  ['pi-subagents', '@rcsaquino/pi-subagents'],
+  ['pi-background-task', '@rcsaquino/pi-background-task'],
   ['pi-idle-compaction', 'pi-idle-compaction'],
   ['pi-memoria', 'pi-memoria'],
   ['pi-telegram', '@rcsaquino/pi-telegram'],
@@ -185,7 +185,7 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /working-directory: packages\/pi-memoria/);
   assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);
-  for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-subagents']) {
+  for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-background-task']) {
     assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
   }
 });

@@ -8,7 +8,7 @@ This is a private npm workspace containing five independent Pi extension package
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram`, transport, media, and explicit speech delivery.
 - `packages/pi-image`: `@rcsaquino/pi-image`, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-idle-compaction`: native idle compaction and admission guards.
-- `packages/pi-subagents`: `@rcsaquino/pi-subagents`, supervised external Pi workers with steering, session-scoped notices, and reports; Linux procfs required.
+- `packages/pi-background-task`: `@rcsaquino/pi-background-task`, detached background forks of the current Pi session with list, result, and kill tools plus settle notices.
 - `scripts/workspaces.mjs`: sequential shared verification runner.
 - `scripts/link-host.mjs`: development-only missing/broken host dependency links.
 - `scripts/publication.test.mjs`: offline release-metadata, included-file, import-closure, documentation, and publication-workflow regression checks.
@@ -41,7 +41,7 @@ npm test
 npm run verify
 ```
 
-The runner finds all package directories and uses `check` or `typecheck` plus `test`. Root `check`, `test`, and `verify` also run `check:integration` (the two-package neutral background-work contract) and `check:publication`; use `npm run check:publication` or `npm run check:integration` for those focused checks. It runs sequentially, sets `PI_OFFLINE=1`, and points shared temporary directories to disposable `/tmp/pi-extensions-tests`. Set `PI_EXTENSIONS_TEST_ROOT` to an approved isolated directory when needed. Some packages also have ignored package-local fixtures.
+The runner finds all package directories and uses `check` or `typecheck` plus `test`. Root `check`, `test`, and `verify` also run `check:publication`; use `npm run check:publication` for that focused check. It runs sequentially, sets `PI_OFFLINE=1`, and points shared temporary directories to disposable `/tmp/pi-extensions-tests`. Set `PI_EXTENSIONS_TEST_ROOT` to an approved isolated directory when needed. Some packages also have ignored package-local fixtures.
 
 Targeted examples:
 

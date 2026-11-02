@@ -28,6 +28,33 @@ function privateV4(address: string): boolean {
     (a === 198 && (b === 18 || b === 19));
 }
 
+/** 16 address bytes, or undefined when the text is not a valid IPv6 address. */
+function ipv6Bytes(address: string): number[] | undefined {
+  const value = address.toLowerCase().split("%")[0]!;
+  const halves = value.split("::");
+  if (halves.length > 2) return undefined;
+  const parse = (part: string): number[] | undefined => {
+    if (!part) return [];
+    const bytes: number[] = [];
+    for (const segment of part.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/.test(segment)) return undefined;
+      const number = Number.parseInt(segment, 16);
+      bytes.push(number >> 8, number & 0xff);
+    }
+    return bytes;
+  };
+  const head = parse(halves[0] ?? ""), tail = parse(halves[1] ?? "");
+  if (!head || !tail) return undefined;
+  if (halves.length === 1) return head.length === 16 ? head : undefined;
+  const fill = 16 - head.length - tail.length;
+  if (fill < 0) return undefined;
+  return [...head, ...new Array(fill).fill(0) as number[], ...tail];
+}
+
+function embeddedV4(bytes: number[], offset: number): string {
+  return `${bytes[offset]}.${bytes[offset + 1]}.${bytes[offset + 2]}.${bytes[offset + 3]}`;
+}
+
 /** Reject loopback, private, link-local, multicast and unspecified addresses. */
 export function isPrivateAddress(address: string): boolean {
   const family = isIP(address);
@@ -46,6 +73,18 @@ export function isPrivateAddress(address: string): boolean {
   if (/^fe[89ab][0-9a-f]:/.test(value)) return true; // fe80::/10 link-local
   if (/^fe[c-f][0-9a-f]:/.test(value)) return true; // fec0::/10 deprecated site-local
   if (/^ff[0-9a-f]{2}:/.test(value)) return true; // multicast
+  const bytes = ipv6Bytes(value);
+  if (!bytes) return true;
+  // Transition forms carry an IPv4 address that a plain isIP() check cannot see.
+  if (bytes.slice(0, 12).every(byte => byte === 0)) return privateV4(embeddedV4(bytes, 12)); // ::/96 IPv4-compatible
+  if (bytes.slice(0, 8).every(byte => byte === 0) && bytes[8] === 0xff && bytes[9] === 0xff &&
+      bytes[10] === 0 && bytes[11] === 0) {
+    return privateV4(embeddedV4(bytes, 12)); // ::ffff:0:0/96 IPv4-translated
+  }
+  const nat64 = [0x00, 0x64, 0xff, 0x9b].every((byte, index) => bytes[index] === byte) &&
+    bytes.slice(4, 12).every(byte => byte === 0);
+  if (nat64) return privateV4(embeddedV4(bytes, 12)); // 64:ff9b::/96 NAT64
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) return privateV4(embeddedV4(bytes, 2)); // 2002::/16 6to4
   return false;
 }
 
@@ -53,6 +92,9 @@ export function isPrivateAddress(address: string): boolean {
  * Validate a provider-supplied download URL. Only HTTPS on the default port is
  * accepted, and every resolved address must be public. Resolution happens
  * before the request; redirects stay disabled and the byte cap still applies.
+ * shortcut: the download re-resolves the name after this check, so a rebind can
+ * swap in a private address; pin the checked address with a custom dispatcher
+ * when undici becomes an accepted dependency.
  */
 export async function assertSafeDownloadUrl(raw: string, resolveHost: ResolveHost = RESOLVE_HOST): Promise<URL> {
   let url: URL;

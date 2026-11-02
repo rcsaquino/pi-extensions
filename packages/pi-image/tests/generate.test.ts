@@ -270,6 +270,10 @@ test("provider download URLs must be public HTTPS and never private addresses", 
   assert.equal(isPrivateAddress("fec0::1"), true);
   assert.equal(isPrivateAddress("::ffff:7f00:1"), true);
   assert.equal(isPrivateAddress("::ffff:5db8:d822"), false);
+  // Transition forms embed an IPv4 address that a plain isIP() check cannot see.
+  for (const address of ["::127.0.0.1", "::ffff:0:7f00:1", "::ffff:0:0a00:1", "64:ff9b::7f00:1", "64:ff9b::a00:1",
+    "2002:7f00:1::", "2002:a00:1::", "::10.0.0.1"]) assert.equal(isPrivateAddress(address), true, address);
+  for (const address of ["64:ff9b::808:808", "2002:808:808::", "2606:4700::1111"]) assert.equal(isPrivateAddress(address), false, address);
   assert.equal((await assertSafeDownloadUrl("https://cdn.example/x.png", publicLookup)).hostname, "cdn.example");
 });
 

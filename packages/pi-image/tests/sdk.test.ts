@@ -39,7 +39,7 @@ test("registered tool runs the full offline flow and saves inside the workspace"
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     calls.push(String(url));
     const body = JSON.parse(String(init.body));
-    assert.equal(body.model, "openai/gpt-image-2.5-sunburst");
+    assert.equal(body.model, "openai/gpt-image-2.6-sunburst");
     return Response.json({ data: [{ b64_json: PNG.toString("base64"), media_type: "image/png" }] });
   }) as typeof globalThis.fetch;
   try {
@@ -51,7 +51,7 @@ test("registered tool runs the full offline flow and saves inside the workspace"
     const tool = loader.getExtensions().extensions.find(item => item.path.endsWith("index.ts"))!.tools.get("generate_image")!.definition;
     const outcome = await tool.execute("call-1", { prompt: "a quiet harbor" }, undefined, undefined, { cwd: root } as never);
     const summary = JSON.parse(String((outcome.content as { text: string }[])[0].text));
-    assert.equal(summary.model, "openai/gpt-image-2.5-sunburst");
+    assert.equal(summary.model, "openai/gpt-image-2.6-sunburst");
     assert.equal(summary.bytes, PNG.length);
     assert.ok(summary.path.startsWith(resolve(root, "artifacts")));
     assert.deepEqual(calls, ["https://openrouter.ai/api/v1/images/generations"]);

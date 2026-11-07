@@ -32,13 +32,13 @@ test("txt2img success posts JSON to the Images endpoint and saves verified bytes
     seen.push({ url: String(url), init });
     return imageJson(fakePng().toString("base64"));
   }) as typeof globalThis.fetch;
-  const generated = await generateImageBytes({ key: "TEST-KEY", model: "openai/gpt-image-2.5-sunburst", prompt: "a red circle" }, fetch);
+  const generated = await generateImageBytes({ key: "TEST-KEY", model: "openai/gpt-image-2.6-sunburst", prompt: "a red circle" }, fetch);
   assert.equal(seen.length, 1);
   assert.equal(seen[0].url, "https://openrouter.ai/api/v1/images/generations");
   assert.equal(seen[0].init.method, "POST");
   assert.equal((seen[0].init.headers as Record<string, string>)["authorization"], "Bearer TEST-KEY");
   const body = JSON.parse(String(seen[0].init.body));
-  assert.equal(body.model, "openai/gpt-image-2.5-sunburst");
+  assert.equal(body.model, "openai/gpt-image-2.6-sunburst");
   assert.equal(body.prompt, "a red circle");
   assert.ok(!("input_references" in body));
   const saved = await saveImage(join(root, "artifacts"), generated.data, "A Red Circle!!");
@@ -118,8 +118,8 @@ test("prompt, model, and size validation rejects bad input", () => {
   assert.throws(() => validatePrompt("   "), /non-empty/);
   assert.throws(() => validatePrompt("x".repeat(4001)), /exceeds 4000/);
   assert.equal(validatePrompt("  ok  "), "ok");
-  assert.equal(validateModel(undefined), "openai/gpt-image-2.5-sunburst");
-  assert.equal(validateModel(""), "openai/gpt-image-2.5-sunburst");
+  assert.equal(validateModel(undefined), "openai/gpt-image-2.6-sunburst");
+  assert.equal(validateModel(""), "openai/gpt-image-2.6-sunburst");
   assert.throws(() => validateModel("has space"), /valid OpenRouter image/);
   assert.throws(() => validateModel("x".repeat(129)), /valid OpenRouter image/);
   assert.equal(validateModel("google/gemini-2.5-flash-image"), "google/gemini-2.5-flash-image");

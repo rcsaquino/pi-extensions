@@ -6,7 +6,7 @@ import { SafeError } from "./errors.ts";
 export const OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images/generations";
 
 /** Default model; override per call with any pattern-validated OpenRouter image model id. */
-export const DEFAULT_MODEL = "openai/gpt-image-2.5-sunburst";
+export const DEFAULT_MODEL = "openai/gpt-image-2.6-sunburst";
 
 const MISSING_KEY =
   "OpenRouter key is missing (set OPENROUTER_API_KEY in .env or run /login for openrouter); image generation is unavailable.";

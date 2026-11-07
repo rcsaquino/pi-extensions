@@ -47,13 +47,13 @@ Resolved in this order:
 
 ## Images API note
 
-`pi-ai` `Models.generateImages()` sends image models through `chat/completions` and returns 404 for models such as `openai/gpt-image-2.5-sunburst` with a message to use the `/api/v1/images` endpoint. This extension therefore calls the Images API directly:
+`pi-ai` `Models.generateImages()` sends image models through `chat/completions` and returns 404 for models such as `openai/gpt-image-2.6-sunburst` with a message to use the `/api/v1/images` endpoint. This extension therefore calls the Images API directly:
 
 - `POST https://openrouter.ai/api/v1/images/generations` with `{ model, prompt, size?, input_references? }`.
 - Reference images are sent as `input_references` entries (`{ type: "image_url", image_url: { url: "data:<mime>;base64,..." } }`), per the OpenRouter image-generation docs.
 - Responses are read from `data[0].b64_json` (with `media_type` when supplied), falling back to `data[0].url`, which is downloaded without credentials.
 
-The default model is `openai/gpt-image-2.5-sunburst`; any pattern-validated OpenRouter image model id may be passed as `model`. There is no models-listing tool; the OpenRouter dashboard remains the model catalogue.
+The default model is `openai/gpt-image-2.6-sunburst`; any pattern-validated OpenRouter image model id may be passed as `model`. There is no models-listing tool; the OpenRouter dashboard remains the model catalogue.
 
 ## Tool
 
@@ -67,7 +67,7 @@ generate_image({ prompt: "a study in blue", outputPath: "album/" })
 | Parameter | Required | Bounds |
 |---|---|---|
 | `prompt` | yes | 1–4000 chars |
-| `model` | no | 1–128 chars, `^[A-Za-z0-9][A-Za-z0-9_./-]*$`; default `openai/gpt-image-2.5-sunburst` |
+| `model` | no | 1–128 chars, `^[A-Za-z0-9][A-Za-z0-9_./-]*$`; default `openai/gpt-image-2.6-sunburst` |
 | `inputPaths` | no | max 3 workspace files, 20 MB each and 32 MB total, PNG/JPEG/WebP/GIF |
 | `size` | no | `WIDTHxHEIGHT` (256–4096 per side), tier `1K`/`2K`/`4K`, or `auto` |
 | `outputPath` | no | workspace-relative file, existing directory, or trailing-slash directory; must stay inside the Pi working directory; default `artifacts/`. An existing file is refused unless `overwrite: true`. |
@@ -76,7 +76,7 @@ generate_image({ prompt: "a study in blue", outputPath: "album/" })
 The result is metadata only, never image bytes:
 
 ```json
-{ "path": "<cwd>/artifacts/image-a-quiet-harbor-20261014-120000.png", "bytes": 12345, "mime": "image/png", "model": "openai/gpt-image-2.5-sunburst", "references": 0 }
+{ "path": "<cwd>/artifacts/image-a-quiet-harbor-20261014-120000.png", "bytes": 12345, "mime": "image/png", "model": "openai/gpt-image-2.6-sunburst", "references": 0 }
 ```
 
 ## Limits and safety

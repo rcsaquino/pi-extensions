@@ -14,7 +14,7 @@ export default function piImage(pi: ExtensionAPI): void {
     promptGuidelines: ["When the user asks for an image, generate it with generate_image and report the saved file path. Image bytes never belong in chat text."],
     parameters: Type.Object({
       prompt: Type.String({ minLength: 1, maxLength: 4000, description: "Text description of the desired image" }),
-      model: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "OpenRouter image model id; defaults to openai/gpt-image-2.5-sunburst" })),
+      model: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "OpenRouter image model id; defaults to openai/gpt-image-2.6-sunburst" })),
       inputPaths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 3, description: "Workspace-relative reference images (max 3, 20 MB each, 32 MB total) for image-to-image" })),
       size: Type.Optional(Type.String({ description: "Output size like 1024x1024, a tier (1K, 2K, 4K), or auto" })),
       outputPath: Type.Optional(Type.String({ minLength: 1, description: "Workspace-relative output file or directory; defaults to artifacts/. An existing file is refused unless overwrite is true." })),

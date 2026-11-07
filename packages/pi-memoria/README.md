@@ -27,7 +27,7 @@ pi-memoria gives Pi one memory shared across every project: instructions that mu
 pi install npm:pi-memoria
 ```
 
-This installs the current public npm release. The source version is recorded in `package.json`; unpublished checkout changes require a local install.
+This installs the current public npm release. The source version is recorded in `package.json`; unpublished checkout changes require a local install. This package works with no other package from this repository installed.
 
 Activate with `/reload` in an idle session when intended, or a separately approved restart. To uninstall, run `pi remove npm:pi-memoria`; stored memory remains until you delete its directory.
 

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
@@ -8,22 +7,12 @@ import { createAssistantMessageEventStream, type Api, type AssistantMessage, typ
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readDeliveryLedger } from "../src/delivery-ledger.ts";
-
-const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
-async function until(predicate: () => boolean, label: string) {
-  const deadline = Date.now() + 6000;
-  while (!predicate()) { assert.ok(Date.now() < deadline, `Timeout: ${label}`); await delay(10); }
-}
+import { sdkRoot, until } from "./sdk-harness.ts";
 
 /** Two extensions in one real host: telegram plus an unrelated notice producer. No ownership event. */
 async function fixture(t: test.TestContext) {
-  await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(resolve(scratch, "cross-sdk-"));
-  const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  const old = { PI_OFFLINE: process.env.PI_OFFLINE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, TELEGRAM_ENV_FILE: process.env.TELEGRAM_ENV_FILE };
-  process.env.PI_OFFLINE = "1"; process.env.PI_CODING_AGENT_DIR = agentDir; delete process.env.TELEGRAM_ENV_FILE;
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=CROSS-OFFLINE\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=\nELEVENLABS_VOICE_ID=\nELEVENLABS_MODEL_ID=\n", { mode: 0o600 });
-  const fetch = globalThis.fetch;
+  const { root, agentDir, cleanup } = await sdkRoot("cross-sdk-",
+    "TELEGRAM_BOT_TOKEN=CROSS-OFFLINE\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=\nELEVENLABS_VOICE_ID=\nELEVENLABS_MODEL_ID=\n");
   const sent: { chat_id: number; text: string }[] = [];
   const errors: string[] = [];
   const updates: unknown[] = [];
@@ -36,6 +25,7 @@ async function fixture(t: test.TestContext) {
     if (method === "getMe") return ok({ id: 999 });
     if (method === "getWebhookInfo") return ok({ url: "" });
     if (method === "sendMessage") { sent.push(args); return ok({}); }
+    if (method === "sendRichMessage") { sent.push({ chat_id: args.chat_id, text: args.rich_message.markdown }); return ok({}); }
     if (method === "getUpdates") {
       polls++;
       if (!updates.length) await new Promise<void>((done, reject) => {
@@ -84,9 +74,7 @@ async function fixture(t: test.TestContext) {
   const { session } = await createAgentSession({ cwd: root, agentDir, settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(root), model, thinkingLevel: "off" });
   t.after(async () => {
     await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); await session.abort(); session.dispose();
-    globalThis.fetch = fetch;
-    for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-    await rm(root, { recursive: true, force: true });
+    await cleanup();
   });
   await session.bindExtensions({ mode: "rpc", onError: event => errors.push(event.error) });
   await session.extensionRunner.emit({ type: "session_start", reason: "startup" });

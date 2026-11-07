@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, open, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { agentDir, readOpenRouterKey } from "../src/auth.ts";
 import { assertSafeDownloadUrl, generateImageBytes, isPrivateAddress } from "../src/client.ts";
-import { redactKey, safeError, SafeError } from "../src/errors.ts";
+import { safeError, SafeError } from "../src/errors.ts";
 import { detectSavedMime, saveImage, slugify } from "../src/files.ts";
 import { MAX_REFERENCE_TOTAL_BYTES, readReferenceImages, resolveOutputPath, validateModel, validatePrompt, validateSize } from "../src/validate.ts";
 
@@ -70,7 +70,7 @@ test("img2img encodes workspace references as input_references data URLs", async
   assert.match(saved.path, /\.jpg$/);
 });
 
-test("url fallback downloads without credentials and rejects non-images", async t => {
+test("url fallback downloads without credentials and rejects non-images", async _t => {
   const image = fakePng();
   const fetch = (async (url: string, init?: RequestInit) => {
     if (String(url).includes("images/generations")) return Response.json({ data: [{ url: "https://cdn.example/x.png", media_type: "image/png" }] });
@@ -137,6 +137,11 @@ test("reference images stay inside the workspace with bounded count and size", a
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, "good.png"), fakePng());
   await writeFile(join(root, "notes.txt"), "not an image");
+  const outside = await mkdtemp(join(scratch, "refs-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(join(outside, "secret.png"), fakePng());
+  await symlink(join(outside, "secret.png"), join(root, "linked.png"));
+  await assert.rejects(readReferenceImages(root, ["linked.png"]), /inside the Pi working directory/);
   await assert.rejects(readReferenceImages(root, ["missing.png"]), /inside the Pi working directory/);
   await assert.rejects(readReferenceImages(root, ["../escape.png"]), /inside the Pi working directory/);
   await assert.rejects(readReferenceImages(root, ["notes.txt"]), /PNG, JPEG, WebP, or GIF/);
@@ -160,9 +165,9 @@ test("output paths stay inside the workspace with lowercase hyphenated names", a
   const savedFallback = await saveImage(fallback.directory, fakePng(), "default", fallback.filename, { root: fallback.root });
   assert.match(savedFallback.path, /artifacts\/image-default-\d{8}-\d{6}-[0-9a-f]{6}\.png$/);
   await assert.rejects(resolveOutputPath(root, "../evil.png"), /inside the Pi working directory/);
-  const out = await resolveOutputPath(root, "My Shots/EVE Portrait.PNG");
+  const out = await resolveOutputPath(root, "My Shots/Sample Portrait.PNG");
   const saved = await saveImage(out.directory, fakePng(), "ignored", out.filename, { root: out.root });
-  assert.match(saved.path, /My Shots\/eve-portrait\.png$/);
+  assert.match(saved.path, /My Shots\/sample-portrait\.png$/);
   assert.equal(detectSavedMime(Buffer.from("not bytes")), undefined);
   assert.equal(slugify("!!!"), "image");
 });
@@ -246,7 +251,7 @@ test("default filenames are collision resistant and existing outputs need explic
   assert.deepEqual(await readFile(target), fakePng(4096));
 });
 
-test("provider download URLs must be public HTTPS and never private addresses", async t => {
+test("provider download URLs must be public HTTPS and never private addresses", async _t => {
   const response = (url: string) => (async () => Response.json({ data: [{ url }] })) as typeof globalThis.fetch;
   await assert.rejects(
     generateImageBytes({ key: "K", model: "m", prompt: "p" }, response("https://127.0.0.1/x.png"), publicLookup),
@@ -294,10 +299,8 @@ test("reference images have an aggregate byte budget", async t => {
   await assert.rejects(readReferenceImages(root, names), /32 MB in total/);
 });
 
-test("errors never expose the key or echo arbitrary provider prompt text", async t => {
+test("errors never expose the key or echo arbitrary provider prompt text", async _t => {
   const key = "sk-or-v1-SECRET-KEY";
-  assert.ok(!redactKey(`auth failed for ${key} ok`, key).includes(key));
-  assert.equal(redactKey("plain", undefined), "plain");
   assert.equal(safeError(new Error("boom")), "Image generation failed. Check the stored OpenRouter login and connectivity.");
   assert.equal(safeError(new SafeError("careful")).length > 0, true);
   const fetch = (async () => Response.json({ error: { message: `bad key ${key} rejected for PRIVATE PROMPT` } }, { status: 401 })) as typeof globalThis.fetch;
@@ -314,7 +317,7 @@ test("errors never expose the key or echo arbitrary provider prompt text", async
   await assert.rejects(generateImageBytes({ key: "K", model: "m", prompt: "p" }, lying), /no image data/);
 });
 
-test("oversized provider responses are refused before buffering", async t => {
+test("oversized provider responses are refused before buffering", async _t => {
   const fetch = (async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])); } }), {
     headers: { "content-length": String(60 * 1024 * 1024) },
   })) as typeof globalThis.fetch;

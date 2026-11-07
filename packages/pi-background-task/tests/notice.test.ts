@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { buildNotice, NOTICE_EXCERPT, truncate } from "../src/notice.ts";
+import { buildNotice, NOTICE_EXCERPT, shouldNotify, truncate } from "../src/notice.ts";
 import { formatDuration, processAlive, type RunMeta } from "../src/store.ts";
 
 const base: RunMeta = {
@@ -20,6 +20,11 @@ test("truncate keeps short text and flags long text", () => {
   assert.equal(truncate("short", 10), "short");
   const long = truncate("x".repeat(20), 10);
   assert.match(long, /^x{10}\n\[truncated\]$/);
+});
+
+test("shouldNotify silences only explicit kills", () => {
+  assert.equal(shouldNotify({ status: "killed" }), false);
+  for (const status of ["done", "failed", "unknown", "running"] as const) assert.equal(shouldNotify({ status }), true, status);
 });
 
 test("buildNotice carries id, status, duration and report excerpt", () => {

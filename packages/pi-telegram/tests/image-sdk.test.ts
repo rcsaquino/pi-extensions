@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { deflateSync, crc32 } from "node:zlib";
@@ -9,9 +9,7 @@ import { createAssistantMessageEventStream, type Api, type AssistantMessage, typ
 import { Type } from "typebox";
 import { TelegramBridge } from "../src/bridge.ts";
 import type { TgMessage } from "../src/api.ts";
-
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
-await mkdir(workspace, { recursive: true });
+import { sdkRoot, until } from "./sdk-harness.ts";
 // Solid-color PNG built entirely from synthetic bytes, no patient or external fixture.
 function png(width: number, height: number): Buffer {
   const chunk = (type: string, bytes: Buffer) => {
@@ -24,17 +22,9 @@ function png(width: number, height: number): Buffer {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header),
     chunk("IDAT", deflateSync(Buffer.alloc((width * 3 + 1) * height))), chunk("IEND", Buffer.alloc(0))]);
 }
-async function until(predicate: () => boolean) {
-  const started = Date.now();
-  while (!predicate()) { if (Date.now() - started > 10_000) assert.fail("Image SDK fixture timed out"); await delay(5); }
-}
 
 test("real SDK image normalization preserves admitted reply ownership, queues, steering and foreign-input cancellation", async t => {
-  const root = await mkdtemp(resolve(workspace, "telegram-image-sdk-"));
-  const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  const previous = { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_OFFLINE: process.env.PI_OFFLINE };
-  process.env.PI_CODING_AGENT_DIR = agentDir; process.env.PI_OFFLINE = "1";
-  const originalFetch = globalThis.fetch;
+  const { root, agentDir, cleanup } = await sdkRoot("telegram-image-sdk-");
   globalThis.fetch = async () => { assert.fail("Unexpected network call: image SDK tests have no live transport/provider"); };
   const sent: { chat_id: number; text: string }[] = [];
   const consumed: { text: string; images: number }[] = [];
@@ -57,8 +47,9 @@ test("real SDK image normalization preserves admitted reply ownership, queues, s
       pi.on("session_start", (_event, ctx: ExtensionContext) => {
         bridge = new TelegramBridge(pi, ctx, { token: "INERT-IMAGE-FIXTURE", allowed: new Set(["123", "456"]), destination: 123, dataDir: resolve(root, "downloads") }, async (url, init) => {
           const method = String(url).split("/").at(-1);
-          assert.ok(method === "sendMessage" || method === "sendChatAction", "No poller or live HTTP is allowed");
+          assert.ok(method === "sendMessage" || method === "sendRichMessage" || method === "sendChatAction", "No poller or live HTTP is allowed");
           if (method === "sendMessage") sent.push(JSON.parse(init!.body as string));
+          if (method === "sendRichMessage") { const body = JSON.parse(init!.body as string); sent.push({ chat_id: body.chat_id, text: body.rich_message.markdown }); }
           return Response.json({ ok: true, result: { message_id: sent.length } });
         });
         // Inert transport: no start(), connection lease, cursor, poller or live configuration.
@@ -97,9 +88,7 @@ test("real SDK image normalization preserves admitted reply ownership, queues, s
     }] });
   t.after(async () => {
     release?.(); await bridge?.stop(); if (session) { await session.abort(); session.dispose(); }
-    globalThis.fetch = originalFetch;
-    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-    await rm(root, { recursive: true, force: true });
+    await cleanup();
   });
   await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
   ({ session } = await createAgentSession({ cwd: root, agentDir, resourceLoader: loader, settingsManager: settings, sessionManager: SessionManager.inMemory(root), model }));

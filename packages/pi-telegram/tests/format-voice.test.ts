@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
-import { TelegramApi, audioUpload, type OutgoingFile } from "../src/api.ts";
+import { RICH_TEXT_LIMIT, TelegramApi, audioUpload, type OutgoingFile } from "../src/api.ts";
 import { loadConfig, type Config } from "../src/config.ts";
 import { formattedChunks, telegramFormat } from "../src/format.ts";
 import { isOpus, joinSpeech, speechChunks } from "../src/voice.ts";
@@ -57,13 +57,73 @@ test("formatting is preserved across long chunks without splitting emoji or inva
   }
 });
 
-test("Telegram text API gets entities, never a fragile parse_mode", async () => {
+test("every text reply is one native rich Markdown message without parse_mode", async () => {
+  const sent: { url: string; body: any }[] = [];
+  const api = new TelegramApi(config, async (url, init) => { sent.push({ url: String(url), body: JSON.parse(init!.body as string) }); return ok({}); });
+  await api.sendText(123, "**Done** with `file.txt`.", signal);
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0].url.endsWith("/sendRichMessage"));
+  assert.equal(sent[0].body.chat_id, 123);
+  assert.equal(sent[0].body.rich_message.markdown, "**Done** with `file.txt`.");
+  assert.equal(sent[0].body.rich_message.html, undefined);
+  assert.equal(sent[0].body.parse_mode, undefined);
+});
+
+test("the rich send path redacts configured secrets before the request", async () => {
   const sent: any[] = [];
   const api = new TelegramApi(config, async (_url, init) => { sent.push(JSON.parse(init!.body as string)); return ok({}); });
+  await api.sendText(123, `keys ${config.token} ${config.groqKey} ${config.elevenKey}`, signal);
+  assert.equal(sent.length, 1);
+  const markdown = sent[0].rich_message.markdown as string;
+  assert.equal(markdown, "keys [REDACTED] [REDACTED] [REDACTED]");
+  for (const secret of [config.token, config.groqKey!, config.elevenKey!]) assert.ok(!markdown.includes(secret));
+});
+
+test("the 32,768-byte boundary stays rich and one byte over uses the legacy chunks", async () => {
+  const sent: any[] = [];
+  const api = new TelegramApi(config, async (_url, init) => { sent.push(JSON.parse(init!.body as string)); return ok({}); });
+  await api.sendText(123, "a".repeat(RICH_TEXT_LIMIT), signal);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].rich_message.markdown, "a".repeat(RICH_TEXT_LIMIT));
+  sent.length = 0;
+  await api.sendText(123, "a".repeat(RICH_TEXT_LIMIT + 1), signal);
+  assert.ok(sent.length > 1);
+  assert.ok(sent.every(item => item.text && item.rich_message === undefined));
+  assert.equal(sent.map(item => item.text).join(""), "a".repeat(RICH_TEXT_LIMIT + 1));
+});
+
+test("an oversized reply uses the legacy entity chunks instead of an invalid rich message", async () => {
+  const sent: any[] = [];
+  const api = new TelegramApi(config, async (_url, init) => { sent.push(JSON.parse(init!.body as string)); return ok({}); });
+  const text = "**long** " + "x".repeat(RICH_TEXT_LIMIT);
+  await api.sendText(123, text, signal);
+  assert.ok(sent.length > 1);
+  assert.ok(sent.every(item => item.text.length <= 4096));
+  assert.equal(sent.map(item => item.text).join(""), "long " + "x".repeat(RICH_TEXT_LIMIT));
+  assert.ok(sent[0].entities.some((entity: any) => entity.type === "bold"));
+});
+
+test("a definitive rich rejection falls back to one legacy send, never a duplicate rich retry", async () => {
+  const calls: { url: string; body: any }[] = [];
+  const api = new TelegramApi(config, async (url, init) => {
+    const body = JSON.parse(init!.body as string);
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith("/sendRichMessage")) return Response.json({ ok: false, error_code: 400, description: "synthetic rich rejection" });
+    return ok({ message_id: 5 });
+  });
   await api.sendText(123, "**Done** with `file.txt`.", signal);
-  assert.equal(sent[0].text, "Done with file.txt.");
-  assert.equal(sent[0].parse_mode, undefined);
-  assert.deepEqual(sent[0].entities.map((entity: any) => entity.type), ["bold", "code"]);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].url.endsWith("/sendRichMessage"));
+  assert.ok(calls[1].url.endsWith("/sendMessage"));
+  assert.equal(calls[1].body.text, "Done with file.txt.");
+  assert.deepEqual(calls[1].body.entities.map((entity: any) => entity.type), ["bold", "code"]);
+});
+
+test("an ambiguous rich transport failure is never replayed through the legacy path", async () => {
+  let calls = 0;
+  const api = new TelegramApi(config, async () => { calls++; throw new Error("offline", { cause: { code: "ECONNRESET" } }); });
+  await assert.rejects(api.sendText(123, "hello", signal), /TG_TRANSPORT_FAILED/);
+  assert.equal(calls, 1);
 });
 
 test("multiple photos/videos are one captionless sendMediaGroup operation", async () => {
@@ -96,10 +156,10 @@ test(".oga and OGG .opus uploads use a supported .ogg extension and audio/ogg MI
 });
 
 test("v4 adds restrained default audio guidance and preserves intentional expressive tags", () => {
-  assert.deepEqual(speechChunks("Hello, sir.", "eleven_v4"), ["[warm, composed voice] Hello, sir."]);
+  assert.deepEqual(speechChunks("Hello.", "eleven_v4"), ["[warm, composed voice] Hello."]);
   assert.deepEqual(speechChunks("[curious] Is this working? [pause] Yes.", "eleven_v4"), ["[curious] Is this working? [pause] Yes."]);
   assert.deepEqual(speechChunks("Hello.", "other-configured-model"), ["Hello."]);
-  assert.ok(speechChunks('Hello <break time="1s" /> sir.', "eleven_v4")[0].includes("[pause]"));
+  assert.ok(speechChunks('Hello <break time="1s" /> there.', "eleven_v4")[0].includes("[pause]"));
 });
 
 test("v4 chunking never splits tags or emoji and carries opening delivery into later chunks", () => {
@@ -116,8 +176,8 @@ test("v4 chunking never splits tags or emoji and carries opening delivery into l
 test("v4 generation sends tags to exactly the configured model without unsupported controls", async () => {
   const requests: any[] = [];
   const api = new TelegramApi(config, async (_url, init) => { requests.push(JSON.parse(init!.body as string)); return new Response(Buffer.from("OggS---OpusHead data")); });
-  await api.generateSpeech("Hello, sir.", signal);
-  assert.deepEqual(requests, [{ text: "[warm, composed voice] Hello, sir.", model_id: "eleven_v4" }]);
+  await api.generateSpeech("Hello.", signal);
+  assert.deepEqual(requests, [{ text: "[warm, composed voice] Hello.", model_id: "eleven_v4" }]);
   assert.equal(Object.hasOwn(requests[0], "voice_settings"), false);
 });
 

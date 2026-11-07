@@ -29,7 +29,13 @@ function parse(text: string): HotMemory[] {
     const match = /^\[(h_[a-zA-Z0-9_-]+)\]\s+\[p=(\d+)\]\s+(.+)$/u.exec(body);
     const content = match ? match[3]! : body;
     const id = match ? match[1]! : `h_${createHash("sha256").update(body).digest("hex").slice(0, 16)}`;
-    if (entries.some((entry) => entry.id === id)) throw new Error(`Duplicate hot memory ID ${id}; repair MEMORY.md before editing.`);
+    const existing = entries.find((entry) => entry.id === id);
+    if (existing) {
+      // Hand-written duplicate lines carry no explicit id; merge identical content instead of
+      // rejecting the whole file. Explicit duplicate ids stay actionable.
+      if (!match && existing.content === content) continue;
+      throw new Error(`Duplicate hot memory ID ${id}; repair MEMORY.md before editing.`);
+    }
     entries.push({ id, priority: match ? integer(Number(match[2]), "priority", 0, 100) : 50, content });
   }
   return entries;

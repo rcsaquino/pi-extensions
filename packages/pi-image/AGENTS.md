@@ -6,7 +6,7 @@ Read this with [the monorepo instructions](https://github.com/rcsaquino/pi-exten
 
 - `index.ts`: distributable entry point; registers `generate_image` only.
 - `src/auth.ts`: `.env`/environment key resolution (`.env` first, then process environment), stored OpenRouter login (`openrouter` entry in `<agent-dir>/auth.json`) as fallback, Images endpoint and default model constants.
-- `src/errors.ts`: credential-safe `SafeError`, `safeError`, and `redactKey`.
+- `src/errors.ts`: credential-safe `SafeError` and `safeError`.
 - `src/validate.ts`: prompt/model/size bounds, workspace-contained reference reads, workspace-contained output resolution.
 - `src/client.ts`: direct `POST /api/v1/images/generations` calls with an injectable fetch transport, capped bodies, `input_references` encoding, `b64_json`/`url` handling, public-HTTPS download checks, and fixed local status errors.
 - `src/files.ts`: PNG/JPEG magic detection, lowercase-hyphenated filenames, verified saves.

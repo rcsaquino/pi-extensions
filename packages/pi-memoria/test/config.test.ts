@@ -19,6 +19,6 @@ test("memory paths are global and configuration never accepts a project-relative
 test("managed ripgrep paths use platform-native separators and executable names", () => {
   assert.equal(managedRipgrepPath("/custom/agent", "linux"), "/custom/agent/bin/rg");
   assert.equal(managedRipgrepPath("/custom/agent", "darwin"), "/custom/agent/bin/rg");
-  assert.equal(managedRipgrepPath("C:\\Users\\Rey\\agent", "win32"), "C:\\Users\\Rey\\agent\\bin\\rg.exe");
+  assert.equal(managedRipgrepPath("C:\\Users\\example\\agent", "win32"), "C:\\Users\\example\\agent\\bin\\rg.exe");
   assert.equal(managedRipgrepPath("\\\\server\\share\\agent", "win32"), "\\\\server\\share\\agent\\bin\\rg.exe");
 });

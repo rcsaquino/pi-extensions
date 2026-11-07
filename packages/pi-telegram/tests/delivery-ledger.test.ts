@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { chmod, chown, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { ApiError, TelegramApi, type Fetch } from "../src/api.ts";
@@ -42,12 +41,12 @@ test("cause codes use only bounded own-data allowlist, never messages, getters, 
 test("durable API acknowledgments and partial chunks survive a fresh reader without claiming whole delivery", async t => {
   const f = await fixture(t); let calls = 0;
   const api = f.api(async () => { if (++calls === 2) throw new Error(`secret ${f.config.token}`, { cause: { code: "ECONNRESET" } }); return ok(); });
-  await assert.rejects(api.sendText(123, "a".repeat(9000), new AbortController().signal, { operation: "reply", reply: event.reply, delivery: event.delivery }), TransportFailure);
+  await assert.rejects(api.sendText(123, "a".repeat(33_000), new AbortController().signal, { operation: "reply", reply: event.reply, delivery: event.delivery }), TransportFailure);
   const records = await f.read();
   assert.deepEqual(records.map(r => r.phase), ["send_attempt", "api_attempt", "api_ack", "api_attempt", "api_failed", "send_failed"]);
   assert.equal(records.find(r => r.phase === "api_ack")!.chunk, 1);
   assert.equal(records.find(r => r.phase === "api_failed")!.chunk, 2);
-  assert.equal(records.find(r => r.phase === "api_failed")!.chunks, 3);
+  assert.equal(records.find(r => r.phase === "api_failed")!.chunks, 9);
   assert.equal(records.at(-1)!.outcome, "unknown"); assert.equal(records.at(-1)!.cause, "ECONNRESET");
   assert.ok(records.every(r => r.delivery === event.delivery && r.reply === event.reply));
   assert.equal(calls, 2, "ambiguous chunk is never retried");
@@ -99,6 +98,7 @@ test("explicit 429 alone retries with numbered rejected/acknowledged attempts", 
   const records = await f.read();
   assert.deepEqual(records.map(r => r.phase), ["send_attempt", "api_attempt", "api_rejected", "api_attempt", "api_ack", "sent"]);
   assert.equal(records[2].rejection, "rate_limit"); assert.equal(records[3].attempt, 2); assert.equal(calls, 2);
+  assert.ok(records.filter(r => r.phase.startsWith("api_")).every(r => r.method === "sendRichMessage"), "the ledger records the rich method");
 });
 
 test("failure after a 429 backoff revalidation does not upload again or falsify the API rejection", async t => {

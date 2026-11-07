@@ -38,24 +38,34 @@ For all packages and the complete test suite:
 
 ## Installation
 
-Package folders retain their unscoped names; the three scoped npm names distinguish these implementations from unrelated public packages. After the corresponding release is published, npm installation uses its manifest name, for example `pi install npm:@rcsaquino/pi-telegram`. Prepared source is not a claim of an existing npm release.
+Each package installs on its own. None requires another package in this repository. The npm names below are the manifest identities; check the registry for the current release state.
 
-From a reviewed local checkout, install a specific package:
+| Package | npm name | Status |
+|---|---|---|
+| pi-memoria | `pi-memoria` | Published 0.5.0 |
+| Telegram transport | `@rcsaquino/pi-telegram` | Pending first publication |
+| Image generation | `@rcsaquino/pi-image` | Pending first publication |
+| Idle compaction | `pi-idle-compaction` | Pending first publication |
+| Background tasks | `@rcsaquino/pi-background-task` | Pending first publication |
+
+Install a published package by its npm name:
 
 ```sh
+pi install npm:<name>
+```
+
+Until a package is published, install it from a clone:
+
+```sh
+git clone https://github.com/rcsaquino/pi-extensions.git
+cd pi-extensions
 pi install ./packages/pi-telegram
 ```
 
-Or use a stable absolute path:
+Pi keeps local packages as references, so leave the clone in place. Use `pi list` to inspect configured package declarations, then `/reload` in an idle Pi session to activate a change. Remove a package by its installed source, for example:
 
 ```sh
-pi install /absolute/path/to/pi-extensions/packages/pi-background-task
-```
-
-Pi keeps local packages as references. Leave the checkout in place. Use `pi list` to inspect configured package declarations, then `/reload` in an idle Pi session when you intend to activate a change. Removing a package uses its installed source, for example:
-
-```sh
-pi remove /absolute/path/to/pi-extensions/packages/pi-background-task
+pi remove ./packages/pi-telegram
 ```
 
 Removal does not erase that extension's runtime data.
@@ -116,9 +126,7 @@ Extensions execute with Pi's OS permissions. They are not sandboxes, and in-proc
 - Background-task source does not lock workspace/resources or gate authorized foreground operations behind workers. Other integrations retain their independent admission/ownership contracts (for example Telegram's single poller).
 - Never delete an unknown active lock, automatically replay uncertain work, or describe an offline check as live acceptance.
 
-On the maintained deployment, old workspace source names remain compatibility symlinks into `packages/`. Existing registrations and deployed copies were preserved during migration. Review dependent settings, lazy imports, and helper scripts before removing those aliases. Local history archives and private migration reports are not part of the shareable source tree.
-
-See [AGENTS.md](AGENTS.md) for the repository's development and verification rules.
+See [AGENTS.md](AGENTS.md) for the repository's development and verification rules and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 ## Support and contact
 

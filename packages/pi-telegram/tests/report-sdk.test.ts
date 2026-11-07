@@ -1,29 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model, type ToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import telegram from "../index.ts";
-
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
-async function until(predicate: () => boolean, label: string) {
-  const deadline = Date.now() + 6000;
-  while (!predicate()) { assert.ok(Date.now() < deadline, `Timeout: ${label}`); await delay(10); }
-}
+import { sdkRoot, until } from "./sdk-harness.ts";
 
 /** Real host events and session; one synthetic provider and one offline Telegram transport. */
 async function fixture(t: test.TestContext) {
-  await mkdir(workspace, { recursive: true });
-  const root = await mkdtemp(resolve(workspace, "mirror-sdk-"));
-  const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=MIRROR-OFFLINE\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=\nELEVENLABS_VOICE_ID=\nELEVENLABS_MODEL_ID=\n", { mode: 0o600 });
+  const { root, agentDir, cleanup } = await sdkRoot("mirror-sdk-",
+    "TELEGRAM_BOT_TOKEN=MIRROR-OFFLINE\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=\nELEVENLABS_VOICE_ID=\nELEVENLABS_MODEL_ID=\n");
   await writeFile(resolve(root, "artifact.txt"), "Synthetic requested artifact");
-  const previous = { PI_OFFLINE: process.env.PI_OFFLINE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, TELEGRAM_ENV_FILE: process.env.TELEGRAM_ENV_FILE };
-  process.env.PI_OFFLINE = "1"; process.env.PI_CODING_AGENT_DIR = agentDir; delete process.env.TELEGRAM_ENV_FILE;
-  const originalFetch = globalThis.fetch;
   const sent: { chat_id: number; text: string }[] = [];
   const uploads: { chat: string; bytes: string }[] = [];
   const errors: string[] = [];
@@ -45,6 +34,7 @@ async function fixture(t: test.TestContext) {
     if (method === "getMe") return success({ id: 999 });
     if (method === "getWebhookInfo") return success({ url: "" });
     if (method === "sendMessage") { sent.push(args); return success({}); }
+    if (method === "sendRichMessage") { sent.push({ chat_id: args.chat_id, text: args.rich_message.markdown }); return success({}); }
     if (method === "getUpdates") {
       if (first) { first = false; return success([]); }
       if (!pending.length) await new Promise<void>((done, reject) => {
@@ -95,9 +85,7 @@ async function fixture(t: test.TestContext) {
   const { session } = await createAgentSession({ cwd: root, agentDir, settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(root), model });
   t.after(async () => {
     await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); await session.abort(); session.dispose();
-    globalThis.fetch = originalFetch;
-    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-    await rm(root, { recursive: true, force: true });
+    await cleanup();
   });
   await session.bindExtensions({ mode: "rpc", onError: event => errors.push(event.error) });
   await session.extensionRunner.emit({ type: "session_start", reason: "startup" });

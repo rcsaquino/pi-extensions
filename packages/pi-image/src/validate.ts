@@ -1,4 +1,5 @@
-import { readFile, realpath, stat, lstat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { DEFAULT_MODEL } from "./auth.ts";
 import { SafeError } from "./errors.ts";
@@ -54,18 +55,104 @@ export interface ReferenceImage {
   filename: string;
 }
 
-/** Resolve a workspace-relative path to its real location, refusing escapes via .. or symlinks. */
-async function insideRoot(root: string, candidate: string): Promise<string> {
-  const base = await realpath(root);
-  const resolved = await realpath(resolve(base, candidate));
-  const rel = relative(base, resolved);
-  if (rel === ".." || rel.startsWith("../") || isAbsolute(rel) || rel === "") {
-    throw new SafeError("Reference images must be existing files inside the Pi working directory.");
+const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+
+/** Walk the canonical chain with held directory descriptors, not a rechecked pathname. */
+async function openDirectory(path: string): Promise<FileHandle> {
+  let held = await open("/", directoryFlags);
+  try {
+    for (const part of path.split("/").filter(Boolean)) {
+      const next = await open(`/proc/self/fd/${held.fd}/${part}`, directoryFlags);
+      await held.close();
+      held = next;
+    }
+    return held;
+  } catch (error) {
+    await held.close().catch(() => {});
+    throw error;
   }
-  return resolved;
 }
 
 const outsideWorkspace = new SafeError("Reference images must be existing files inside the Pi working directory.");
+
+async function readBounded(file: FileHandle, maxBytes: number): Promise<Buffer> {
+  const before = await file.stat();
+  if (!before.isFile()) throw outsideWorkspace;
+  if (before.size > maxBytes) throw new SafeError("Reference images are limited to 20 MB each.");
+  const buffers: Buffer[] = [];
+  let size = 0;
+  for (;;) {
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1 - size));
+    const { bytesRead } = await file.read(chunk, 0, chunk.length, size);
+    if (!bytesRead) break;
+    size += bytesRead;
+    if (size > maxBytes) throw new SafeError("Reference images are limited to 20 MB each.");
+    buffers.push(chunk.subarray(0, bytesRead));
+  }
+  const after = await file.stat();
+  if (after.size !== before.size || size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
+    throw new SafeError("Reference image changed during read.");
+  }
+  return Buffer.concat(buffers, size);
+}
+
+/** Read a workspace-contained reference without following a swapped symlink or renaming its parent. */
+async function readReferenceFile(root: string, candidate: string, maxBytes: number): Promise<{ path: string; data: Buffer }> {
+  let base: string, resolved: string;
+  try {
+    base = await realpath(root);
+    resolved = await realpath(resolve(base, candidate));
+  } catch {
+    throw outsideWorkspace;
+  }
+  const rel = relative(base, resolved);
+  if (rel === ".." || rel.startsWith("../") || isAbsolute(rel) || rel === "") throw outsideWorkspace;
+
+  // The held-descriptor path needs procfs. Elsewhere use O_NOFOLLOW and a post-read realpath check.
+  if (process.platform !== "linux" || !constants.O_DIRECTORY || !constants.O_NOFOLLOW) {
+    // shortcut: ancestor swaps are unchecked off Linux, harden when non-Linux reference reads are supported.
+    let handle: FileHandle | undefined;
+    try {
+      handle = await open(resolved, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      const data = await readBounded(handle, maxBytes);
+      const again = await realpath(resolve(base, candidate)).catch(() => undefined);
+      if (again !== resolved) throw new SafeError("Reference image changed during read.");
+      return { path: resolved, data };
+    } catch (error) {
+      if (error instanceof SafeError) throw error;
+      throw outsideWorkspace;
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  }
+
+  let parent: FileHandle | undefined, file: FileHandle | undefined;
+  try {
+    parent = await openDirectory(dirname(resolved));
+    const entry = `/proc/self/fd/${parent.fd}/${basename(resolved)}`;
+    file = await open(entry, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const data = await readBounded(file, maxBytes);
+    const after = await file.stat(), named = await lstat(entry);
+    if (named.isSymbolicLink() || named.ino !== after.ino || named.dev !== after.dev) {
+      throw new SafeError("Reference image changed during read.");
+    }
+    // Detect an ancestor rename without ever following its replacement to read bytes.
+    const current = await openDirectory(dirname(resolved));
+    try {
+      const held = await parent.stat(), replaced = await current.stat();
+      if (held.ino !== replaced.ino || held.dev !== replaced.dev) throw new SafeError("Reference image directory changed during read.");
+    } finally {
+      await current.close();
+    }
+    return { path: resolved, data };
+  } catch (error) {
+    if (error instanceof SafeError) throw error;
+    throw outsideWorkspace;
+  } finally {
+    await file?.close().catch(() => {});
+    await parent?.close().catch(() => {});
+  }
+}
 
 /** Read reference images for image-to-image: bounded count/size, workspace-contained, real image bytes. */
 export async function readReferenceImages(cwd: string, paths: unknown): Promise<ReferenceImage[]> {
@@ -76,32 +163,15 @@ export async function readReferenceImages(cwd: string, paths: unknown): Promise<
   let total = 0;
   for (const entry of paths) {
     if (typeof entry !== "string" || !entry.trim()) throw new SafeError("Reference image paths must be non-empty strings.");
-    let resolved: string;
-    try {
-      resolved = await insideRoot(cwd, entry.trim());
-    } catch {
-      throw outsideWorkspace;
-    }
-    let size = 0;
-    try {
-      size = (await stat(resolved)).size;
-    } catch {
-      throw outsideWorkspace;
-    }
-    if (size <= 0 || size > MAX_REFERENCE_BYTES) throw new SafeError("Reference images are limited to 20 MB each.");
-    if (total + size > MAX_REFERENCE_TOTAL_BYTES) throw new SafeError("Reference images are limited to 32 MB in total.");
-    let data: Buffer;
-    try {
-      data = await readFile(resolved);
-    } catch {
-      throw outsideWorkspace;
-    }
-    if (data.length > MAX_REFERENCE_BYTES) throw new SafeError("Reference images are limited to 20 MB each.");
+    const file = await readReferenceFile(cwd, entry.trim(), MAX_REFERENCE_BYTES);
+    const data = file.data;
+    if (!data.length) throw new SafeError("Reference images are limited to 20 MB each.");
+    if (total + data.length > MAX_REFERENCE_TOTAL_BYTES) throw new SafeError("Reference images are limited to 32 MB in total.");
     total += data.length;
     if (total > MAX_REFERENCE_TOTAL_BYTES) throw new SafeError("Reference images are limited to 32 MB in total.");
     const mime = detectImageMime(data);
     if (!mime) throw new SafeError("Reference images must be PNG, JPEG, WebP, or GIF files.");
-    images.push({ dataUrl: `data:${mime};base64,${data.toString("base64")}`, mime, bytes: data.length, filename: basename(resolved) });
+    images.push({ dataUrl: `data:${mime};base64,${data.toString("base64")}`, mime, bytes: data.length, filename: basename(file.path) });
   }
   return images;
 }

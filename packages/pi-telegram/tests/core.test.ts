@@ -142,10 +142,10 @@ test("chunking is lossless, length bounded and does not split surrogate pairs", 
 test("text delivery splits at Telegram limits without metadata on any chunk", async () => {
   const sent: Record<string, string>[] = [];
   const api = new TelegramApi(config, async (_url, init) => { sent.push(JSON.parse(init!.body as string)); return ok({}); });
-  await api.sendText(123, "😀 ".repeat(4000) + config.token, signal);
+  await api.sendText(123, "😀 ".repeat(20_000) + config.token, signal);
   assert.ok(sent.length > 1);
   assert.ok(sent.every(item => item.text.length <= 4096 && !/\[\d{4}-/.test(item.text) && !item.text.includes(config.token)));
-  assert.equal(sent.map(item => item.text).join(""), "😀 ".repeat(4000) + "[REDACTED]");
+  assert.equal(sent.map(item => item.text).join(""), "😀 ".repeat(20_000) + "[REDACTED]");
 });
 
 test("all media kinds use native multipart methods and never attach captions", async () => {

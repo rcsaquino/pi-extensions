@@ -1,26 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { stat, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { resolve } from "node:path";
 import test from "node:test";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model, type ToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stamp } from "../src/config.ts";
-
-const workspace = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
-await mkdir(workspace, { recursive: true });
-async function until(predicate: () => boolean, timeout = 5000) {
-  const start = Date.now();
-  while (!predicate()) { if (Date.now() - start > timeout) assert.fail("SDK acceptance timeout"); await delay(10); }
-}
+import { sdkRoot, until } from "./sdk-harness.ts";
 
 test("actual Pi file loader registers extension without opening resources in the factory", async t => {
-  const root = await mkdtemp(resolve(workspace, "telegram-loader-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const agentDir = resolve(root, "agent");
-  await mkdir(agentDir);
+  const { root, agentDir, cleanup } = await sdkRoot("telegram-loader-");
+  t.after(cleanup);
   const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager: SettingsManager.inMemory({ packages: [] }),
     noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
     additionalExtensionPaths: [resolve(import.meta.dirname, "../index.ts")],
@@ -39,19 +31,10 @@ test("actual Pi file loader registers extension without opening resources in the
 });
 
 test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sends only the settled final, and shuts down", async t => {
-  const root = await mkdtemp(resolve(workspace, "telegram-sdk-"));
-  const agentDir = resolve(root, "agent");
-  await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=OFFLINE-TEST-TOKEN\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=OFFLINE-ELEVEN\nELEVENLABS_VOICE_ID=fixture-voice\nELEVENLABS_MODEL_ID=eleven_v4\n", { mode: 0o600 });
+  const { root, agentDir, cleanup } = await sdkRoot("telegram-sdk-",
+    "TELEGRAM_BOT_TOKEN=OFFLINE-TEST-TOKEN\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=OFFLINE-ELEVEN\nELEVENLABS_VOICE_ID=fixture-voice\nELEVENLABS_MODEL_ID=eleven_v4\n");
   await writeFile(resolve(agentDir, "auth.json"), JSON.stringify({ groq: { type: "api_key", key: "OFFLINE-GROQ" } }), { mode: 0o600 });
   await writeFile(resolve(root, "attachment.txt"), "Test");
-  const originalFetch = globalThis.fetch;
-  const previousOffline = process.env.PI_OFFLINE;
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  const previousEnvFile = process.env.TELEGRAM_ENV_FILE;
-  process.env.PI_OFFLINE = "1";
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-  delete process.env.TELEGRAM_ENV_FILE;
   const sent: { chat_id: number; text: string }[] = [];
   const methods: string[] = [];
   const speechScripts: string[] = [];
@@ -93,6 +76,7 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
     if (method === "getWebhookInfo") return success({ url: "" });
     if (method === "getFile") return success({ file_path: "voice.oga" });
     if (method === "sendMessage") { sent.push(args); return success({}); }
+    if (method === "sendRichMessage") { sent.push({ chat_id: args.chat_id, text: args.rich_message.markdown }); return success({}); }
     if (method === "getUpdates") {
       if (first) { first = false; return success([]); }
       if (!pending.length) await new Promise<void>((done, reject) => {
@@ -120,7 +104,7 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
         telegramContextSeen = JSON.stringify(context.messages).includes("current request arrived via Telegram");
         assert.ok(telegramContextSeen, "Telegram transport context must reach the model without an extra user label");
         const guidance = JSON.stringify(context.messages);
-        assert.ok(guidance.includes("Voice only when sir explicitly asks for voice or a spoken reply"));
+        assert.ok(guidance.includes("Voice only when the user explicitly asks for voice or a spoken reply"));
         assert.ok(!guidance.includes("Prefer replying with telegram_send speech"));
         const stream = createAssistantMessageEventStream();
         const last = context.messages.filter(item => item.role !== "system").at(-1)!;
@@ -131,7 +115,7 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
         const revised = user.includes("Use the revised instructions");
         if (revised) revisedContextSeen = true;
         const tool = last.role === "user" && !silent;
-        const toolCall: Pick<ToolCall, "name" | "arguments"> = voice ? { name: "telegram_send", arguments: { speech: "[warm, composed voice] Just my voice, sir." } }
+        const toolCall: Pick<ToolCall, "name" | "arguments"> = voice ? { name: "telegram_send", arguments: { speech: "[warm, composed voice] Just my voice." } }
           : file ? { name: "telegram_send", arguments: { path: "attachment.txt" } } : { name: "verify_fixture", arguments: {} };
         const message: AssistantMessage = {
           role: "assistant", api: m.api, provider: m.provider, model: m.id, timestamp: Date.now(), stopReason: tool ? "toolUse" : "stop",
@@ -171,11 +155,7 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
     releaseTool?.();
     releaseInput?.();
     if (session) { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); await session.abort(); session.dispose(); }
-    globalThis.fetch = originalFetch;
-    for (const [key, value] of Object.entries({ PI_OFFLINE: previousOffline, PI_CODING_AGENT_DIR: previousAgentDir, TELEGRAM_ENV_FILE: previousEnvFile })) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-    await rm(root, { recursive: true, force: true });
+    await cleanup();
   });
   await loader.reload();
   assert.deepEqual(loader.getExtensions().errors, []);
@@ -209,7 +189,7 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
   await session.waitForIdle();
   await delay(80);
   assert.equal(sent.length, 1, "speech tool termination must not generate a false missing-final warning or chat afterward");
-  assert.deepEqual(speechScripts, ["[warm, composed voice] Just my voice, sir."]);
+  assert.deepEqual(speechScripts, ["[warm, composed voice] Just my voice."]);
   assert.equal(methods.filter(method => method === "sendVoice").length, 1);
   feed(3, "File only please");
   await until(() => methods.includes("sendDocument"));

@@ -57,7 +57,7 @@ export default function telegram(pi: ExtensionAPI): void {
   // No Pi/TUI slash commands and no Telegram transport slash-command handlers.
   pi.registerTool({
     name: "telegram_delivery_status", label: "Telegram delivery diagnostics", exposure: "codemode",
-    description: "Read bounded credential-safe local delivery phases, optionally filtered by an opaque task/reply/notice/delivery ID. No network, replay, maintenance or alerts. API acknowledgment is not phone receipt. Missing records never prove non-delivery; this is a best-effort seven-day ring, not a complete audit.",
+    description: "Read bounded credential-safe local delivery phases, optionally filtered by an opaque reply, notice or delivery ID. No network, replay, maintenance or alerts. API acknowledgment is not phone receipt. Missing records never prove non-delivery; this is a best-effort seven-day ring, not a complete audit.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     parameters: Type.Object({
       reply: Type.Optional(Type.String({ pattern: "^[a-f0-9-]{36}$" })),
@@ -79,7 +79,7 @@ export default function telegram(pi: ExtensionAPI): void {
       path: Type.Optional(Type.String({ minLength: 1, description: "One local attachment path" })),
       paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 10, description: "Send compatible attachments together in one Telegram album" })),
       kind: Type.Optional(Type.Union([Type.Literal("document"), Type.Literal("photo"), Type.Literal("video"), Type.Literal("voice")])),
-      speech: Type.Optional(Type.String({ minLength: 1, description: "Spoken script with appropriate Eleven v4 tags, for example [warm, composed voice] Hello, sir. Voice only; no chat afterward." })),
+      speech: Type.Optional(Type.String({ minLength: 1, description: "Spoken script with appropriate Eleven v4 tags, for example [warm, composed voice] Hello. This is a spoken reply. Voice only; no chat afterward." })),
     }),
     async execute(_id, params, signal) {
       try {

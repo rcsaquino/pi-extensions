@@ -33,8 +33,9 @@ export interface LaunchResult {
 export function launchDetached(options: LaunchOptions): LaunchResult {
   const out = openSync(options.reportPath, "a", 0o600);
   const err = openSync(options.stderrPath, "a", 0o600);
+  const command = process.env.PI_BACKGROUND_PI ?? "pi";
   try {
-    const child = spawn(process.env.PI_BACKGROUND_PI ?? "pi", [
+    const child = spawn(command, [
       "--fork", options.sessionFile,
       "--session-id", options.childSessionId,
       "--name", options.title,
@@ -53,7 +54,7 @@ export function launchDetached(options: LaunchOptions): LaunchResult {
       child.once("error", () => resolve(null));
       child.once("exit", code => resolve(code));
     });
-    if (!child.pid) throw new Error("The background worker did not start (no pid).");
+    if (!child.pid) throw new Error(`The background worker did not start: ${command}. Install Pi on PATH or set PI_BACKGROUND_PI to the Pi executable.`);
     child.unref();
     return { pid: child.pid, exited };
   } finally {

@@ -6,7 +6,7 @@ The only automated publication path is `pi-memoria` through `.github/workflows/p
 
 ## Package identities
 
-Prepared versions are independent and are not claims of publication:
+Prepared versions are independent and are not claims of publication. `pi-memoria` 0.5.0 is published; the other four identities await their first publication. The root README carries the current status table:
 
 - `packages/pi-idle-compaction`: `pi-idle-compaction` **0.1.0**.
 - `packages/pi-memoria`: `pi-memoria` **0.5.0**, the audit-fix release. A symlinked `MEMORY.md` is refused instead of followed and replaced, and the package moves to a Pi peer floor of `>=1.5.0 <2` with a `1.5.0` development pin. Regular-file setups behave as before and stored memories need no schema migration. Earlier 0.4.x work — canonical-path session containment, bounded remembered roots, malformed-config fallback, spill and snapshot hygiene, the typebox peer floor and the non-root pruning fixture — is unchanged.

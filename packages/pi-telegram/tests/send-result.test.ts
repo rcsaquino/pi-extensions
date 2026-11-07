@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
@@ -8,23 +8,13 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { SendParams } from "../src/bridge.ts";
-
-async function until(predicate: () => boolean) {
-  const deadline = Date.now() + 5000;
-  while (!predicate()) { assert.ok(Date.now() < deadline, "Offline send-result timeout"); await delay(10); }
-}
+import { sdkRoot, until } from "./sdk-harness.ts";
 
 test("telegram_send success results distinguish attachments from voice and preserve SDK follow-up behavior", async t => {
-  const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
-  await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(resolve(scratch, "send-result-"));
-  const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=SEND-RESULT-OFFLINE\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=OFFLINE-ELEVEN\nELEVENLABS_VOICE_ID=fixture-voice\nELEVENLABS_MODEL_ID=eleven_v4\n", { mode: 0o600 });
+  const { root, agentDir, cleanup } = await sdkRoot("send-result-",
+    "TELEGRAM_BOT_TOKEN=SEND-RESULT-OFFLINE\nTELEGRAM_ALLOWED_ID=123\nELEVENLABS_API_KEY=OFFLINE-ELEVEN\nELEVENLABS_VOICE_ID=fixture-voice\nELEVENLABS_MODEL_ID=eleven_v4\n");
   for (const name of ["report.txt", "second.txt", "photo.jpg", "video.mp4"]) await writeFile(resolve(root, name), "Synthetic attachment");
   await writeFile(resolve(root, "voice.ogg"), "OggS---OpusHead synthetic voice");
-  const oldFetch = globalThis.fetch;
-  const oldEnv = { PI_OFFLINE: process.env.PI_OFFLINE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, TELEGRAM_ENV_FILE: process.env.TELEGRAM_ENV_FILE };
-  process.env.PI_OFFLINE = "1"; process.env.PI_CODING_AGENT_DIR = agentDir; delete process.env.TELEGRAM_ENV_FILE;
   const uploads: { method: string; body: FormData }[] = [];
   const sent: { chat_id: number; text: string }[] = [];
   const scripts: string[] = [];
@@ -64,6 +54,7 @@ test("telegram_send success results distinguish attachments from voice and prese
     if (method === "getMe") return ok({ id: 999 });
     if (method === "getWebhookInfo") return ok({ url: "" });
     if (method === "sendMessage") { sent.push(body); return ok({}); }
+    if (method === "sendRichMessage") { sent.push({ chat_id: body.chat_id, text: body.rich_message.markdown }); return ok({}); }
     if (method === "getUpdates") {
       if (++polls === 1) return ok([]);
       if (!pending.length) await new Promise<void>((done, reject) => {
@@ -110,9 +101,7 @@ test("telegram_send success results distinguish attachments from voice and prese
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
   t.after(async () => {
     if (session) { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); await session.abort(); session.dispose(); }
-    globalThis.fetch = oldFetch;
-    for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-    await rm(root, { recursive: true, force: true });
+    await cleanup();
   });
   await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
   // Observe the real tool result before Pi consumes terminate; do not replace delivery or guards.

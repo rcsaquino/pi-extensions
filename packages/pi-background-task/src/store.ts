@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -18,10 +19,50 @@ export interface RunMeta {
   exitCode?: number | null;
   notified?: boolean;
   note?: string;
+  /** Caller's expected runtime; a reminder arrives when the run passes it. */
+  etaMinutes?: number;
+  /** When the current ETA window started; defaults to startedAt. */
+  etaFrom?: string;
+  /** Overrun reminders already sent for the current ETA window. */
+  reminders?: number;
+  lastReminderAt?: string;
+  /** Set when a reminder went out and no revised ETA has been recorded since. */
+  etaPending?: string;
 }
 
 export function agentDir(): string {
   return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+}
+
+/** Locate every forked session file once; keys are child session ids. */
+export async function sessionFiles(): Promise<Map<string, string>> {
+  const root = join(agentDir(), "sessions");
+  const index = new Map<string, string>();
+  if (!existsSync(root)) return index;
+  let projects;
+  try {
+    projects = await readdir(root, { withFileTypes: true });
+  } catch {
+    return index;
+  }
+  for (const project of projects) {
+    if (!project.isDirectory()) continue;
+    const dir = join(root, project.name);
+    let files;
+    try {
+      files = await readdir(dir, { withFileTypes: true });
+    } catch {
+      // A removed or unreadable project must not hide every other run.
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+      const stem = file.name.slice(0, -".jsonl".length);
+      const separator = stem.indexOf("_");
+      if (separator > 0 && separator < stem.length - 1) index.set(stem.slice(separator + 1), join(dir, file.name));
+    }
+  }
+  return index;
 }
 
 export function runsRoot(): string {
@@ -52,6 +93,11 @@ export function metaPath(parentSessionId: string, id: string): string {
   return join(runDir(parentSessionId, id), "meta.json");
 }
 
+/** Written before an explicit kill signal so a racing watcher still settles silently. */
+export function killIntentPath(parentSessionId: string, id: string): string {
+  return join(runDir(parentSessionId, id), "kill.intent");
+}
+
 export async function prepareRun(meta: RunMeta): Promise<void> {
   await mkdir(runDir(meta.parentSessionId, meta.id), { recursive: true, mode: 0o700 });
   await writeMeta(meta);
@@ -59,9 +105,14 @@ export async function prepareRun(meta: RunMeta): Promise<void> {
 
 export async function writeMeta(meta: RunMeta): Promise<void> {
   const target = metaPath(meta.parentSessionId, meta.id);
-  const temp = `${target}.${process.pid}.tmp`;
-  await writeFile(temp, `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
-  await rename(temp, target);
+  // A per-process temp name collides under parallel tool calls; every write needs its own file.
+  const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temp, `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
+    await rename(temp, target);
+  } finally {
+    await rm(temp, { force: true }).catch(() => {});
+  }
 }
 
 export async function readMeta(parentSessionId: string, id: string): Promise<RunMeta | undefined> {
@@ -82,17 +133,15 @@ export function settleMeta(meta: RunMeta, exitCode: number | null, note?: string
   return { ...meta, status, exitCode, finishedAt: now, ...(note ? { note } : {}) };
 }
 
+/** Rebase the ETA from now and restart its reminder window. */
+export function applyEta(meta: RunMeta, minutes: number, now = new Date().toISOString()): RunMeta {
+  const { lastReminderAt: _last, etaPending: _pending, ...rest } = meta;
+  return { ...rest, etaMinutes: minutes, etaFrom: now, reminders: 0 };
+}
+
 export async function readText(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-export function readTextSync(path: string): string | undefined {
-  try {
-    return readFileSync(path, "utf8");
   } catch {
     return undefined;
   }

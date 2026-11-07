@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
@@ -7,23 +6,13 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { readDeliveryLedger } from "../src/delivery-ledger.ts";
-
-const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
-async function until(predicate: () => boolean, label: string) {
-  const deadline = Date.now() + 5000;
-  while (!predicate()) { assert.ok(Date.now() < deadline, `Timeout: ${label}`); await delay(10); }
-}
+import { sdkRoot, until } from "./sdk-harness.ts";
 
 type Mode = "steer" | "followUp" | "append" | "hook";
 /** Actual file-loaded bridge, host lifecycle and queues; synthetic providers/HTTP only. */
 async function fixture(t: test.TestContext, mode: Mode) {
-  await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(resolve(scratch, "context-sdk-"));
-  const agentDir = resolve(root, "agent"); await mkdir(agentDir);
-  await writeFile(resolve(root, ".env"), "TELEGRAM_BOT_TOKEN=CONTEXT-OFFLINE\nTELEGRAM_ALLOWED_ID=123,456\nTELEGRAM_DESTINATION_ID=123\nELEVENLABS_API_KEY=\n", { mode: 0o600 });
-  const previousFetch = globalThis.fetch;
-  const previous = { PI_OFFLINE: process.env.PI_OFFLINE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, TELEGRAM_ENV_FILE: process.env.TELEGRAM_ENV_FILE };
-  process.env.PI_OFFLINE = "1"; process.env.PI_CODING_AGENT_DIR = agentDir; delete process.env.TELEGRAM_ENV_FILE;
+  const { root, agentDir, cleanup } = await sdkRoot("context-sdk-",
+    "TELEGRAM_BOT_TOKEN=CONTEXT-OFFLINE\nTELEGRAM_ALLOWED_ID=123,456\nTELEGRAM_DESTINATION_ID=123\nELEVENLABS_API_KEY=\n");
   const sent: { chat_id: number; text: string }[] = [];
   const trace: string[] = [], errors: string[] = [];
   const updates: unknown[] = [];
@@ -39,6 +28,7 @@ async function fixture(t: test.TestContext, mode: Mode) {
     if (method === "getMe") return ok({ id: 999 });
     if (method === "getWebhookInfo") return ok({ url: "" });
     if (method === "sendMessage") { sent.push(args); return ok({}); }
+    if (method === "sendRichMessage") { sent.push({ chat_id: args.chat_id, text: args.rich_message.markdown }); return ok({}); }
     if (method === "getUpdates") {
       polls++;
       if (polls === 1) return ok([]);
@@ -57,7 +47,7 @@ async function fixture(t: test.TestContext, mode: Mode) {
   const custom = { customType: "web-search-content-ready", content: "Content fetched for 1/1 URLs [synthetic]. Full page content now available.", display: true };
   const fake = (pi: ExtensionAPI) => {
     piApi = pi;
-    pi.on("before_agent_start", event => {
+    pi.on("before_agent_start", _event => {
       if (mode === "hook") return { message: { ...custom, customType: "synthetic-hook-context" } };
     });
     pi.on("agent_start", () => { starts++; trace.push("agent_start"); });
@@ -94,9 +84,7 @@ async function fixture(t: test.TestContext, mode: Mode) {
   t.after(async () => {
     release?.();
     if (session) { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); await session.abort(); session.dispose(); }
-    globalThis.fetch = previousFetch;
-    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-    await rm(root, { recursive: true, force: true });
+    await cleanup();
   });
   await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
   ({ session } = await createAgentSession({ cwd: root, agentDir, resourceLoader: loader, settingsManager: settings, sessionManager: SessionManager.inMemory(root), model }));

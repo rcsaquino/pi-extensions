@@ -8,7 +8,7 @@
 
 </div>
 
-A standalone extension using Node built-ins and the public Pi API. No runtime npm dependencies, required subagent package, extra model provider, or child agent. It calls Pi's native compaction rather than replacing the summarization prompt or retention policy.
+A standalone extension using Node built-ins and the public Pi API. No runtime npm dependencies, required companion package, extra model provider, or child agent. It calls Pi's native compaction rather than replacing the summarization prompt or retention policy.
 
 ## Requirements
 
@@ -20,13 +20,17 @@ Production does not need a package-local `node_modules` directory. Development t
 
 ## Installation
 
-After a release is published, npm installation is `pi install npm:pi-idle-compaction`. Until then, install the reviewed local package:
-
 ```sh
-pi install /absolute/path/to/pi-extensions/packages/pi-idle-compaction
+pi install npm:pi-idle-compaction
 ```
 
-Keep the local source in place. Use `/reload` in an idle session when you intend to activate the new runtime. Do not also retain another copied entry for the same extension in automatic discovery.
+Until the package is published, install it from a clone:
+
+```sh
+pi install ./pi-extensions/packages/pi-idle-compaction
+```
+
+Keep a local clone in place. Use `/reload` in an idle session when you intend to activate the new runtime. This package works with no other package from this repository installed. Do not also retain another copied entry for the same extension in automatic discovery.
 
 To remove registration, use `pi remove <installed-source>` and safely reload. This does not remove other packages, skills, or runtime state. The package does not uninstall other extensions, alter another extension, edit settings, or restart the host automatically.
 
@@ -59,18 +63,16 @@ On/off is session-local and in memory. A fresh extension runtime defaults to ena
 
 ### Optional background-work providers
 
-Any extension may register a synchronous `idle-compaction.background-work.v1` provider for its active runs. When the retired-subagent tools `subagent_dispatch`, `subagent_steer`, or `subagent_tasks` are present, the guard requires a `pi-subagents` provider and fails closed if it is absent or reports work for the same session. The retired RPC path is gone.
-
-If none of those tools are present, no provider is required and compaction proceeds on its ordinary idle, history and token checks.
+Any extension may register a synchronous `idle-compaction.background-work.v1` provider for its active runs. If no provider is registered, compaction proceeds on its ordinary idle, history and token checks. This package works standalone; installing it alongside another package does not imply that package's work is covered.
 
 The guard can read reviewed process-local v1 background registries. Unknown versions, malformed items, throwing providers, asynchronous results, duplicates, and same-session active work defer compaction.
 
 Other extensions can explicitly use `registerBackgroundWorkProvider()` from `background.mjs` with neutral key `idle-compaction.background-work.v1`. Providers return bounded synchronous items containing only `id` and `sessionId`; optional reconciliation/wake metadata must follow that contract. Old disposers cannot unregister a replacement provider.
 
 > [!IMPORTANT]
-> This is not an OS-wide job supervisor. Arbitrary shell processes, remote jobs, and private extension state are invisible. This package itself does not register a provider, and `@rcsaquino/pi-background-task` does not register one either; its forked workers have separate sessions and are not treated as same-session work. Other background-capable packages may also lack a provider. Co-installing a package does not by itself prove that its work is covered. Review status and admission integration before relying on coordination.
+> This is not an OS-wide job supervisor. Arbitrary shell processes, remote jobs, and private extension state are invisible. This package does not register a provider itself. Other background-capable packages may or may not register one; for example, `@rcsaquino/pi-background-task`, if installed, does not, because its forked workers have separate sessions and are not treated as same-session work. Co-installing a package does not by itself prove that its work is covered. Review status and admission integration before relying on coordination.
 
-Provider snapshots are observations, not exclusion leases. They are rechecked after asynchronous RPC admission, but cannot prevent unregistered or newly starting work.
+Provider snapshots are observations, not exclusion leases. They are rechecked after asynchronous provider admission, but cannot prevent unregistered or newly starting work.
 
 ## Development
 
@@ -88,11 +90,11 @@ Development helpers under `scripts/` and the tests are checkout-only; they are e
 
 Runtime modules:
 
-- `index.ts`: Pi lifecycle/command adapter and optional RPC.
+- `index.ts`: Pi lifecycle/command adapter and provider admission.
 - `controller.mjs`: timers, thresholds, history invalidation, and lease lifetime.
-- `background.mjs`: bounded provider snapshots and optional RPC admission, without foreign runtime files.
+- `background.mjs`: bounded provider snapshots and provider admission, without foreign runtime files.
 
-Tests use fake timers/compaction, private local fixtures, and the actual Pi loader. A test-only preload forbids network operations. The isolated loader check requires no runtime `node_modules` or subagent package. Its host-version gate follows the declared stable peer branches (0.99.x from 0.99.2, or 1.x), not a pinned validation minor; actual public loading, registration, commands, and cleanup must still pass. A matching version alone does not establish compatibility.
+Tests use fake timers/compaction, private local fixtures, and the actual Pi loader. A test-only preload forbids network operations. The isolated loader check requires no runtime `node_modules` or companion package. Its host-version gate accepts the declared `>=1.5.0 <2` range, not a pinned validation minor; actual public loading, registration, commands, and cleanup must still pass. A matching version alone does not establish compatibility.
 
 Read [AGENTS.md](AGENTS.md) for race/recovery regression requirements. Passing tests does not prove a paid compaction, a real 60-minute idle soak, or activation in a running host.
 

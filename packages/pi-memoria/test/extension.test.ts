@@ -95,7 +95,7 @@ async function harness(t: TestContext, options: { sessionDirs?: string } = {}) {
     handlers.push(async (event) => { observed = event as BeforeAgentStartEvent; rendered = observed.systemPrompt; });
     try {
       const result = await runner.emitBeforeAgentStart(trigger, {
-        cwd: directory, appendSystemPrompt: "Eve addendum fixture.", sections: { other: "preserve me" }, forceSystemPrompt,
+        cwd: directory, appendSystemPrompt: "Memory addendum fixture.", sections: { other: "preserve me" }, forceSystemPrompt,
       });
       assert.deepEqual(errors, [], "prompt handlers must not silently fail inside the runner");
       assert.ok(observed, "the real runner must dispatch before_agent_start");
@@ -213,8 +213,8 @@ test("structured and forced prompts separate instructions from fresh hot memory 
   const manual = "- [h_fresh0000000000] [p=90] Fresh standing instruction.\n";
   await writeFile(join(h.memoryDir, "MEMORY.md"), manual);
   const fresh = await h.renderPrompt();
-  assert.equal(fresh.options.appendSystemPrompt, "Eve addendum fixture.");
-  assert.equal(block(fresh.rendered, "addendum"), "Eve addendum fixture.");
+  assert.equal(fresh.options.appendSystemPrompt, "Memory addendum fixture.");
+  assert.equal(block(fresh.rendered, "addendum"), "Memory addendum fixture.");
   assert.equal(fresh.options.sections.other, "preserve me");
   assert.equal(block(fresh.rendered, "other"), "preserve me");
   const memory = block(fresh.rendered, "pi_memoria");
@@ -234,13 +234,13 @@ test("structured and forced prompts separate instructions from fresh hot memory 
   assert.equal(h.extension.tools.get("memoria_add")!.definition.promptGuidelines, undefined);
 
   await writeFile(join(h.memoryDir, "MEMORY.md"), manual.replace("Fresh", "Changed"));
-  const forcedBase = "Opaque prompt.\n<addendum>\nEve addendum fixture.\n</addendum>";
+  const forcedBase = "Opaque prompt.\n<addendum>\nMemory addendum fixture.\n</addendum>";
   const forced = await h.renderPrompt(forcedBase);
   assert.ok(forced.rendered.startsWith(`${forcedBase}\n\n<pi_memoria>`));
   assert.equal(block(forced.rendered, "pi_memoria"), forced.options.sections.pi_memoria);
   assert.match(block(forced.rendered, "hot_memory"), /Changed standing instruction/u);
   assert.doesNotMatch(forced.rendered, /Fresh standing instruction/u);
-  assert.equal(block(forced.rendered, "addendum"), "Eve addendum fixture.");
+  assert.equal(block(forced.rendered, "addendum"), "Memory addendum fixture.");
 });
 
 test("current user and custom start events refresh exact memory guidance in structured and forced prompts", async (t) => {
@@ -274,7 +274,7 @@ test("current user and custom start events refresh exact memory guidance in stru
     assert.doesNotMatch(memory, /Synthetic transport|Synthetic in-run/u);
     if (force) assert.ok(rendered.rendered.startsWith(`${force}\n\n<pi_memoria>`));
     else {
-      assert.equal(block(rendered.rendered, "addendum"), "Eve addendum fixture.");
+      assert.equal(block(rendered.rendered, "addendum"), "Memory addendum fixture.");
       assert.equal(block(rendered.rendered, "other"), "preserve me");
     }
   }

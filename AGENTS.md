@@ -71,9 +71,9 @@ Report commands, outcomes, relevant environment, and remaining gaps. Offline SDK
 
 Runtime state and source are different assets. Never commit secrets, `.env`, memory contents/databases, original transcripts, private runtime databases, media downloads, persistent cursors, active locks, or private validation corpora. Keep local reports and fixtures in approved ignored locations or outside this repository.
 
-The existing workspace aliases are compatibility symlinks into `packages/`. Before changing them, inspect active lazy imports, settings, dependency links, and external helpers. Installed extension copies are deployment artifacts; canonical development happens here. Do not edit deployed copies in place during source work.
+Installed copies are runtime artifacts; canonical development happens in this repository. Do not edit an installed copy in place during source work.
 
-Source edits do not authorize package registration, enabling another extension, changing global settings, reloading the session, restarting a service, terminal-input injection, or live testing. Do not create duplicate extension discovery through both a package declaration and a copied entry. Preserve registration state and runtime data unless the user separately authorizes a deployment change.
+Source edits do not authorize package registration, enabling another extension, changing global settings, reloading the session, restarting a service, terminal-input injection, or live testing. Do not create duplicate extension discovery through both a package declaration and a copied entry. Preserve registration state and runtime data unless the user separately authorizes an activation change.
 
 ## Review and release
 

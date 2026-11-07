@@ -182,10 +182,50 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /@earendil-works\/pi-coding-agent@1\.5\.0/);
   assert.match(workflow, /npm run link-host/);
   assert.match(workflow, /--prefer-online/);
+  assert.match(workflow, /Pre-release versions are not published by this workflow/);
   assert.match(workflow, /merge-base --is-ancestor/);
   assert.match(workflow, /working-directory: packages\/pi-memoria/);
   assert.match(workflow, /npm publish --ignore-scripts --access public --workspaces=false/);
   for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-background-task']) {
     assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
   }
+});
+
+test('every declared peer is imported by the distributable source', () => {
+  for (const pkg of packages) {
+    const peers = Object.keys(pkg.data.peerDependencies ?? {});
+    const source = [...includedFiles(pkg)]
+      .filter(file => /\.(?:ts|mjs|js)$/.test(file))
+      .map(file => read(join(pkg.root, file)))
+      .join('\n');
+    for (const peer of peers) {
+      const escaped = peer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      assert.match(source, new RegExp(`(?:from\\s*|import\\s*\\(\\s*)["']${escaped}["']`),
+        `${pkg.name}: declares ${peer} but never imports it`);
+    }
+  }
+});
+
+test('package READMEs show the npm install command and a clone fallback', () => {
+  for (const pkg of packages) {
+    const text = read(join(pkg.root, 'README.md'));
+    assert.ok(text.includes(`pi install npm:${pkg.name}`), `${pkg.name}: missing npm install command`);
+    assert.match(text, /(?:Until the package is published, install it from a clone:|Install from a local checkout)/i, `${pkg.name}: missing local fallback`);
+    assert.match(text, /\/reload/, `${pkg.name}: missing activation step`);
+  }
+});
+
+test('CI workflow runs the offline suite without publishing', () => {
+  const path = join(root, '.github/workflows/ci.yml');
+  assert.ok(existsSync(path), 'Missing CI workflow');
+  const workflow = read(path);
+  assert.match(workflow, /^name: Verify$/m);
+  assert.match(workflow, /on:\n\s+push:\n\s+pull_request:/);
+  assert.match(workflow, /permissions:\n\s+contents: read/);
+  assert.doesNotMatch(workflow, /npm publish|id-token: write|NPM_TOKEN|secrets\./);
+  for (const match of workflow.matchAll(/uses:\s*(\S+)/g)) {
+    assert.match(match[1], /^actions\/[a-z-]+@[0-9a-f]{40}$/, `Unpinned action ${match[1]}`);
+  }
+  assert.match(workflow, /node-version: '26\.12\.0'/);
+  assert.match(workflow, /PI_OFFLINE=1 npm run verify/);
 });

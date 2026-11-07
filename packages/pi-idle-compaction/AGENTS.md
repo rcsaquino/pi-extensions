@@ -18,9 +18,9 @@ Install dependencies only when needed. Node `>=26.12.0 <27` and coding-agent `>=
 
 ## Module boundaries
 
-- `index.ts`: registers lifecycle hooks, `/idle-compact`, and optional versioned subagent RPC.
+- `index.ts`: registers lifecycle hooks, `/idle-compact`, and neutral provider admission.
 - `controller.mjs`: 60-minute timer, 100,000-token admission, generation/history invalidation, native compaction, and held-lease cleanup.
-- `background.mjs`: optional neutral/legacy provider contracts, bounded status validation, and standalone admission without foreign runtime files.
+- `background.mjs`: optional neutral provider contract, bounded status validation, and standalone admission without foreign runtime files.
 - `scripts/no-network.mjs`: test-process preload only; never a runtime dependency.
 - `scripts/link-host.mjs`: package-local development host linking; the root helper handles missing/broken links across packages.
 
@@ -30,10 +30,9 @@ Install dependencies only when needed. Node `>=26.12.0 <27` and coding-agent `>=
 - Timers run only for long-lived TUI/RPC modes. Input, tools/agents, UI waits, navigation, compaction, and shutdown invalidate/suspend admission correctly.
 - Revalidate after every asynchronous admission step. A new generation, changed history/tokens, disabled state, or pending work must prevent a late compaction and release its own lease.
 - Call only public native `ctx.compact`. Do not replace prompts, retention budgets, model choice, or Pi's normal compaction configuration.
-- Recheck provider snapshots after asynchronous RPC admission. Do not admit a second overlapping compaction or imply that a snapshot excludes future work.
+- Recheck provider snapshots after asynchronous provider admission. Do not admit a second overlapping compaction or imply that a snapshot excludes future work.
 - Never edit another extension's state/config/skills or create foreign runtime leases.
 - Cleanup uncertainty fails closed and stops future admission rather than claiming success.
-- Missing optional subagent tooling requires no RPC. Present-but-broken legacy RPC remains unsafe; absence and unhealthy presence are not interchangeable. Current `subagent_dispatch`/`subagent_steer`/`subagent_tasks` tools require the neutral provider, never the retired RPC, and fail closed when that provider is absent.
 - Registry providers are bounded, synchronous, versioned, and validated. Preserve same-session filtering and replacement-safe disposal. Unknown/malformed/throwing state cannot mean idle.
 - Never imply complete coverage of OS jobs, remote work, or another package merely because it is co-installed. Integrations require explicit reviewed provider/admission contracts.
 - Commands are native Pi controls; on/off is session-local and resets with a fresh extension runtime. Do not add transport bot commands or silently persistent settings.
@@ -41,15 +40,15 @@ Install dependencies only when needed. Node `>=26.12.0 <27` and coding-agent `>=
 ## Tests
 
 - `controller.test.mjs`: timer thresholds, generation/history/token races, attempts, error paths, and lease lifetime.
-- `background.test.mjs`: standalone admission, current-tool provider gating, optional legacy RPC failures, and provider changes during asynchronous admission.
+- `background.test.mjs`: standalone admission, provider work gating, and provider changes during asynchronous admission.
 - `registry.test.mjs`: supported contracts, same-session visibility, limits, malformed providers, and replacement-safe disposal.
 - `adapter.test.mjs`: actual lifecycle adapter, modes, optional integrations, and mocked compaction.
-- `loader.test.mjs`: isolated public Pi loading without runtime dependencies or subagents.
+- `loader.test.mjs`: isolated public Pi loading without runtime dependencies or companion packages.
 
 Tests forbid network operations and must not invoke paid native compaction. Use fake clocks, synthetic sessions, mock compact callbacks, and isolated local fixtures. Add race/fault cases for every admission or cleanup change.
 
 ## Deployment and release
 
-Only the root `index.ts` is an extension entry; keep controller/background relative files in the runtime package. Do not add subagent activation, new runtime dependencies, private Pi APIs, settings rewrites, or uninstall behavior.
+Only the root `index.ts` is an extension entry; keep controller/background relative files in the runtime package. Do not add new runtime dependencies, private Pi APIs, settings rewrites, or uninstall behavior.
 
 Source changes do not update the running runtime. An approved deployment must back up and avoid duplicate discovery, preserve unknown locks/state, and separately authorize activation. Do not force live compaction, inject TUI input, restart services, remove other packages, commit, push, tag, or publish without approval.

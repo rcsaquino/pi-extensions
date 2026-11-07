@@ -17,7 +17,7 @@ function isDeclaredHostVersion(version) {
   return Number(parts[1]) === 1 && Number(parts[2]) >= 5;
 }
 
-test('loader host gate covers the declared stable peer ranges', async () => {
+test('loader host gate covers the declared stable peer range', async () => {
   const manifest = JSON.parse(await readFile(join(runtimeRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.peerDependencies['@earendil-works/pi-coding-agent'], hostPeerRange,
     'update the test-only gate when declared host support changes');
@@ -27,7 +27,7 @@ test('loader host gate covers the declared stable peer ranges', async () => {
     assert.equal(isDeclaredHostVersion(version), false, `undeclared host ${version}`);
 });
 
-test('current Pi loads an isolated standalone copy with NO node_modules or subagent package', async () => {
+test('current Pi loads an isolated standalone copy with NO node_modules or companion package', async () => {
   const sandbox = await mkdtemp(join(root, '.loader-test-'));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const previousFetch = globalThis.fetch;
@@ -44,7 +44,7 @@ test('current Pi loads an isolated standalone copy with NO node_modules or subag
       await copyFile(join(runtimeRoot, name), join(installDir, name));
     const manifest = JSON.parse(await readFile(join(installDir, 'package.json'), 'utf8'));
     assert.equal(manifest.name, 'pi-idle-compaction');
-    assert.deepEqual(manifest.dependencies, {});
+    assert.equal(manifest.dependencies, undefined);
     const loader = new DefaultResourceLoader({
       cwd, agentDir, settingsManager: SettingsManager.inMemory(),
       noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,

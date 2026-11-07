@@ -5,7 +5,7 @@ import { createBackgroundGuard } from './background.mjs';
 // Standalone runtime: Node built-ins + the host's public Pi API only.
 export default function idleCompaction(pi: ExtensionAPI) {
   const controller = createIdleCompactor({
-    acquireBackgroundLease: createBackgroundGuard({ getTools: () => pi.getAllTools() }),
+    acquireBackgroundLease: createBackgroundGuard(),
   });
 
   pi.on('session_start', (_event, ctx) => {

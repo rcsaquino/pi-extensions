@@ -4,7 +4,7 @@
 
 **Text-to-image and image-to-image generation for your existing [Pi](https://github.com/earendil-works/pi) conversation, via the OpenRouter Images API.**
 
-[Getting started](#getting-started) · [Configuration](#configuration) · [Tool](#tool) · [Limits](#limits-and-safety)
+[Installation](#installation) · [Configuration](#configuration) · [Tool](#tool) · [Limits](#limits-and-safety)
 
 </div>
 
@@ -18,21 +18,19 @@ The npm package is `@rcsaquino/pi-image`; the source directory remains `pi-image
 
 Pi supplies the declared host peers. There are no runtime dependencies.
 
-## Getting started
-
-From the monorepo root, prepare local dependencies if needed:
+## Installation
 
 ```sh
-npm --prefix packages/pi-image install --ignore-scripts --legacy-peer-deps --workspaces=false
+pi install npm:@rcsaquino/pi-image
 ```
 
-After a release is published, npm installation is `pi install npm:@rcsaquino/pi-image`. Until then, install the reviewed local package:
+Until the package is published, install it from a clone:
 
 ```sh
-pi install /absolute/path/to/pi-extensions/packages/pi-image
+pi install ./pi-extensions/packages/pi-image
 ```
 
-Run `/reload` in the owning idle Pi session when you intend to activate it. The local checkout remains a reference, not a copied package.
+Run `/reload` in the owning idle Pi session when you intend to activate it. A local checkout remains a reference, not a copied package. This package works with no other package from this repository installed.
 
 ## Configuration
 

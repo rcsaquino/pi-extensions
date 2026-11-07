@@ -57,6 +57,12 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p "require('./packages/pi-memoria/package.json').version")"
+          case "${version}" in
+            *-*)
+              echo "::error::Pre-release versions are not published by this workflow; use a stable version."
+              exit 1
+              ;;
+          esac
           if [ "${GITHUB_REF_NAME}" != "pi-memoria-v${version}" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match prepared version ${version}."
             exit 1

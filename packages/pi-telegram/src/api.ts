@@ -9,6 +9,8 @@ import { formattedChunks, telegramFormat } from "./format.ts";
 import { assertSpeechLength, isOpus, joinSpeech, speechChunks } from "./voice.ts";
 
 export const DOWNLOAD_LIMIT = 20 * 1024 * 1024;
+/** Telegram Rich Messages accept up to 32,768 UTF-8 characters in one request. */
+export const RICH_TEXT_LIMIT = 32_768;
 export const UPLOAD_LIMIT = 50 * 1024 * 1024;
 /** One album may not exceed this aggregate, regardless of ten 50 MB files. */
 export const MAX_ATTACHMENT_TOTAL_BYTES = 100 * 1024 * 1024;
@@ -157,7 +159,7 @@ export class TelegramApi {
 
   async call<T>(method: string, args: Record<string, unknown> | FormData, signal: AbortSignal, timeout = 45_000, beforeUpload?: () => void,
     context?: DeliveryContext, chunk?: number, chunks?: number, album?: number): Promise<T> {
-    const outgoing = ["sendMessage", "sendDocument", "sendPhoto", "sendVideo", "sendVoice", "sendMediaGroup"].includes(method);
+    const outgoing = ["sendMessage", "sendRichMessage", "sendDocument", "sendPhoto", "sendVideo", "sendVoice", "sendMediaGroup"].includes(method);
     const base = { ...(outgoing ? this.context(context) : { operation: "incoming" as const }), method: methods.includes(method as typeof methods[number]) ? method as typeof methods[number] : "other" as const,
       chunk, chunks, album };
     for (let attempt = 0; ; attempt++) {
@@ -208,9 +210,20 @@ export class TelegramApi {
   }
 
   async sendText(chat: number, text: string, signal: AbortSignal, context?: DeliveryContext): Promise<void> {
-    const parts = formattedChunks(telegramFormat(redact(text, this.config))), delivery = this.context(context);
-    if (!parts.length) { this.observe({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "empty_final" }); return; }
+    const redacted = redact(text, this.config), delivery = this.context(context);
+    if (!redacted.trim()) { this.observe({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "empty_final" }); return; }
     await this.delivery(delivery, async () => {
+      if (Buffer.byteLength(redacted, "utf8") <= RICH_TEXT_LIMIT) {
+        try {
+          await this.call("sendRichMessage", { chat_id: chat, rich_message: { markdown: redacted } }, signal, 45_000, undefined, delivery, 1, 1);
+          return;
+        } catch (error) {
+          // A server rejection means nothing was delivered, so the entity path is a safe fallback.
+          // Transport failures stay unknown: resending could duplicate a message Telegram accepted.
+          if (!(error instanceof ApiError)) throw error;
+        }
+      }
+      const parts = formattedChunks(telegramFormat(redacted));
       for (let index = 0; index < parts.length; index++) {
         const part = parts[index];
         await this.call("sendMessage", { chat_id: chat, text: part.text, ...(part.entities.length ? { entities: part.entities } : {}) }, signal, 45_000, undefined, delivery, index + 1, parts.length);

@@ -63,7 +63,7 @@ class Server {
     if (String(url).includes("api.elevenlabs.io")) return new Response(Buffer.from("OggS---OpusHead audio"));
     if (String(url).includes("/file/bot")) return new Response(new Uint8Array(this.file));
     if (this.fatal) return Response.json({ ok: false, error_code: this.fatal, description: "mock failure" });
-    if (method === "sendMessage" && this.sendDelayMs) {
+    if ((method === "sendMessage" || method === "sendRichMessage") && this.sendDelayMs) {
       const wait = this.sendDelayMs;
       this.sendDelayMs = 0;
       await delay(wait);
@@ -85,7 +85,10 @@ class Server {
     }
     return ok({ message_id: 200 });
   };
-  texts(): { chat_id: number; text: string }[] { return this.calls.filter(call => call.method === "sendMessage").map(call => call.args); }
+  texts(): { chat_id: number; text: string }[] {
+    return this.calls.flatMap(call => call.method === "sendMessage" ? [call.args]
+      : call.method === "sendRichMessage" ? [{ chat_id: call.args.chat_id, text: call.args.rich_message?.markdown }] : []);
+  }
 }
 
 async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; consumeReports?: boolean; deferDuringSettle?: boolean; mode?: string; lockDir?: string; start?: boolean; dir?: string } = {}) {
@@ -308,7 +311,7 @@ test("current_time stays final after reply context, transcription and attachment
   const h = await fixture(t);
   h.server.file = Buffer.from("voice audio");
   h.server.transcript = "First spoken request.";
-  const prior = (id: number, body: string) => ({ ...message(id, body), from: { id: 999, is_bot: true, first_name: "Eve" } });
+  const prior = (id: number, body: string) => ({ ...message(id, body), from: { id: 999, is_bot: true, first_name: "FixtureBot" } });
   h.server.feed({ ...message(1, ""), text: undefined, voice: { file_id: "voice", mime_type: "audio/ogg" }, reply_to_message: prior(50, "First prior answer") });
   await until(() => h.submissions.length === 1);
   const stamped = (h.submissions[0][0] as TextContent).text;
@@ -748,7 +751,7 @@ test("an explicit spoken voice request can use the speech tool and stays voice-o
   await until(() => h.submissions.length === 1);
   assert.match((h.submissions[0][0] as TextContent).text, /Please send a voice reply\./);
   await h.bridge.send({ speech: "[warm, composed voice] Your requested voice reply." });
-  await h.finish("Sent, sir.");
+  await h.finish("Sent.");
   const sent = h.server.calls.filter(call => call.method === "sendVoice");
   assert.equal(sent.length, 1);
   assert.equal((sent[0].args.get("voice") as File).type, "audio/ogg");
@@ -783,7 +786,7 @@ test("outgoing file and explicit speech tools are routed only to the active requ
   await assert.rejects(h.bridge.send({ path: "report.txt", speech: "conflict" }), /exactly one/);
   assert.equal(document.args.get("caption"), null);
   await h.bridge.send({ speech: "Explicit spoken reply." });
-  await h.finish("Sent, sir.");
+  await h.finish("Sent.");
   assert.equal(h.server.calls.filter(call => call.method === "sendVoice").length, 1);
   assert.equal(h.server.texts().length, 0);
 });
@@ -954,13 +957,13 @@ test("incoming albums across separate polls retain the earliest sent second, one
 test("reply-bearing albums keep deduplicated XML first and the earliest final timestamp after native attachments", async t => {
   const h = await fixture(t);
   const earliest = message().date - 45;
-  const reply_to_message = { ...message(200, "A prior answer & detail"), from: { id: 999, is_bot: true, first_name: "Eve" } };
+  const reply_to_message = { ...message(200, "A prior answer & detail"), from: { id: 999, is_bot: true, first_name: "FixtureBot" } };
   h.server.feed({ ...message(10), text: undefined, caption: "Describe both", media_group_id: "reply-album", photo: [{ file_id: "first" }], reply_to_message });
   await delay(150);
   h.server.feed({ ...message(11), date: earliest, text: undefined, media_group_id: "reply-album", photo: [{ file_id: "second" }], reply_to_message });
   await until(() => h.submissions.length === 1);
   const text = (h.submissions[0][0] as TextContent).text;
-  const refs = references(text); assert.equal(refs.length, 1); assert.equal(refs[0].sender, "Eve");
+  const refs = references(text); assert.equal(refs.length, 1); assert.equal(refs[0].sender, "FixtureBot");
   assert.equal(refs[0].body, "A prior answer & detail");
   const current = text.slice(refs[0].xml.length + 2);
   assert.equal(current, stamp(`Describe both\n\n${attachmentsBlock(attachmentPaths(current))}`, new Date(earliest * 1000)));
@@ -1219,7 +1222,7 @@ test("durable final failure and its separately acknowledged warning share reply 
   let sends = 0;
   server.fetch = async (url, init) => {
     const response = await original(url, init);
-    if (String(url).endsWith("/sendMessage") && ++sends === 1) throw new Error(`PRIVATE synthetic provider body https://api.telegram.org/bot${config.token}/sendMessage ${config.groqKey} ${config.elevenKey}`, { cause: { code: "UND_ERR_SOCKET" } });
+    if (String(url).endsWith("/sendRichMessage") && ++sends === 1) throw new Error(`PRIVATE synthetic provider body https://api.telegram.org/bot${config.token}/sendRichMessage ${config.groqKey} ${config.elevenKey}`, { cause: { code: "UND_ERR_SOCKET" } });
     return response;
   };
   const h = await fixture(t, { server }); h.server.feed(message()); await until(() => h.submissions.length === 1);

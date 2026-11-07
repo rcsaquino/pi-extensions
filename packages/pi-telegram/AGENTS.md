@@ -12,7 +12,7 @@ Read this with [the monorepo instructions](https://github.com/rcsaquino/pi-exten
 - `src/connection-lease.ts`: local kernel-backed bot ownership.
 - `src/delivery-ledger.ts`: bounded metadata-only JSONL facade, strict records/read projection, allowlisted own-data transport causes and explicit operator-only offline migration export. No delivery authority, replay or global lock.
 - `src/delivery-ledger-storage.ts`: Linux/procfs descriptor-safe append/read, permanent private inherited-FD kernel flock, atomic bounded compaction and guarded exact-slot offline conversion. Readers never mutate; live writers refuse legacy slots.
-- `src/format.ts`: Markdown to native entities and safe text splitting.
+- `src/format.ts`: Markdown to native entities and safe text splitting for the legacy fallback path.
 - `src/reply-context.ts`: authenticated same-chat, one-level, bounded XML reply/quote reference data; escaped fields, internal IDs, no old-media re-fetch, download or transcription and no additional delivery authority. A bounded `<local_path>` names an already-held local copy only when this bridge indexed it; its contents are never read into context. Trusted reference-only guidance belongs in the Telegram-origin `before_agent_start` prompt guidelines, not inside the reference.
 - `src/sent-media.ts`: best-effort bounded private message-id -> local-path index for media this bridge sent or downloaded; chat/message/path/kind/source metadata only, atomic `0600` persistence, and swallowed failures so transport results never depend on it.
 - `src/voice.ts`: Groq transcription, exact ElevenLabs voice/model, audio tags, chunking, and Opus assembly.

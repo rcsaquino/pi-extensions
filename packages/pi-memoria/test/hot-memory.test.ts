@@ -221,6 +221,18 @@ test("pre-existing managed duplicates are preserved and the first entry is retur
   assert.equal((await hot.load()).entries.length, 2);
 });
 
+test("duplicate hand-written hot lines merge, while explicit duplicate ids still fail", async (t) => {
+  const { hot, path } = await store(t);
+  await writeFile(path, "- Same startup rule.\n- Same startup rule.\n");
+  const merged = await hot.load();
+  assert.equal(merged.entries.length, 1);
+  assert.equal(merged.entries[0]?.content, "Same startup rule.");
+  assert.equal((await readFile(path, "utf8")).match(/^- /gmu)?.length, 1, "the duplicate line is removed once");
+
+  await writeFile(path, "- [h_duplicate000000] [p=50] Explicit.\n- [h_duplicate000000] [p=50] Explicit.\n");
+  await assert.rejects(hot.load(), /Duplicate hot memory ID/);
+});
+
 test("capacity diagnostics report exact serialized sizes and leave file and archive unchanged", async (t) => {
   const { hot, db, path } = await store(t);
   const low = await hot.add("l".repeat(1_000), 10);

@@ -64,19 +64,17 @@ export function launchDetached(options: LaunchOptions): LaunchResult {
 }
 
 /** Terminate a detached run's process group, escalating to SIGKILL. */
-export function terminate(pid: number): { term: boolean; killed: boolean } {
-  let term = false;
-  let killed = false;
+export function terminate(pid: number): boolean {
   try {
     process.kill(-pid, "SIGTERM");
-    term = true;
+    return true;
   } catch {
     try {
       process.kill(pid, "SIGTERM");
-      term = true;
+      return true;
     } catch { /* already gone */ }
   }
-  return { term, killed };
+  return false;
 }
 
 export function forceKill(pid: number): boolean {

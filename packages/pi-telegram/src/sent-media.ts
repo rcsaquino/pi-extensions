@@ -60,7 +60,7 @@ export class SentMediaRegistry {
   async record(records: readonly SentMediaRecord[]): Promise<void> {
     try {
       const now = Date.now();
-      for (const value of records ?? []) {
+      for (const value of records) {
         try {
           // One malformed record must not drop the rest of the batch.
           const entry = parse({ ...value, at: (value as { at?: unknown })?.at ?? now });

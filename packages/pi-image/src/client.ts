@@ -92,9 +92,6 @@ export function isPrivateAddress(address: string): boolean {
  * Validate a provider-supplied download URL. Only HTTPS on the default port is
  * accepted, and every resolved address must be public. Resolution happens
  * before the request; redirects stay disabled and the byte cap still applies.
- * shortcut: the download re-resolves the name after this check, so a rebind can
- * swap in a private address; pin the checked address with a custom dispatcher
- * when undici becomes an accepted dependency.
  */
 export async function assertSafeDownloadUrl(raw: string, resolveHost: ResolveHost = RESOLVE_HOST): Promise<URL> {
   let url: URL;
@@ -135,8 +132,6 @@ export interface GenerateRequest {
 
 export interface GeneratedBytes {
   data: Buffer;
-  /** Provider-declared media type, when identifiable. */
-  mediaType?: string;
 }
 
 interface InputReference {
@@ -232,7 +227,7 @@ export async function generateImageBytes(
       throw new SafeError("OpenRouter returned unreadable image bytes.");
     }
     if (!data.length) throw new SafeError("OpenRouter returned unreadable image bytes.");
-    return { data, mediaType };
+    return { data };
   }
   // Some models return a URL instead of inline bytes; fetch it without credentials.
   if (typeof item?.url === "string") {
@@ -249,7 +244,7 @@ export async function generateImageBytes(
     if (!image.ok) throw new SafeError(`Image download failed (HTTP ${image.status}).`);
     const type = image.headers.get("content-type") || mediaType;
     if (type && !type.startsWith("image/")) throw new SafeError("Image download did not return image bytes.");
-    return { data: await readCapped(image, MAX_RESPONSE_BYTES), mediaType: type || undefined };
+    return { data: await readCapped(image, MAX_RESPONSE_BYTES) };
   }
   throw new SafeError("OpenRouter returned no image data.");
 }

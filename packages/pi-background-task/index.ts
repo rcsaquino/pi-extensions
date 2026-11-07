@@ -16,14 +16,6 @@ const MAX_CONCURRENT = 4;
 const MAX_DEPTH = 2;
 const POLL_MS = 2000;
 const RESULT_LIMIT = 12000;
-// Count-then-create must not interleave: parallel tool calls would exceed the cap.
-let dispatchGate: Promise<unknown> = Promise.resolve();
-function exclusive<T>(operation: () => Promise<T>): Promise<T> {
-  const previous = dispatchGate;
-  let release!: () => void;
-  dispatchGate = new Promise<void>(resolve => { release = resolve; });
-  return previous.then(async () => { try { return await operation(); } finally { release(); } });
-}
 
 interface SessionRef { id: string; file: string }
 
@@ -50,6 +42,8 @@ export default function backgroundTask(pi: ExtensionAPI): void {
   const finalized = new Set<string>();
   const reminding = new Set<string>();
   const withRunLock = createRunLock();
+  // Count-then-create must not interleave: parallel tool calls would exceed the cap.
+  const withDispatchLock = createRunLock();
 
   function stopTimer(key: string): void {
     const timer = timers.get(key);
@@ -70,6 +64,17 @@ export default function backgroundTask(pi: ExtensionAPI): void {
     }
   }
 
+  /** Persist the settle status, announce it when owed, then record delivery. */
+  async function announce(meta: RunMeta): Promise<void> {
+    if (!shouldNotify(meta)) {
+      // An explicit kill is already acknowledged by the kill tool; no follow-up turn.
+      await writeMeta({ ...meta, notified: true });
+      return;
+    }
+    const report = await readText(reportPath(meta.parentSessionId, meta.id));
+    await writeMeta({ ...meta, notified: notify(meta, report) });
+  }
+
   async function finalize(meta: RunMeta, exitCode: number | null, note?: string): Promise<void> {
     const key = `${meta.parentSessionId}/${meta.id}`;
     if (finalized.has(key)) return;
@@ -81,16 +86,9 @@ export default function backgroundTask(pi: ExtensionAPI): void {
       if (current.status !== "running") return;
 
       const updated = settleMeta(current, exitCode, note === "killed" || existsSync(killIntentPath(meta.parentSessionId, meta.id)) ? "killed" : note);
-      if (!shouldNotify(updated)) {
-        // An explicit kill is already acknowledged by the kill tool; no follow-up turn.
-        await writeMeta({ ...updated, notified: true });
-        return;
-      }
-      await writeMeta(updated);
-
-      const report = await readText(reportPath(updated.parentSessionId, updated.id));
-      const sent = notify(updated, report);
-      await writeMeta({ ...updated, notified: sent });
+      // Persist the settled status before triggering a follow-up turn.
+      if (shouldNotify(updated)) await writeMeta(updated);
+      await announce(updated);
     });
   }
 
@@ -159,13 +157,7 @@ export default function backgroundTask(pi: ExtensionAPI): void {
         }
         await finalize(run, null);
       } else if (!run.notified) {
-        if (!shouldNotify(run)) {
-          await writeMeta({ ...run, notified: true });
-          continue;
-        }
-        const report = await readText(reportPath(id, run.id));
-        const sent = notify(run, report);
-        await writeMeta({ ...run, notified: sent });
+        await announce(run);
       }
     }
   }
@@ -198,7 +190,7 @@ export default function backgroundTask(pi: ExtensionAPI): void {
     }, { additionalProperties: false }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     async execute(_callId, params, _signal, _update, ctx) {
-      return exclusive(async () => {
+      return withDispatchLock("dispatch", async () => {
         if (depth() >= MAX_DEPTH) {
           throw new Error(`Background depth limit ${MAX_DEPTH} reached; finish this task instead of nesting further.`);
         }
@@ -384,7 +376,7 @@ export default function backgroundTask(pi: ExtensionAPI): void {
       timer.unref?.();
       return {
         content: [{ type: "text", text: `Sent SIGTERM to ${meta.id} (pid ${meta.pid}); it will be killed after 4s if it does not exit. No settle notice will follow.` }],
-        details: { ...meta, signaled: result.term },
+        details: { ...meta, signaled: result },
       };
     },
   });

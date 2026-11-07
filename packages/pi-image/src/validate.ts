@@ -110,7 +110,6 @@ async function readReferenceFile(root: string, candidate: string, maxBytes: numb
 
   // The held-descriptor path needs procfs. Elsewhere use O_NOFOLLOW and a post-read realpath check.
   if (process.platform !== "linux" || !constants.O_DIRECTORY || !constants.O_NOFOLLOW) {
-    // shortcut: ancestor swaps are unchecked off Linux, harden when non-Linux reference reads are supported.
     let handle: FileHandle | undefined;
     try {
       handle = await open(resolved, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -168,7 +167,6 @@ export async function readReferenceImages(cwd: string, paths: unknown): Promise<
     if (!data.length) throw new SafeError("Reference images are limited to 20 MB each.");
     if (total + data.length > MAX_REFERENCE_TOTAL_BYTES) throw new SafeError("Reference images are limited to 32 MB in total.");
     total += data.length;
-    if (total > MAX_REFERENCE_TOTAL_BYTES) throw new SafeError("Reference images are limited to 32 MB in total.");
     const mime = detectImageMime(data);
     if (!mime) throw new SafeError("Reference images must be PNG, JPEG, WebP, or GIF files.");
     images.push({ dataUrl: `data:${mime};base64,${data.toString("base64")}`, mime, bytes: data.length, filename: basename(file.path) });

@@ -60,7 +60,7 @@ test("terminate escalates to a process-group kill", { skip: process.platform ===
   const child = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
   assert.ok(child.pid);
   try {
-    assert.equal(terminate(child.pid).term, true);
+    assert.equal(terminate(child.pid), true);
     const [code, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
     assert.ok(code === 0 || signal === "SIGTERM", `exit ${code} ${signal}`);
     assert.equal(forceKill(child.pid), false, "an exited group cannot be killed again");

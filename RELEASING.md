@@ -6,10 +6,10 @@ The only automated publication path is `pi-memoria` through `.github/workflows/p
 
 ## Package identities
 
-Prepared versions are independent and are not claims of publication. `pi-memoria` 0.5.0 is published; the other four identities await their first publication. The root README carries the current status table:
+Prepared versions are independent and are not claims of publication. `pi-memoria` 0.5.1 is published; the other four identities await their first publication. The root README carries the current status table:
 
 - `packages/pi-idle-compaction`: `pi-idle-compaction` **0.1.0**.
-- `packages/pi-memoria`: `pi-memoria` **0.5.0**, the audit-fix release. A symlinked `MEMORY.md` is refused instead of followed and replaced, and the package moves to a Pi peer floor of `>=1.5.0 <2` with a `1.5.0` development pin. Regular-file setups behave as before and stored memories need no schema migration. Earlier 0.4.x work — canonical-path session containment, bounded remembered roots, malformed-config fallback, spill and snapshot hygiene, the typebox peer floor and the non-root pruning fixture — is unchanged.
+- `packages/pi-memoria`: `pi-memoria` **0.5.1**, the duplicate-bullet patch. Identical hand-written `MEMORY.md` bullets merge into one entry instead of rejecting the whole file, so hot memory stays available; explicit duplicate IDs still fail closed. Version 0.5.0 was the audit-fix release: a symlinked `MEMORY.md` is refused instead of followed and replaced, and the package moved to a Pi peer floor of `>=1.5.0 <2` with a `1.5.0` development pin. Regular-file setups behave as before and stored memories need no schema migration. Earlier 0.4.x work — canonical-path session containment, bounded remembered roots, malformed-config fallback, spill and snapshot hygiene, the typebox peer floor and the non-root pruning fixture — is unchanged.
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram` **0.2.1**, preserving authenticated reply ownership through in-run custom context while keeping unrelated custom-origin runs unowned.
 - `packages/pi-image`: `@rcsaquino/pi-image` **0.1.0**, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-background-task`: `@rcsaquino/pi-background-task` **0.1.0**, detached background forks of the current Pi session with list, result, and kill tools plus settle notices.
@@ -71,7 +71,7 @@ If the workflow fails after a successful publish (for example during the confirm
 
 After Git has deliberately been initialized, review the intended diff and commit only authorized source files. Use package-specific tags, for example:
 
-- `pi-memoria-v0.5.0`
+- `pi-memoria-v0.5.1`
 - `pi-telegram-v0.2.1`
 - `pi-image-v0.1.0`
 - `pi-idle-compaction-v0.1.0`

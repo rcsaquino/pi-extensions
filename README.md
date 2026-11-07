@@ -42,7 +42,7 @@ Each package installs on its own. None requires another package in this reposito
 
 | Package | npm name | Status |
 |---|---|---|
-| pi-memoria | `pi-memoria` | Published 0.5.0 |
+| pi-memoria | `pi-memoria` | Published 0.5.1 |
 | Telegram transport | `@rcsaquino/pi-telegram` | Pending first publication |
 | Image generation | `@rcsaquino/pi-image` | Pending first publication |
 | Idle compaction | `pi-idle-compaction` | Pending first publication |

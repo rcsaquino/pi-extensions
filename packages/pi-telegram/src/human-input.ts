@@ -3,6 +3,21 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import type { InputEvent } from "@earendil-works/pi-coding-agent";
 
 const TTL = 10 * 60_000;
+/**
+ * The host normalizes a queued message's images when it delivers them and appends its own notes
+ * to the first text block. Only these exact shapes may extend a queued submission's text.
+ */
+const HOST_NOTES = [
+  /^\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by \d+(?:\.\d+)? to map to original image\.\]$/u,
+  /^\[Image converted from image\/[a-z0-9.+-]+ to image\/[a-z0-9.+-]+\.\]$/u,
+  /^\[Image omitted: could not be converted to a supported inline image format\.\]$/u,
+  /^\[Image omitted: could not be resized below the inline image size limit\.\]$/u,
+];
+
+function hostNormalized(text: string, submitted: string): boolean {
+  if (!text.startsWith(`${submitted}\n\n`)) return false;
+  return text.slice(submitted.length + 2).split("\n").every((note) => HOST_NOTES.some((pattern) => pattern.test(note)));
+}
 interface Submission {
   text: string; images: ImageContent[]; sessionId: string; expiresAt: number; valid: () => boolean;
   owner: object; steering: boolean; admitted: boolean; prepared: boolean; running: boolean; consumed: boolean;
@@ -10,8 +25,9 @@ interface Submission {
 }
 /** One-use admission plus async run affinity. No marker or recipient enters the transcript.
  * Initial prompts retain their submission scope through before_agent_start, normalization,
- * and agent_start. Queued inputs are consumed in that run's scope, not their own scope;
- * Pi currently queues their original content without normalization.
+ * and agent_start. Queued inputs are consumed in that run's scope, not their own scope. Earlier
+ * hosts queued their original content; current hosts replace queued image blocks and append their
+ * own image notes at delivery, so a queued claim accepts exactly that bounded shape.
  */
 export class HumanInputScope {
   private scope = new AsyncLocalStorage<Submission>();
@@ -84,7 +100,11 @@ export class HumanInputScope {
     }
     if (run ? !run.consumed : !this.detachedOwners.has(owner)) return;
     // Queued steering is consumed in the authenticated run's scope, not its own.
-    const queued = pending.find(item => item.admitted && item.queued && !item.consumed && exact(item));
+    // A delivered queued message may carry the host's image notes and normalized image blocks;
+    // accept that shape, never an arbitrary suffix or more images than were submitted.
+    const normalized = (item: Submission): boolean =>
+      images.length <= item.images.length && hostNormalized(text, item.text);
+    const queued = pending.find(item => item.admitted && item.queued && !item.consumed && (exact(item) || normalized(item)));
     if (!queued) return;
     queued.consumed = true;
     this.prune();

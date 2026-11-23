@@ -75,6 +75,30 @@ test("queued steering uses admitted exact native content in the authenticated ru
   assert.equal(h.scope.hasPending(h.owner), false, "identical corrections each consume once");
 });
 
+test("a host-normalized queued image message is claimed only in the host's own note shape", t => {
+  const h = fixture(t);
+  let run!: (content: unknown) => unknown;
+  h.send(() => {
+    h.arm(); h.scope.consume([], "session", h.owner);
+    run = AsyncResource.bind(content => h.scope.consume(content, "session", h.owner));
+  });
+  const queue = () => h.send(() => { assert.ok(h.scope.admit({ ...h.event, streamingBehavior: "steer" }, "session", h.owner)); }, true);
+  const text = (suffix: string) => `${h.event.text}\n\n${suffix}`;
+  const dimension = "[Image: original 1928x2560, displayed at 1506x2000. Multiply coordinates by 1.28 to map to original image.]";
+
+  queue();
+  assert.equal(run([{ type: "text", text: text(`${dimension} Extra words`) }, h.image]), undefined, "a note plus anything else is an arbitrary suffix");
+  assert.equal(run([{ type: "text", text: text(dimension) }, h.image, h.image]), undefined, "the host never adds images to a queued message");
+  assert.deepEqual(run([{ type: "text", text: text(dimension) }, { ...h.image, data: "resized" }]),
+    { steering: true, text: h.event.text }, "the host replaces queued image blocks when it delivers them");
+  assert.equal(run([{ type: "text", text: text(dimension) }, { ...h.image, data: "resized" }]), undefined, "still one use");
+
+  queue();
+  assert.deepEqual(run([{ type: "text", text: text("[Image omitted: could not be resized below the inline image size limit.]") }]),
+    { steering: true, text: h.event.text }, "an omitted image leaves only the host note");
+  assert.equal(h.scope.hasPending(h.owner), false);
+});
+
 test("a host-deferred start can resume its own detached submission without borrowing another owner", t => {
   const h = fixture(t);
   h.send(() => {}); // No synchronous input/admission: the host deferred this prompt past agent_settled.

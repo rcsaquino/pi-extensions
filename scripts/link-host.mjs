@@ -14,14 +14,20 @@ delete npmEnv.NPM_CONFIG_PREFIX;
 const globalRoot = execFileSync('npm', ['root', '-g'], {
   cwd: root, encoding: 'utf8', env: npmEnv,
 }).trim();
-const host = await realpath(process.env.PI_HOST_PACKAGE_DIR ?? join(globalRoot, '@earendil-works/pi-coding-agent'));
-const hostPackages = new Map([
-  ['@earendil-works/pi-coding-agent', host],
-  ['@earendil-works/pi-ai', join(host, 'node_modules/@earendil-works/pi-ai')],
-  ['@earendil-works/pi-agent-core', join(host, 'node_modules/@earendil-works/pi-agent-core')],
-  ['@earendil-works/pi-tui', join(host, 'node_modules/@earendil-works/pi-tui')],
-  ['typebox', join(host, 'node_modules/typebox')],
-]);
+const requested = process.env.PI_HOST_PACKAGE_DIR ?? join(globalRoot, '@earendil-works/pi-coding-agent');
+const host = await realpath(requested).catch(() => {
+  throw new Error(`No Pi host package at ${requested}. Install one or set PI_HOST_PACKAGE_DIR.`);
+});
+
+// Resolve a peer the way the host itself would: nearest node_modules on the host's
+// ancestor chain. One layout covers nested, hoisted and pnpm installs.
+async function hostPeer(name) {
+  for (let directory = host; ; directory = dirname(directory)) {
+    const candidate = join(directory, 'node_modules', name);
+    if (await stat(join(candidate, 'package.json')).catch(() => false)) return realpath(candidate);
+    if (dirname(directory) === directory) return undefined;
+  }
+}
 
 async function linkMissingOrBroken(target, source) {
   await stat(source); // Validate before changing any existing link.
@@ -43,13 +49,25 @@ async function linkMissingOrBroken(target, source) {
   console.log(`Linked: ${target.slice(root.length + 1)}`);
 }
 
+const packages = [];
 for (const entry of await readdir(join(root, 'packages'), { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
   const directory = join(root, 'packages', entry.name);
   const manifest = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
-  for (const name of Object.keys(manifest.peerDependencies ?? {})) {
-    const source = hostPackages.get(name);
-    if (source) await linkMissingOrBroken(join(directory, 'node_modules', name), await realpath(source));
+  packages.push({ directory, peers: Object.keys(manifest.peerDependencies ?? {}), optional: manifest.peerDependenciesMeta ?? {} });
+}
+
+// Resolve once per distinct needed peer rather than once per package.
+const resolved = new Map();
+for (const { peers } of packages) {
+  for (const name of peers) if (!resolved.has(name)) resolved.set(name, await hostPeer(name));
+}
+
+for (const { directory, peers, optional } of packages) {
+  for (const name of peers) {
+    const source = resolved.get(name);
+    if (source) await linkMissingOrBroken(join(directory, 'node_modules', name), source);
+    else if (!optional[name]?.optional) console.warn(`Missing peer ${name} for ${directory.slice(root.length + 1)}; install it in the host.`);
   }
   // Some existing development-only dependency trees had a compiler but no npm bin link.
   const compiler = join(directory, 'node_modules/typescript/bin/tsc');

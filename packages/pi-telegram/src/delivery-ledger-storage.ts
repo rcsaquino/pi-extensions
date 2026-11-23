@@ -3,6 +3,7 @@ import { constants, type Stats } from "node:fs";
 import { open, mkdir, lstat, unlink, rename, opendir, type FileHandle } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { DeliveryRecord } from "./delivery-ledger.ts";
+import { FLOCK } from "./system-bin.ts";
 
 export const LEDGER_SLOTS = 2048;
 export const LEDGER_RECORD_BYTES = 1024;
@@ -140,6 +141,9 @@ async function checkLock(dir: PrivateDirectory, file: FileHandle): Promise<void>
 
 /** Fixed executable, numeric inherited FD, no shell/PATH/credentials. Kernel flock is OFD-scoped. */
 async function acquire(dir: PrivateDirectory): Promise<FileHandle> {
+  // No lock helper means no coordination: fail closed instead of appending unguarded.
+  const flock = FLOCK;
+  if (!flock) throw new Error();
   let file: FileHandle | undefined;
   try {
     // Never replace/remove the permanent lock inode, including after a crash.
@@ -149,7 +153,7 @@ async function acquire(dir: PrivateDirectory): Promise<FileHandle> {
     // flock accepts read-only descriptors; its child shares the parent's open file description.
     // After helper exit the parent FD retains the lock until close/SIGKILL. No PID stale-lock logic.
     await new Promise<void>((done, reject) => {
-      const child = spawn("/usr/bin/flock", ["--exclusive", "--nonblock", "--conflict-exit-code", "73", "3"], {
+      const child = spawn(flock, ["--exclusive", "--nonblock", "--conflict-exit-code", "73", "3"], {
         stdio: ["ignore", "ignore", "ignore", file!.fd], env: {}, windowsHide: true,
       });
       const timer = setTimeout(() => child.kill("SIGKILL"), 1000);

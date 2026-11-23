@@ -48,7 +48,9 @@ async function atFileStat(path: string, change: () => Promise<void>, work: () =>
   return Buffer.concat(readBytes);
 }
 async function fixture(t: test.TestContext) {
-  const base = await fs.mkdtemp(join(process.env.TELEGRAM_TEST_DIR || process.env.TMPDIR || "/tmp", "attachment-race-"));
+  const scratch = process.env.TELEGRAM_TEST_DIR || process.env.TMPDIR || "/tmp";
+  await fs.mkdir(scratch, { recursive: true });
+  const base = await fs.mkdtemp(join(scratch, "attachment-race-"));
   t.after(() => fs.rm(base, { recursive: true, force: true }));
   const cwd = join(base, "workspace"), parent = join(cwd, "allowed"), outside = join(base, "outside");
   await fs.mkdir(parent, { recursive: true }); await fs.mkdir(outside);

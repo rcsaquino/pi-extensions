@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { SafeError } from "./config.ts";
+import { FLOCK } from "./system-bin.ts";
 
 const CONFLICT = 73;
 // --no-fork leaves one tiny helper holding the kernel lock. EOF on its private stdin
@@ -14,6 +15,8 @@ export class ConnectionLease {
 
   static async acquire(directory: string, token: string, signal: AbortSignal, onLost: () => void): Promise<ConnectionLease> {
     signal.throwIfAborted();
+    // Ownership is only safe with a kernel lock; refuse rather than run a second poller.
+    if (!FLOCK) throw new SafeError("Telegram requires the host flock command; connection refused without an ownership lock.");
     await mkdir(directory, { recursive: true, mode: 0o700 });
     // Credential rotation must not create a second poller for the same Telegram bot.
     const identity = token.match(/^(\d+):/)?.[1] || token;
@@ -22,7 +25,7 @@ export class ConnectionLease {
     const file = await open(path, "a", 0o600);
     await file.close();
     signal.throwIfAborted();
-    const child = spawn("flock", ["--exclusive", "--nonblock", "--conflict-exit-code", String(CONFLICT), "--no-fork", path, process.execPath, "-e", HOLD], {
+    const child = spawn(FLOCK, ["--exclusive", "--nonblock", "--conflict-exit-code", String(CONFLICT), "--no-fork", path, process.execPath, "-e", HOLD], {
       stdio: ["pipe", "pipe", "ignore"], windowsHide: true,
     });
     const closed = new Promise<void>(done => child.once("close", () => done()));

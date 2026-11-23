@@ -7,6 +7,10 @@ import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat
 import { resolve } from "node:path";
 import test from "node:test";
 import { DeliveryLedger, LEDGER_BYTES, LEDGER_RECORD_BYTES, LEDGER_RETENTION_MS, LEDGER_SLOTS, migrateDeliveryLedger, readDeliveryLedger, type DeliveryRecord } from "../src/delivery-ledger.ts";
+import { FLOCK, systemBin } from "../src/system-bin.ts";
+
+// A FIFO trap needs the util-linux helper; its absence is an environment gap, not a defect.
+const MKFIFO = systemBin("mkfifo");
 
 const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(scratch, { recursive: true });
@@ -114,6 +118,7 @@ test("excess valid records within byte cap return a bounded truncated view and c
 });
 
 for (const name of ["events.jsonl", "writer.lock", "compact.tmp"]) for (const trap of ["symlink", "hardlink", "mode", "directory", "fifo"]) test(`${name} rejects ${trap} traps without modifying their target`, async t => {
+  if (trap === "fifo" && !MKFIFO) return t.skip("mkfifo is not installed");
   const f = await fixture(t), outside = resolve(f.root, "outside"), target = resolve(f.path, name);
   await writeFile(outside, "PRIVATE", { mode: 0o600 });
   if (trap === "symlink") await symlink(outside, target);
@@ -121,7 +126,7 @@ for (const name of ["events.jsonl", "writer.lock", "compact.tmp"]) for (const tr
   if (trap === "mode") await writeFile(target, "PRIVATE", { mode: 0o644 });
   if (trap === "directory") await mkdir(target, { mode: 0o700 });
   if (trap === "fifo") {
-    await new Promise<void>((yes, no) => { const c = spawn("/usr/bin/mkfifo", [target], { stdio: "ignore" }); c.on("error", no); c.on("close", n => n === 0 ? yes() : no(new Error())); });
+    await new Promise<void>((yes, no) => { const c = spawn(MKFIFO!, [target], { stdio: "ignore" }); c.on("error", no); c.on("close", n => n === 0 ? yes() : no(new Error())); });
     await chmod(target, 0o600);
   }
   const before = await lstat(target); assert.equal((await readDeliveryLedger(f.path)).state, "unavailable"); await f.append();
@@ -154,7 +159,7 @@ test("safe crash compaction temp is ignored by readers, discarded under lock by 
 
 test("kernel lock survives acquiring-helper exit, drops contending diagnostics promptly, and releases after writer SIGKILL", async t => {
   const f = await fixture(t); await f.append();
-  const code = `import {open} from 'node:fs/promises'; import {spawn} from 'node:child_process'; const file=await open(process.argv[1],'r'); await new Promise((yes,no)=>{const c=spawn('/usr/bin/flock',['--exclusive','--nonblock','3'],{stdio:['ignore','ignore','ignore',file.fd],env:{}});c.on('close',n=>n===0?yes():no(Error()));}); console.log('held'); setInterval(()=>{},1000);`;
+  const code = `import {open} from 'node:fs/promises'; import {spawn} from 'node:child_process'; const file=await open(process.argv[1],'r'); await new Promise((yes,no)=>{const c=spawn(${JSON.stringify(FLOCK)},['--exclusive','--nonblock','3'],{stdio:['ignore','ignore','ignore',file.fd],env:{}});c.on('close',n=>n===0?yes():no(Error()));}); console.log('held'); setInterval(()=>{},1000);`;
   const held = subprocess(code, [resolve(f.path, "writer.lock")]); held.done.catch(() => {});
   await new Promise<void>((yes, no) => { held.child.stdout.once("data", () => yes()); held.child.once("error", no); held.child.once("exit", () => no(new Error("holder exited early"))); });
   const untouched = await inventory(f.path);

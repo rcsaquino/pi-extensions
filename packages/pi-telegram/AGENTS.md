@@ -15,6 +15,7 @@ Read this with [the monorepo instructions](https://github.com/rcsaquino/pi-exten
 - `src/format.ts`: Markdown to native entities and safe text splitting for the legacy fallback path.
 - `src/reply-context.ts`: authenticated same-chat, one-level, bounded XML reply/quote reference data; escaped fields, internal IDs, no old-media re-fetch, download or transcription and no additional delivery authority. A bounded `<local_path>` names an already-held local copy only when this bridge indexed it; its contents are never read into context. Trusted reference-only guidance belongs in the Telegram-origin `before_agent_start` prompt guidelines, not inside the reference.
 - `src/sent-media.ts`: best-effort bounded private message-id -> local-path index for media this bridge sent or downloaded; chat/message/path/kind/source metadata only, atomic `0600` persistence, and swallowed failures so transport results never depend on it.
+- `src/system-bin.ts`: fixed-directory resolution for the util-linux `flock` used by ownership and the ledger. Never `PATH`, because an executable chosen by the environment is not fixed; callers fail closed when it is absent.
 - `src/voice.ts`: Groq transcription, exact ElevenLabs voice/model, audio tags, chunking, and Opus assembly.
 - `tests/`: fake-transport regression tests and isolated real Pi loader/SDK checks.
 
@@ -28,7 +29,7 @@ npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```
 
-The package has no `verify` script; root `npm run verify` combines its typecheck/test commands. The maintained offline baseline is Node 26.12.0 on Pi 1.5.0; use Linux `flock --no-fork` and ffmpeg for synthetic long-speech tests. Set `TELEGRAM_TEST_DIR` to approved isolated scratch when running tests directly. Test files are checkout-only and excluded from the tarball. Keep real `.env` values out of tests, output, and model context.
+The package has no `verify` script; root `npm run verify` combines its typecheck/test commands. The maintained offline baseline is Node 26.12.0 on Pi 1.5.0; use Linux `flock --no-fork`, ffmpeg for synthetic long-speech tests, and `mkfifo` for FIFO-trap coverage (those three cases skip when `mkfifo` is absent). Set `TELEGRAM_TEST_DIR` to approved isolated scratch when running tests directly. Test files are checkout-only and excluded from the tarball. Keep real `.env` values out of tests, output, and model context.
 
 ## Non-negotiable behavior
 

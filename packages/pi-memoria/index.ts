@@ -67,8 +67,10 @@ export default function memoria(pi: ExtensionAPI) {
           catch { config = configuration(join(homedir(), ".pi", "agent"), fallbackEnv); }
         }
       }
-      const created: Runtime = { config, context: ctx, hot: undefined as unknown as HotMemoryStore, configurationError };
-      created.hot = new HotMemoryStore(config.hotPath, (entries) => database(created).archive(entries, config.hotPath), withFileMutationQueue);
+      // The archive callback runs only after this returns, so `created` is assigned by then.
+      let created: Runtime;
+      const hot = new HotMemoryStore(config.hotPath, (entries) => database(created).archive(entries, config.hotPath), withFileMutationQueue);
+      created = { config, context: ctx, hot, configurationError };
       runtime = created;
     }
     runtime.context = ctx;

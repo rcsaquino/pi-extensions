@@ -3,7 +3,7 @@ export const MIN_TOKENS = 100_000;
 
 // Pure timer controller; Pi owns summarization, retained history, and prompts.
 // A background admission lease is held through compaction, not merely sampled.
-export function createIdleCompactor({ backgroundIdle = async () => false,
+export function createIdleCompactor({ backgroundIdle = async _ctx => false,
   acquireBackgroundLease = undefined, delay = IDLE_MS,
   setTimer = setTimeout, clearTimer = clearTimeout }) {
   let timer, generation = 0, context, enabled = true, suspended = false;

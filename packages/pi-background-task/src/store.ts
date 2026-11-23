@@ -120,11 +120,41 @@ export async function readMeta(parentSessionId: string, id: string): Promise<Run
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(id) || id === "." || id === "..") return undefined;
   try {
     const raw = await readFile(metaPath(parentSessionId, id), "utf8");
-    const parsed = JSON.parse(raw) as RunMeta;
-    return parsed && typeof parsed.id === "string" && parsed.id === id ? parsed : undefined;
+    return record(JSON.parse(raw), id);
   } catch {
     return undefined;
   }
+}
+
+const statuses = ["running", "done", "failed", "killed", "unknown"] as const;
+const timestamp = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
+const nonNegativeInteger = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * Project persisted metadata onto the closed RunMeta domain. This file outlives the process
+ * that wrote it, so a record missing what the run list, watcher or pruner relies on is treated
+ * as absent, exactly like unparseable JSON. Wrong-typed optional fields are dropped instead of
+ * rejecting the record, and keys from another version are ignored.
+ */
+function record(value: unknown, id: string): RunMeta | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.id !== id || typeof raw.title !== "string" || typeof raw.parentSessionId !== "string"
+    || typeof raw.childSessionId !== "string" || typeof raw.cwd !== "string"
+    || !statuses.includes(raw.status as RunStatus) || !nonNegativeInteger(raw.pid) || !timestamp(raw.startedAt)) return undefined;
+  return {
+    id, title: raw.title, parentSessionId: raw.parentSessionId, childSessionId: raw.childSessionId,
+    pid: raw.pid, cwd: raw.cwd, startedAt: raw.startedAt, status: raw.status as RunStatus,
+    ...(timestamp(raw.finishedAt) ? { finishedAt: raw.finishedAt } : {}),
+    ...(raw.exitCode === null || nonNegativeInteger(raw.exitCode) ? { exitCode: raw.exitCode as number | null } : {}),
+    ...(typeof raw.notified === "boolean" ? { notified: raw.notified } : {}),
+    ...(typeof raw.note === "string" ? { note: raw.note } : {}),
+    ...(typeof raw.etaMinutes === "number" && Number.isFinite(raw.etaMinutes) && raw.etaMinutes > 0 ? { etaMinutes: raw.etaMinutes } : {}),
+    ...(timestamp(raw.etaFrom) ? { etaFrom: raw.etaFrom } : {}),
+    ...(nonNegativeInteger(raw.reminders) ? { reminders: raw.reminders } : {}),
+    ...(timestamp(raw.lastReminderAt) ? { lastReminderAt: raw.lastReminderAt } : {}),
+    ...(typeof raw.etaPending === "string" ? { etaPending: raw.etaPending } : {}),
+  };
 }
 
 /** Exit code and kill note decide the settled status in one place. */

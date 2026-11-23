@@ -56,6 +56,13 @@ test("parallel metadata writes use distinct temp files and leave none behind", a
   }
 });
 
+test("a pid that cannot name a foreign process group is refused, never widened to pid 0", () => {
+  for (const pid of [0, -1, Number.NaN, 1.5]) {
+    assert.equal(terminate(pid), false, `terminate(${pid})`);
+    assert.equal(forceKill(pid), false, `forceKill(${pid})`);
+  }
+});
+
 test("terminate escalates to a process-group kill", { skip: process.platform === "win32" }, async () => {
   const child = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
   assert.ok(child.pid);

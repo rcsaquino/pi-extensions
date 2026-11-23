@@ -63,30 +63,21 @@ export function launchDetached(options: LaunchOptions): LaunchResult {
   }
 }
 
-/** Terminate a detached run's process group, escalating to SIGKILL. */
-export function terminate(pid: number): boolean {
-  try {
-    process.kill(-pid, "SIGTERM");
-    return true;
-  } catch {
-    try {
-      process.kill(pid, "SIGTERM");
-      return true;
-    } catch { /* already gone */ }
+/** Signal the detached process group, falling back to the bare process. A non-positive or
+ * unsafe pid is refused rather than widened to pid 0, which targets the caller's own group. */
+function signal(pid: number, name: NodeJS.Signals): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  for (const target of [-pid, pid]) {
+    try { process.kill(target, name); return true; } catch { /* try the next target */ }
   }
   return false;
 }
 
+export function terminate(pid: number): boolean {
+  return signal(pid, "SIGTERM");
+}
+
+/** Escalate after SIGTERM does not take the group down. */
 export function forceKill(pid: number): boolean {
-  try {
-    process.kill(-pid, "SIGKILL");
-    return true;
-  } catch {
-    try {
-      process.kill(pid, "SIGKILL");
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  return signal(pid, "SIGKILL");
 }

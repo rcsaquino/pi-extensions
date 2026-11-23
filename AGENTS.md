@@ -63,6 +63,7 @@ Report commands, outcomes, relevant environment, and remaining gaps. Offline SDK
 - Pi loads TypeScript directly. Do not introduce a shared build, bundler, runtime dependency, or private host API without a justified request.
 - Before changing Pi integration, read the installed coding-agent's documentation and matching examples. Resolve `docs/` and `examples/` from that installation and inspect exported declarations for exact signatures.
 - Factories register capabilities only. Start processes, workers, timers, stores, and sockets in session lifecycle or the operation needing them; clean up idempotently.
+- Never contribute extension text to Pi's default `<tools>` or `<rules>` sections. Do not set `promptSnippet`, `promptGuidelines`, `toolSnippets`, `toolGuidelines`, or custom `sections.tools`/`sections.rules`. Put extension guidance in a uniquely named custom section (for example `<pi_memoria>` or `<pi_telegram>`) or in the tool description; tool schemas remain ordinary provider declarations. Each package guards this with a regression test.
 - Keep event semantics, tool exposure, cancellation, session replacement, and `agent_settled` behavior explicit. Do not turn notification-only events into implicit continuation loops.
 - Keep host-supplied Pi packages as peers, not new runtime dependencies. A local development copy is not proof that production should bundle another host.
 - Review background visibility/admission contracts before combining extensions. Do not assume independent packages automatically coordinate all their work.

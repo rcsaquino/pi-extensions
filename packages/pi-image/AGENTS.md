@@ -29,6 +29,7 @@ The package has no `verify` script; root `npm run verify` combines its typecheck
 - Resolve credentials in this order: `OPENROUTER_API_KEY` in `<cwd>/.env`, then `<agent-dir>/.env`, then `process.env.OPENROUTER_API_KEY`, then the stored `/login` credential in `<agent-dir>/auth.json`. No key logging. Missing credentials fail closed with a hint covering both `.env` and `/login`.
 - Call the Images API directly (`POST /api/v1/images/generations`). Never route image models through `pi-ai` chat/completions; that path 404s with a message to use `/api/v1/images`.
 - Keep `generate_image` the only tool. No models-listing tool, no captions concept, no participation in tool-calling loops beyond this tool.
+- Never add `promptSnippet` or `promptGuidelines`, and never register a `before_agent_start` handler. The package must not write into Pi's default `<tools>` or `<rules>` sections; `generate_image` guidance belongs in the tool description.
 - Validate everything twice: schema bounds plus code validation. Prompt 1–4000 chars; at most 3 reference images at 20 MB each and 32 MB total; output always inside the working directory.
 - Resolve reference and output paths against the tool-call `ctx.cwd` with realpath containment (refuse `..` and symlink escapes). Downloads default to `<cwd>/artifacts/`. An existing directory or trailing separator is a directory target; otherwise the final component is a filename. Refuse symlinked parents and symlinked final files, re-realpath the created parent, and open the final file with `O_NOFOLLOW`.
 - Verify PNG/JPEG magic and a minimum byte size before returning a path. Return metadata only, never image bytes.
@@ -41,7 +42,7 @@ The package has no `verify` script; root `npm run verify` combines its typecheck
 Add regression cases in the corresponding suite:
 
 - `generate.test.ts`: txt2img request shape, `input_references` encoding, `url` fallback and address policy, credential precedence and auth-missing closed failure, prompt/model/size/reference/output bounds, aggregate reference bytes, PNG/JPEG verification, atomic save/overwrite/collision behavior, redaction, and response caps.
-- `sdk.test.ts`: actual loader registration of `generate_image` with no commands, plus the full offline tool flow through fake fetch with an isolated agent dir.
+- `sdk.test.ts`: actual loader registration of `generate_image` with no commands and no `<tools>`/`<rules>` contribution, plus the full offline tool flow through fake fetch with an isolated agent dir.
 
 Mocks must inspect the intended API payload (URL, method, auth, body fields), not merely assert a fabricated success. Use fake fetch transports and isolated temp dirs; live network, real keys, real sessions, and production cursors are never test fixtures.
 

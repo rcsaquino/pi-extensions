@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { resolve } from "node:path";
 import test from "node:test";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model, type ToolCall } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, type Api, type AssistantMessage, type Model, type ToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stamp } from "../src/config.ts";
@@ -22,6 +22,10 @@ test("actual Pi file loader registers extension without opening resources in the
   assert.deepEqual(result.errors, []);
   const extension = result.extensions.find(item => item.path.endsWith("index.ts"))!;
   assert.ok(extension.tools.has("telegram_send"));
+  for (const [name, { definition }] of extension.tools) {
+    assert.equal(definition.promptSnippet, undefined, `${name} must not write into the <tools> section`);
+    assert.equal(definition.promptGuidelines, undefined, `${name} must not write into the <rules> section`);
+  }
   assert.equal(extension.commands.size, 0);
   assert.ok(extension.flags.has("telegram-off"));
   assert.equal(extension.handlers.has("message_update"), false);
@@ -103,6 +107,12 @@ test("actual Pi SDK consumes Telegram inputs, hides intermediate tool turns, sen
       streamSimple(m, context) {
         telegramContextSeen = JSON.stringify(context.messages).includes("current request arrived via Telegram");
         assert.ok(telegramContextSeen, "Telegram transport context must reach the model without an extra user label");
+        const systemText = getCurrentSystemPrompt(context.messages) ?? "";
+        assert.match(systemText, /<pi_telegram>\n- The current request arrived via Telegram/u, "Telegram guidance needs its own system-prompt section");
+        const rules = /<rules>\n([\s\S]*?)\n<\/rules>/u.exec(systemText)?.[1] ?? "";
+        assert.ok(!rules.includes("Telegram replies:"), "Telegram guidance must stay out of <rules>");
+        const tools = /<tools>\n([\s\S]*?)\n<\/tools>/u.exec(systemText)?.[1] ?? "";
+        assert.ok(!tools.includes("telegram_send"), "the Telegram tool must stay out of <tools>");
         const guidance = JSON.stringify(context.messages);
         assert.ok(guidance.includes("Voice only when the user explicitly asks for voice or a spoken reply"));
         assert.ok(!guidance.includes("Prefer replying with telegram_send speech"));

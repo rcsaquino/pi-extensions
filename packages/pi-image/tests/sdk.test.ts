@@ -21,6 +21,11 @@ test("actual Pi file loader registers generate_image without side effects", asyn
   assert.deepEqual(result.errors, []);
   const extension = result.extensions.find(item => item.path.endsWith("index.ts"))!;
   assert.ok(extension.tools.has("generate_image"));
+  const definition = extension.tools.get("generate_image")!.definition;
+  assert.equal(definition.promptSnippet, undefined, "must not write into the <tools> section");
+  assert.equal(definition.promptGuidelines, undefined, "must not write into the <rules> section");
+  assert.equal(extension.handlers.has("before_agent_start"), false, "must not mutate the system prompt");
+  assert.match(String(definition.description), /report the saved file path/);
   assert.equal(extension.commands.size, 0);
 });
 

@@ -30,7 +30,7 @@ Install dependencies only when needed. Node `>=26.12.0 <27` and coding-agent `>=
 - Preserve the idle duration, token boundary, history-change requirement, idle/pending checks, and once-per-leaf attempt semantics unless a behavior change is requested.
 - Timers run only for long-lived TUI/RPC modes. Input, tools/agents, UI waits, navigation, compaction, and shutdown invalidate/suspend admission correctly.
 - Revalidate after every asynchronous admission step. A new generation, changed history/tokens, disabled state, or pending work must prevent a late compaction and release its own lease.
-- Call only public native `ctx.compact`. Do not replace prompts, retention budgets, model choice, or Pi's normal compaction configuration.
+- Call only public native `ctx.compact`. Do not replace prompts, retention budgets, model choice, Pi's normal compaction configuration, or Pi's `<tools>`/`<rules>` sections.
 - Recheck provider snapshots after asynchronous provider admission. Do not admit a second overlapping compaction or imply that a snapshot excludes future work.
 - Never edit another extension's state/config/skills or create foreign runtime leases.
 - Cleanup uncertainty fails closed and stops future admission rather than claiming success.

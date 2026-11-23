@@ -57,6 +57,7 @@ test('current Pi loads an isolated standalone copy with NO node_modules or compa
     assert.equal(extension.path, join(installDir, 'index.ts'));
     assert.deepEqual([...extension.commands.keys()], ['idle-compact']);
     assert.equal(extension.tools.size, 0);
+    assert.equal(extension.handlers.has('before_agent_start'), false, 'must not mutate the system prompt');
     assert.equal(runtime.pendingProviderRegistrations.length, 0);
     const notices = [], ctx = { ui: { notify: message => notices.push(message) } };
     await extension.commands.get('idle-compact').handler('status', ctx);

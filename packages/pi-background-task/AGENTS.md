@@ -1,6 +1,6 @@
 # Working on @rcsaquino/pi-background-task
 
-Read [the monorepo instructions](https://github.com/rcsaquino/pi-extensions/blob/main/AGENTS.md) and [README.md](README.md). This package forks the current Pi session into a detached `pi -p` process. It is not an orchestrator, keeps no agent definitions, and does not change the worker's tools or system prompt. Each dispatched task is prefixed with a fixed operational note.
+Read [the monorepo instructions](https://github.com/rcsaquino/pi-extensions/blob/main/AGENTS.md) and [README.md](README.md). This package forks the current Pi session into a detached `pi -p` process. It is not an orchestrator, keeps no agent definitions, and does not change the worker's tools or system prompt. Each dispatched task is prefixed with a fixed operational note. The factory registers no `before_agent_start` handler and no `promptSnippet`/`promptGuidelines`, so the parent's `<tools>` and `<rules>` sections stay untouched.
 
 ## Setup and verification
 
@@ -13,7 +13,7 @@ npm --prefix packages/pi-background-task run check
 npm --prefix packages/pi-background-task test
 ```
 
-Tests are offline and cover prompt composition, notice framing, retention, settled-status mapping, run-id containment, process-group kill escalation, restart recovery and one-notice-per-run idempotency. The maintained baseline is Node 26.12.0 on Pi 1.6.0. Test files and package-local scripts are checkout-only and excluded from the tarball.
+Tests are offline and cover prompt composition, notice framing, retention, settled-status mapping, run-id containment, process-group kill escalation, restart recovery, one-notice-per-run idempotency, and the no-system-prompt-contribution contract. The maintained baseline is Node 26.12.0 on Pi 1.6.0. Test files and package-local scripts are checkout-only and excluded from the tarball.
 
 ## Architecture
 

@@ -109,7 +109,8 @@ test("Pi loads the package, executes all five tools, injects fresh global memory
   const h = await harness(t);
   assert.deepEqual([...h.extension.tools.keys()].sort(), ["memoria_add", "memoria_delete", "memoria_edit", "memoria_search", "memoria_sessions"]);
   for (const [name, definition] of h.extension.tools) {
-    assert.ok(definition.definition.promptSnippet?.trim(), `${name} must have a prompt snippet`);
+    assert.equal(definition.definition.promptSnippet, undefined, `${name} must not write into the <tools> section`);
+    assert.equal(definition.definition.promptGuidelines, undefined, `${name} must not write into the <rules> section`);
   }
   await assert.rejects(stat(h.memoryDir), { code: "ENOENT" }, "loading the factory must not mutate storage");
 
@@ -125,6 +126,11 @@ test("Pi loads the package, executes all five tools, injects fresh global memory
   assert.match(h.section(event), /Start every sentence with beep_boop/u);
   assert.match(h.section(event), /Search SQLite when a topic may depend on prior knowledge/u);
   assert.equal(h.extension.tools.get("memoria_add")!.definition.promptGuidelines, undefined, "save guidance lives only in the pi_memoria section");
+  assert.deepEqual(event.options.promptGuidelines, [], "the extension must not add rule bullets");
+  assert.deepEqual(event.options.toolGuidelines, {}, "the extension must not add tool rule bullets");
+  assert.deepEqual(event.options.toolSnippets, {}, "the extension must not add tool snippets");
+  assert.equal(event.options.sections.tools, undefined, "the extension must not replace <tools>");
+  assert.equal(event.options.sections.rules, undefined, "the extension must not replace <rules>");
   assert.equal(event.options.sections.other, "preserve me");
   const fact = await h.call("memoria_add", { content: "The user likes apples.", tags: ["fruit"] });
   assert.equal(fact.details.created, true);

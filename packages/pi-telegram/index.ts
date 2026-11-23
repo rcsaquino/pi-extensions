@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { readDeliveryLedger } from "./src/delivery-ledger.ts";
 import { TelegramBridge } from "./src/bridge.ts";
 import { DeliveryRefusal, loadConfig, safeError, SafeError } from "./src/config.ts";
-import { telegramPromptGuidelines } from "./src/prompt-guidelines.ts";
+import { telegramPromptSection } from "./src/prompt-guidelines.ts";
 
 export default function telegram(pi: ExtensionAPI): void {
   let bridge: TelegramBridge | undefined;
@@ -45,7 +45,9 @@ export default function telegram(pi: ExtensionAPI): void {
   pi.on("before_agent_start", event => {
     if (!bridge?.ownsConnection) return;
     const telegram = event.messageType === "user" && Boolean(bridge.beforeStart(event.prompt, event.images));
-    event.systemPromptOptions.promptGuidelines.push(...telegramPromptGuidelines(telegram));
+    const section = telegramPromptSection(telegram);
+    if (section === undefined) delete event.systemPromptOptions.sections.pi_telegram;
+    else event.systemPromptOptions.sections.pi_telegram = section;
   });
   pi.on("input", event => bridge?.input(event));
   pi.on("agent_start", () => bridge?.agentStart());

@@ -10,8 +10,7 @@ export default function piImage(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "generate_image",
     label: "Generate image",
-    description: "Generate an image from a text prompt via the OpenRouter Images API (POST /api/v1/images/generations) using OPENROUTER_API_KEY from .env or the stored OpenRouter login. Optional inputPaths reference existing workspace images for image-to-image. Saves a verified PNG/JPEG under the Pi working directory (default artifacts/) and returns the saved path plus metadata only, never image bytes. Generation may spend OpenRouter credits.",
-    promptGuidelines: ["When the user asks for an image, generate it with generate_image and report the saved file path. Image bytes never belong in chat text."],
+    description: "Generate an image from a text prompt via the OpenRouter Images API (POST /api/v1/images/generations) using OPENROUTER_API_KEY from .env or the stored OpenRouter login. Optional inputPaths reference existing workspace images for image-to-image. Saves a verified PNG/JPEG under the Pi working directory (default artifacts/) and returns the saved path plus metadata only, never image bytes. When the user asks for an image, call this tool and report the saved file path. Generation may spend OpenRouter credits.",
     parameters: Type.Object({
       prompt: Type.String({ minLength: 1, maxLength: 4000, description: "Text description of the desired image" }),
       model: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "OpenRouter image model id; defaults to openai/gpt-image-2.6-sunburst" })),

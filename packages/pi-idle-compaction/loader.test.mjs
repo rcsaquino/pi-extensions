@@ -10,20 +10,20 @@ const root = dirname(fileURLToPath(import.meta.url));
 const runtimeRoot = process.env.IDLE_COMPACTION_TEST_RUNTIME_DIR || root;
 
 // Test-only gate for the declared peer range, not a pin to the validation baseline.
-const hostPeerRange = '>=1.5.0 <2';
+const hostPeerRange = '>=1.6.0 <2';
 function isDeclaredHostVersion(version) {
   const parts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
   if (!parts) return false; // Prereleases are not included by the declared range.
-  return Number(parts[1]) === 1 && Number(parts[2]) >= 5;
+  return Number(parts[1]) === 1 && Number(parts[2]) >= 6;
 }
 
 test('loader host gate covers the declared stable peer range', async () => {
   const manifest = JSON.parse(await readFile(join(runtimeRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.peerDependencies['@earendil-works/pi-coding-agent'], hostPeerRange,
     'update the test-only gate when declared host support changes');
-  for (const version of ['1.5.0', '1.5.1', '1.9.0', '1.12.0', '1.5.0+build.1'])
+  for (const version of ['1.6.0', '1.6.1', '1.9.0', '1.12.0', '1.6.0+build.1'])
     assert.equal(isDeclaredHostVersion(version), true, `declared host ${version}`);
-  for (const version of ['1.4.9', '1.0.0', '0.99.2', '2.0.0', '1.5.0-rc.1', '1.05.0', '1.5', 'invalid'])
+  for (const version of ['1.5.9', '1.0.0', '0.99.2', '2.0.0', '1.6.0-rc.1', '1.06.0', '1.6', 'invalid'])
     assert.equal(isDeclaredHostVersion(version), false, `undeclared host ${version}`);
 });
 

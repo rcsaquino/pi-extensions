@@ -11,7 +11,7 @@ This package works with no other package from this repository installed.
 ## Requirements
 
 - **Linux.** The manifest declares `os: linux`; other platforms are refused at install time.
-- **Node.js 22.19+** and a Node-based **Pi** host at **`>=1.5.0 <2`**.
+- **Node.js 22.19+** and a Node-based **Pi** host at **`>=1.6.0 <2`**.
 - A **`pi` executable on `PATH`** to run workers, or **`PI_BACKGROUND_PI`** set to the executable's path (for a wrapper, a version manager, or a nonstandard host).
 
 ## Installation

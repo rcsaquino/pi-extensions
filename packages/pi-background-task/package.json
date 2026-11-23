@@ -22,7 +22,7 @@
   "os": ["linux"],
   "engines": { "node": ">=22.19.0" },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=1.5.0 <2",
+    "@earendil-works/pi-coding-agent": ">=1.6.0 <2",
     "typebox": ">=1.3.0 <2"
   },
   "devDependencies": { "@types/node": "^22.19.0", "typescript": "^5.9.0" }

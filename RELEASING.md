@@ -18,7 +18,7 @@ The scoped identities avoid unrelated unscoped npm packages. The source folder, 
 
 ## Preparation and dry runs
 
-From the monorepo root, follow [README.md](README.md) and the target package's setup instructions. The complete suite is exercised on Node 26.12.0 within the required `>=26.12.0 <27` range, npm, a Node-based Pi 1.5.0 host, rg, flock, and ffmpeg. Install package-local dependencies with lifecycle scripts disabled; do not hoist or update the host as a release side effect.
+From the monorepo root, follow [README.md](README.md) and the target package's setup instructions. The complete suite is exercised on Node 26.12.0 within the required `>=26.12.0 <27` range, npm, a Node-based Pi 1.6.0 host, rg, flock, and ffmpeg. Install package-local dependencies with lifecycle scripts disabled; do not hoist or update the host as a release side effect.
 
 No package lockfile is currently committed. Use the documented package-local `npm install --ignore-scripts --legacy-peer-deps --workspaces=false` commands. If a usable lockfile is deliberately introduced later, generate/update it through npm and review it before choosing `npm ci`.
 
@@ -51,7 +51,7 @@ Before an approved release, query the public npm registry for the exact name and
 
 1. Requires the tag to match `packages/pi-memoria/package.json` exactly and the tagged commit to be an ancestor of `main`.
 2. Refuses a version that is already published or that does not advance the published `latest`.
-3. Installs every package's dependencies through the documented package-local commands, installs the pinned Pi 1.5.0 development host, runs `npm run link-host` to supply the peer packages a clean CI checkout lacks, then runs the full `npm run verify` gate (types/tests plus offline publication regressions).
+3. Installs every package's dependencies through the documented package-local commands, installs the pinned Pi 1.6.0 development host, runs `npm run link-host` to supply the peer packages a clean CI checkout lacks, then runs the full `npm run verify` gate (types/tests plus offline publication regressions).
 4. Publishes from `packages/pi-memoria` with `npm publish --ignore-scripts --access public --workspaces=false`, using npm trusted publishing (OIDC) and automatically generated provenance. No npm token is stored in the repository.
 5. Confirms the new version, tarball, and dist-tags from the public registry, retrying for five minutes because npm processing can lag behind the publish command.
 

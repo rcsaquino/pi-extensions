@@ -14,7 +14,7 @@ npm --prefix packages/pi-idle-compaction test
 npm --prefix packages/pi-idle-compaction run verify
 ```
 
-Install dependencies only when needed. Node `>=26.12.0 <27` and coding-agent `>=1.5.0 <2` are declared; the maintained offline baseline is Node 26.12.0 on Pi 1.5.0. Runtime requires no npm dependencies; tooling/host links are checkout-only development helpers excluded from the tarball.
+Install dependencies only when needed. Node `>=26.12.0 <27` and coding-agent `>=1.6.0 <2` are declared; the maintained offline baseline is Node 26.12.0 on Pi 1.6.0. Runtime requires no npm dependencies; tooling/host links are checkout-only development helpers excluded from the tarball.
 `typecheck` covers `index.ts` and both runtime modules (`checkJs`). Test files are deliberately outside the project: their synthetic timers and partial host contexts are loose on purpose, and requiring them to satisfy `setTimeout`/`ExtensionCommandContext` would fake fidelity without testing anything.
 
 ## Module boundaries

@@ -18,7 +18,7 @@ pi-memoria gives Pi one memory shared across every project: instructions that mu
 ## Requirements
 
 - **Node.js 22.19+** (uses `node:sqlite`; earlier baselines 22.19/24.20 are historical, and the maintained offline suite uses 26.12.0).
-- A Node-based **Pi** host at **`>=1.5.0 <2`**. The pinned development baseline is Pi 1.5.0, which the maintained offline suite uses. Standalone/Bun builds are not validated with `node:sqlite`.
+- A Node-based **Pi** host at **`>=1.6.0 <2`**. The pinned development baseline is Pi 1.6.0, which the maintained offline suite uses. Standalone/Bun builds are not validated with `node:sqlite`.
 - **ripgrep (`rg`)**, either on PATH or in Pi's managed `<agent-dir>/bin/` directory, for session search.
 
 ## Installation
@@ -172,7 +172,7 @@ Oversized tool results spill a private complete payload under the OS temporary d
 | Session match near the end of the corpus | 26.776 ms | 34.777 ms |
 | Absent session term, complete scan | 4.325 ms | 5.172 ms |
 
-`npm run bench` recreates this synthetic corpus in a temporary directory. These historical warm-cache medians were measured on Linux, Node 24.20, Ryzen 5 7500F, including `rg` startup; they are not current Node 26.12/Pi 1.5.0 acceptance evidence. Indexed lookups stay fast; scans grow with corpus size. Not a performance guarantee.
+`npm run bench` recreates this synthetic corpus in a temporary directory. These historical warm-cache medians were measured on Linux, Node 24.20, Ryzen 5 7500F, including `rg` startup; they are not current Node 26.12/Pi 1.6.0 acceptance evidence. Indexed lookups stay fast; scans grow with corpus size. Not a performance guarantee.
 
 </details>
 

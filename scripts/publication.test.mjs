@@ -15,6 +15,17 @@ const identities = new Map([
   ['pi-image', '@rcsaquino/pi-image'],
 ]);
 const read = path => readFileSync(path, 'utf8');
+/** The pinned Pi host a workflow installs; every workflow must install one explicitly. */
+function pinnedHost(source) {
+  const match = source.match(/@earendil-works\/pi-coding-agent@(\d+\.\d+\.\d+)/);
+  assert.ok(match, 'workflows must install a pinned Pi host version');
+  return match[1];
+}
+const compareVersions = (left, right) => {
+  const a = left.split('.').map(Number), b = right.split('.').map(Number);
+  for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return a[index] - b[index];
+  return 0;
+};
 const manifest = path => JSON.parse(read(path));
 const packages = [...identities].map(([directory, name]) => ({
   directory, name, root: join(root, 'packages', directory),
@@ -179,7 +190,7 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   assert.match(workflow, /package-manager-cache: false/);
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /@earendil-works\/pi-coding-agent@1\.5\.0/);
+  assert.match(workflow, /@earendil-works\/pi-coding-agent@\d+\.\d+\.\d+/);
   assert.match(workflow, /npm run link-host/);
   assert.match(workflow, /--prefer-online/);
   assert.match(workflow, /Pre-release versions are not published by this workflow/);
@@ -189,6 +200,18 @@ test('pi-memoria publication workflow is tag-gated, OIDC-scoped and action-pinne
   for (const other of ['pi-telegram', 'pi-idle-compaction', 'pi-background-task']) {
     assert.ok(!workflow.includes(other), `Workflow must not reference ${other}`);
   }
+});
+
+test('one Pi host pin is tested everywhere and satisfies the shared peer floor', () => {
+  const ci = pinnedHost(read(join(root, '.github/workflows/ci.yml')));
+  assert.equal(ci, pinnedHost(read(join(root, '.github/workflows/publish-pi-memoria.yml'))),
+    'the publication workflow must test the same Pi host as CI');
+  const ranges = new Set(packages.map(pkg => pkg.data.peerDependencies?.['@earendil-works/pi-coding-agent']));
+  assert.equal(ranges.size, 1, `every package must declare the same host peer range: ${[...ranges].join(', ')}`);
+  const [range] = ranges;
+  const floor = /^>=(\d+\.\d+\.\d+) </.exec(range ?? '')?.[1];
+  assert.ok(floor, `unexpected host peer range ${range}`);
+  assert.ok(compareVersions(ci, floor) >= 0, `pinned host ${ci} is below the declared floor ${range}`);
 });
 
 test('every declared peer is imported by the distributable source', () => {

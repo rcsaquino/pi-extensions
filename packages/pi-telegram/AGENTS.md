@@ -29,7 +29,7 @@ npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```
 
-The package has no `verify` script; root `npm run verify` combines its typecheck/test commands. The maintained offline baseline is Node 26.12.0 on Pi 1.5.0; use Linux `flock --no-fork`, ffmpeg for synthetic long-speech tests, and `mkfifo` for FIFO-trap coverage (those three cases skip when `mkfifo` is absent). Set `TELEGRAM_TEST_DIR` to approved isolated scratch when running tests directly. Test files are checkout-only and excluded from the tarball. Keep real `.env` values out of tests, output, and model context.
+The package has no `verify` script; root `npm run verify` combines its typecheck/test commands. The maintained offline baseline is Node 26.12.0 on Pi 1.6.0; use Linux `flock --no-fork`, ffmpeg for synthetic long-speech tests, and `mkfifo` for FIFO-trap coverage (those three cases skip when `mkfifo` is absent). Set `TELEGRAM_TEST_DIR` to approved isolated scratch when running tests directly. Test files are checkout-only and excluded from the tarball. Keep real `.env` values out of tests, output, and model context.
 
 ## Non-negotiable behavior
 

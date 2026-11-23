@@ -13,7 +13,7 @@ The npm package is `@rcsaquino/pi-image`; the source directory remains `pi-image
 ## Requirements
 
 - Node.js **22.6+**, as declared by this package; the maintained offline suite is exercised on Node 26.12.0.
-- A Node-based Pi host using the `@earendil-works` namespace. The maintained offline baseline is Pi 1.5.0.
+- A Node-based Pi host using the `@earendil-works` namespace. The maintained offline baseline is Pi 1.6.0.
 - An OpenRouter key, either `OPENROUTER_API_KEY` in a `.env` file or a login stored via Pi `/login` (`openrouter` entry in `<Pi agent directory>/auth.json`).
 
 Pi supplies the declared host peers. There are no runtime dependencies.

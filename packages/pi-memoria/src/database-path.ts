@@ -139,7 +139,15 @@ export function databasePath(input: string) {
         const held = fstatSync(fd), named = check();
         if (!held.isFile() || held.nlink !== 1 || !named || named.ino !== held.ino || named.dev !== held.dev) throw new Error("Database identity changed.");
         fchmodSync(fd, 0o600);
-      } finally { closeSync(fd); }
+      } catch (error) {
+        closeSync(fd);
+        throw error;
+      }
+      // POSIX releases every fcntl lock a process holds on a file when any
+      // descriptor for it is closed, including SQLite's SHARED lock. Keep this
+      // descriptor open until the caller closes the SQLite connection, so a
+      // concurrent connection cannot checkpoint and unlink a live WAL.
+      return fd;
     },
   };
 }

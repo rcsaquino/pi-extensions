@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { closeSync } from "node:fs";
 import { resolve } from "node:path";
 import { databasePath } from "./database-path.ts";
 import { APPLICATION_ID, INITIAL_SCHEMA, VERSION_TWO, attestSchema } from "./database-schema.ts";
@@ -49,6 +50,9 @@ export class MemoryDatabase {
   private db: DatabaseSync;
   private statements = new Map<string, StatementSync>();
   private closed = false;
+  // Held open for the connection's lifetime so POSIX does not release SQLite's
+  // SHARED lock when an unrelated descriptor to the same file is closed.
+  private lockFd: number | undefined;
 
   constructor(readonly path: string) {
     let location: ReturnType<typeof databasePath>;
@@ -78,7 +82,7 @@ export class MemoryDatabase {
         if (version < 2) this.db.exec(VERSION_TWO);
         this.db.exec(`PRAGMA application_id=${APPLICATION_ID};`);
       });
-      location.privateMode();
+      this.lockFd = location.privateMode();
       // A competing cold opener can take the writer lock between our schema
       // transaction and WAL selection. SQLite may return BUSY here immediately,
       // without invoking busy_timeout. Retry only that exact driver condition;
@@ -97,6 +101,7 @@ export class MemoryDatabase {
     } catch (error) {
       this.closed = true;
       try { this.db.close(); } catch { /* keep the original failure */ }
+      if (this.lockFd !== undefined) { try { closeSync(this.lockFd); } catch { /* keep the original failure */ } this.lockFd = undefined; }
       throw storeUnavailable("open", path, error);
     }
   }
@@ -279,6 +284,9 @@ export class MemoryDatabase {
     if (this.closed) return;
     this.closed = true;
     this.statements.clear();
-    this.db.close();
+    try { this.db.close(); }
+    finally {
+      if (this.lockFd !== undefined) { closeSync(this.lockFd); this.lockFd = undefined; }
+    }
   }
 }

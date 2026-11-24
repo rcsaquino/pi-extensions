@@ -68,9 +68,34 @@ test('suspension, disable, and shutdown clear timers', () => {
   s.c.setEnabled(true, s.ctx); assert.equal(s.timers.size, 1);
   s.c.shutdown(); assert.equal(s.timers.size, 0);
 });
-test('compaction and session reset invalidate old timers', () => {
+test('compaction and session replacement invalidate old timers', () => {
   const s = setup(); s.c.settled(s.ctx); s.c.compacted(); assert.equal(s.timers.size, 0);
   s.c.reset(s.ctx); assert.equal(s.timers.size, 1);
+});
+test('successful compaction invokes the handoff once after releasing its lease', async () => {
+  let released = 0, handoffs = 0, seen;
+  const s = setup(undefined, {
+    acquireBackgroundLease: async () => ({ release: async () => { released++; } }),
+    onCompacted: (result, ctx) => { handoffs++; seen = [result.summary, ctx]; },
+  });
+  s.c.settled(s.ctx); await s.fire();
+  const result = { summary: 'done' };
+  s.c.compacted(); // session_compact fires before onComplete
+  s.calls[0].onComplete(result);
+  await new Promise(setImmediate);
+  assert.equal(handoffs, 1); assert.equal(released, 1);
+  assert.deepEqual(seen, ['done', s.ctx]);
+  s.calls[0].onComplete(result);
+  await new Promise(setImmediate);
+  assert.equal(handoffs, 1, 'duplicate completion does not rotate twice');
+});
+test('failed compaction never invokes the handoff', async () => {
+  let handoffs = 0;
+  const s = setup(undefined, { onCompacted: () => { handoffs++; } });
+  s.c.settled(s.ctx); await s.fire();
+  s.calls[0].onError(Error('no'));
+  await new Promise(setImmediate);
+  assert.equal(handoffs, 0);
 });
 
 test('100,000 token boundary compacts and status reports the threshold', async () => {

@@ -4,7 +4,7 @@ export const MIN_TOKENS = 100_000;
 // Pure timer controller; Pi owns summarization, retained history, and prompts.
 // A background admission lease is held through compaction, not merely sampled.
 export function createIdleCompactor({ backgroundIdle = async _ctx => false,
-  acquireBackgroundLease = undefined, delay = IDLE_MS,
+  acquireBackgroundLease = undefined, onCompacted = undefined, delay = IDLE_MS,
   setTimer = setTimeout, clearTimer = clearTimeout }) {
   let timer, generation = 0, context, enabled = true, suspended = false;
   let attemptedLeaf, activeLease, state = 'waiting for a settled turn';
@@ -69,15 +69,19 @@ export function createIdleCompactor({ backgroundIdle = async _ctx => false,
     attemptedLeaf = originalLeaf;
     state = 'compaction requested';
     let finished = false;
-    const finish = async outcome => {
+    const finish = async (outcome, result) => {
       if (finished) return;
       finished = true;
       const released = await lease.release();
-      if (context === ctx && released) { stop(); state = outcome; }
+      if (context === ctx && released) {
+        stop();
+        state = outcome;
+        if (outcome === 'compacted') onCompacted?.(result, ctx);
+      }
     };
     try {
       ctx.compact({
-        onComplete: () => { void finish('compacted'); },
+        onComplete: result => { void finish('compacted', result); },
         onError: () => { void finish('failed; retry only after new conversation'); },
       });
     } catch { await finish('failed; retry only after new conversation'); }

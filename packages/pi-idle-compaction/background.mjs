@@ -66,27 +66,13 @@ export function registeredWorkIdle(sessionIds, scope = globalThis, nowMs = Date.
   // extend Map iteration indefinitely. Recheck after asynchronous provider admission.
   for (const [name, provider] of [...registry.providers]) {
     validateProvider(name, provider);
-    // Global providers cover work outside this session (for example detached
-    // background workers). They do not block same-session idle compaction.
-    if (provider.scope === 'global') continue;
-    const context = { sessionId: sessionIds[0], nowMs };
+    // Global providers cover detached work such as background workers. Any
+    // active global item defers compaction, even when it belongs to another
+    // session. Session providers block only when their items match this one.
+    const context = provider.scope === 'global' ? { nowMs } : { sessionId: sessionIds[0], nowMs };
     const items = snapshotWork(provider, context);
-    if (items.some(item => sessionIds.includes(item.sessionId))) return false;
-  }
-  return true;
-}
-
-export function registeredGlobalWorkIdle(root = globalThis, nowMs = Date.now()) {
-  const registry = root[Symbol.for(REGISTRY_KEY)];
-  if (registry === undefined) return true;
-  validateRegistry(registry);
-  for (const [name, provider] of [...registry.providers]) {
-    validateProvider(name, provider);
-    if (provider.scope !== 'global') continue;
-    // A global provider has no single owning session; it reports only while
-    // detached work in this process is alive.
-    const items = snapshotWork(provider, { nowMs });
-    if (items.length) return false;
+    if (provider.scope === 'global' ? items.length > 0 : items.some(item => sessionIds.includes(item.sessionId)))
+      return false;
   }
   return true;
 }
@@ -99,22 +85,6 @@ export function createBackgroundGuard({ scope = globalThis } = {}) {
     if (!registeredWorkIdle(sessionIds, scope)) return null;
     // Controller retains its admission-token interface. Snapshots are not an
     // exclusion lease and do not write any other extension's runtime state.
-    return { release: async () => {} };
-  };
-}
-
-export function createDailyResetGuard({ root = globalThis } = {}) {
-  return async ctx => {
-    try {
-      const sessionId = ctx.sessionManager.getSessionId();
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      const sessionIds = [...new Set([sessionFile, sessionId].filter(Boolean))];
-      if (!registeredWorkIdle(sessionIds, root)) return null;
-      if (!registeredGlobalWorkIdle(root)) return null;
-    } catch {
-      // Unknown background state fails closed for a destructive session switch.
-      return null;
-    }
     return { release: async () => {} };
   };
 }

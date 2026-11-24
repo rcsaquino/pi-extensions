@@ -18,7 +18,7 @@ One repository, five separately versioned Pi packages. Install only the extensio
 - **[pi-memoria](packages/pi-memoria/README.md)**: global startup rules, SQLite fact recall, and cited search across past conversations.
 - **[@rcsaquino/pi-telegram](packages/pi-telegram/README.md)**: standalone Telegram transport for one Pi session and one destination chat, mirroring settled turns, with attachments, steering, and explicitly requested voice replies.
 - **[@rcsaquino/pi-image](packages/pi-image/README.md)**: text-to-image and image-to-image generation via the OpenRouter Images API, using the stored OpenRouter login.
-- **[pi-idle-compaction](packages/pi-idle-compaction/README.md)**: native compaction after an eligible idle period, with conservative background-work checks.
+- **[pi-idle-compaction](packages/pi-idle-compaction/README.md)**: native compaction after an eligible idle period, then a fresh session seeded with the summary and retained tail.
 - **[@rcsaquino/pi-background-task](packages/pi-background-task/README.md)**: detached background forks of the current Pi session, with list, result, and kill tools plus settle notices.
 
 Each package owns its manifest, entry point, runtime dependencies, tests, README, and agent instructions. Versions and release readiness are independent; inclusion here does not imply npm publication or production activation.

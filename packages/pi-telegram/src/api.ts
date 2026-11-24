@@ -43,6 +43,10 @@ export interface TgChat { id: number; type: string }
 export interface TgQuote { text: string; position: number; is_manual?: boolean }
 /** Deliberately no external content projection: it is outside this private-chat boundary. */
 export interface TgExternalReply { origin: unknown; chat?: TgChat; message_id?: number }
+export interface TgRichMessage {
+  blocks?: unknown[];
+  is_rtl?: boolean;
+}
 export interface TgMessage {
   message_id: number;
   date: number;
@@ -54,6 +58,7 @@ export interface TgMessage {
   reply_to_message?: TgMessage;
   external_reply?: TgExternalReply;
   quote?: TgQuote;
+  rich_message?: TgRichMessage;
   text?: string;
   caption?: string;
   media_group_id?: string;

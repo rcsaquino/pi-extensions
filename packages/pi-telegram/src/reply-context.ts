@@ -109,6 +109,42 @@ function media(target: TgMessage, config: Config, resolved?: string): Media | un
     content: localPath ? "local copy available; contents not read into context"
       : "metadata only; not read, downloaded or transcribed" };
 }
+function richText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(richText).join("");
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  const text = richText(record.text);
+  if (text) return text;
+  return Array.isArray(record.blocks) ? richBlocks(record.blocks) : "";
+}
+// RichMessage echoes parsed blocks, not the markdown that was sent. Reconstruct
+// plain text from the documented text-bearing fields so a reply to a rich final
+// still has a body. Unknown blocks contribute nothing rather than guessing.
+function richBlocks(blocks: unknown[]): string {
+  const lines: string[] = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const record = block as Record<string, unknown>;
+    const parts: string[] = [];
+    const add = (value: unknown) => { const text = richText(value); if (text) parts.push(text); };
+    const addBlocks = (values: unknown[]) => {
+      const text = values.map(richText).filter(Boolean);
+      if (text.length) parts.push(text.join("\n"));
+    };
+    add(record.text); add(record.summary); add(record.caption);
+    if (Array.isArray(record.items)) addBlocks(record.items);
+    if (Array.isArray(record.blocks)) addBlocks(record.blocks);
+    if (Array.isArray(record.cells)) {
+      for (const row of record.cells) {
+        if (Array.isArray(row)) parts.push(row.map(cell => richText(cell && typeof cell === "object" ? (cell as Record<string, unknown>).text : cell)).join(" | "));
+      }
+    }
+    const text = parts.join("\n");
+    if (text) lines.push(text);
+  }
+  return lines.join("\n");
+}
 function reference(message: TgMessage, config: Config, botId?: number, resolvedMedia?: ReadonlyMap<number, string>): Reference | undefined {
   if (!message.reply_to_message && !message.external_reply && !message.quote) return;
   const base = { for_message_id: id(message.message_id) };
@@ -121,15 +157,16 @@ function reference(message: TgMessage, config: Config, botId?: number, resolvedM
   }
   const selectedQuote = message.quote ? { ...bounded(message.quote.text, REPLY_QUOTE_LIMIT, config),
     position_utf16: nonnegative(message.quote.position), is_manual: message.quote.is_manual === true } : undefined;
+  const rich = target.rich_message && Array.isArray(target.rich_message.blocks) ? richBlocks(target.rich_message.blocks) : "";
   const targetId = id(target.message_id);
   const mediaField = media(target, config, targetId === undefined ? undefined : resolvedMedia?.get(targetId));
   // reply_to_message officially contains Message, not MaybeInaccessibleMessage. Be
   // defensive about date=0/missing dates without pretending deleted content exists.
   if (!id(target.date)) return { ...base, message_id: id(target.message_id), status: "reply_target_unavailable", selected_quote: selectedQuote };
   return { ...base, message_id: id(target.message_id), status: "same_chat_reply", sender: sender(target, config, botId),
-    text: bounded(target.text, REPLY_TEXT_LIMIT, config), caption: bounded(target.caption, REPLY_CAPTION_LIMIT, config),
+    text: bounded(target.text || rich, REPLY_TEXT_LIMIT, config), caption: bounded(target.caption, REPLY_CAPTION_LIMIT, config),
     media: mediaField, selected_quote: selectedQuote,
-    ...(!target.text && !target.caption ? { content: mediaField?.local_path ? "text_unavailable; local_media_copy_available" : "text_unavailable; media_or_service_content_not_read" } : {}) };
+    ...(!target.text && !target.caption && !rich ? { content: mediaField?.local_path ? "text_unavailable; local_media_copy_available" : "text_unavailable; media_or_service_content_not_read" } : {}) };
 }
 
 /** Call only after inbound authentication. Also fail closed if used independently.

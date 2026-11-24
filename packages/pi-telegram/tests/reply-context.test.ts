@@ -51,6 +51,24 @@ test("captions and bounded media metadata describe content without reading old f
   assert.ok(references(context({ ...assistant(), text: undefined }))[0].statuses.includes("text_unavailable; media_or_service_content_not_read"));
 });
 
+test("rich-message targets render their block text instead of claiming text is unavailable", () => {
+  const plain = references(context({ ...assistant(), text: undefined, rich_message: { blocks: [
+    { type: "paragraph", text: "Understood, sir. I'll wait." },
+  ] } }))[0];
+  assert.equal(plain.body, "Understood, sir. I'll wait.");
+  assert.ok(!plain.statuses.includes("text_unavailable; media_or_service_content_not_read"));
+
+  const formatted = references(context({ ...assistant(), text: undefined, rich_message: { blocks: [
+    { type: "paragraph", text: [{ type: "bold", text: "Bold" }, " and plain"] },
+    { type: "list", items: [
+      { blocks: [{ type: "paragraph", text: "First item" }] },
+      { blocks: [{ type: "paragraph", text: "Second item" }] },
+    ] },
+    { type: "table", cells: [[{ text: "A" }, { text: "B" }]], caption: "Counts" },
+  ] } }))[0];
+  assert.equal(formatted.body, "Bold and plain\nFirst item\nSecond item\nCounts\nA | B");
+});
+
 test("one-level context ignores nested reply chains and other unrelated fields", () => {
   const target = { ...assistant(), reply_to_message: message(50, "Nested chain must never appear"),
     external_reply: { origin: { type: "hidden_user", sender_user_name: "Never appear" } } };

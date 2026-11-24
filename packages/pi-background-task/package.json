@@ -1,7 +1,7 @@
 {
   "name": "@rcsaquino/pi-background-task",
   "version": "0.1.0",
-  "description": "Fork the current Pi session into a detached background worker, with list, result and kill tools plus settle notices.",
+  "description": "Fork the current Pi session into a detached background worker, with list, result, wait and kill tools plus settle notices.",
   "type": "module",
   "license": "MIT",
   "publishConfig": { "access": "public" },

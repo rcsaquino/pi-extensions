@@ -97,6 +97,23 @@ test("one overdue reminder, and background_eta rebases the window", async t => {
   stop();
 });
 
+test("a silent run sends no ETA reminder", async t => {
+  const { root, children } = await setup(t);
+  const id = "bg-20261107-120000-etasilent";
+  const child = spawnLive(id); children.push(child);
+  const run = meta(id, root, {
+    pid: child.pid!, notify: false, startedAt: new Date(Date.now() - 11 * 60_000).toISOString(), etaMinutes: 10,
+  });
+  await prepareRun(run);
+  const { notices, start, stop } = harness(root);
+
+  await start();
+  await delay(2600);
+  assert.equal(notices.length, 0, "a notify:false run must not remind");
+  assert.equal((await readMeta(PARENT, id))?.reminders, undefined);
+  stop();
+});
+
 test("ten parallel ETA revisions all land on one valid record", async t => {
   const { root, children } = await setup(t);
   const id = "bg-20261107-120000-etaten";

@@ -22,9 +22,15 @@ test("truncate keeps short text and flags long text", () => {
   assert.match(long, /^x{10}\n\[truncated\]$/);
 });
 
-test("shouldNotify silences only explicit kills", () => {
+test("shouldNotify silences only explicit kills by default", () => {
   assert.equal(shouldNotify({ status: "killed" }), false);
   for (const status of ["done", "failed", "unknown", "running"] as const) assert.equal(shouldNotify({ status }), true, status);
+});
+
+test("shouldNotify silences a run that opted out", () => {
+  assert.equal(shouldNotify({ status: "done", notify: false }), false);
+  assert.equal(shouldNotify({ status: "failed", notify: false }), false);
+  assert.equal(shouldNotify({ status: "done", notify: true }), true);
 });
 
 test("buildNotice carries id, status, duration and report excerpt", () => {

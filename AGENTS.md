@@ -8,7 +8,7 @@ This is a private npm workspace containing five independent Pi extension package
 - `packages/pi-telegram`: `@rcsaquino/pi-telegram`, transport, media, and explicit speech delivery.
 - `packages/pi-image`: `@rcsaquino/pi-image`, text-to-image and image-to-image generation via the OpenRouter Images API.
 - `packages/pi-idle-compaction`: native idle compaction, session handoff, and admission guards.
-- `packages/pi-background-task`: `@rcsaquino/pi-background-task`, detached background forks of the current Pi session with list, result, and kill tools plus settle notices.
+- `packages/pi-background-task`: `@rcsaquino/pi-background-task`, detached background forks of the current Pi session with list, result, wait, and kill tools plus settle notices.
 - `scripts/workspaces.mjs`: sequential shared verification runner.
 - `scripts/link-host.mjs`: development-only missing/broken host dependency links.
 - `scripts/publication.test.mjs`: offline release-metadata, included-file, import-closure, documentation, and publication-workflow regression checks.

@@ -265,9 +265,22 @@ test("a provably pre-connect final is persisted and replayed once after restart"
   }
 });
 
-test("an ambiguous final is never queued and keeps the existing failure warning", { concurrency: false }, async t => {
+test("an ambiguous final retries once and succeeds without a warning", { concurrency: false }, async t => {
   const server = new Server();
   server.sendFailures = 1;
+  server.sendFailureCause = "ECONNRESET";
+  const h = await fixture(t, { server, retryDelays: [0, 0, 0] });
+  await until(() => h.bridge.status === "connected");
+  server.feed(message(1, "Ambiguous final"));
+  await until(() => h.submissions.length === 1);
+  await h.finish("Ambiguous final.");
+  assert.equal(server.texts().filter(item => item.text === "Ambiguous final.").length, 2, "one failed attempt plus one successful retry");
+  assert.equal(h.notices.length, 0, "a successful retry must not warn");
+});
+
+test("an ambiguous final that fails twice is never queued and keeps the existing failure warning", { concurrency: false }, async t => {
+  const server = new Server();
+  server.sendFailures = 2;
   server.sendFailureCause = "ECONNRESET";
   const h = await fixture(t, { server, retryDelays: [0, 0, 0] });
   await until(() => h.bridge.status === "connected");
@@ -277,6 +290,7 @@ test("an ambiguous final is never queued and keeps the existing failure warning"
   const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
   const pending = resolve(h.dir, "state", bot, "pending-finals.json");
   await assert.rejects(readFile(pending, "utf8"), /ENOENT/);
+  assert.equal(server.texts().filter(item => item.text === "Ambiguous final.").length, 2, "the retry is bounded to one extra attempt");
   assert.ok(server.texts().some(item => item.text.includes("Delivery outcome unknown")));
   assert.equal(h.notices.length, 1);
 });
@@ -1283,7 +1297,11 @@ test("durable final failure and its separately acknowledged warning share reply 
   let sends = 0;
   server.fetch = async (url, init) => {
     const response = await original(url, init);
-    if (String(url).endsWith("/sendRichMessage") && ++sends === 1) throw new Error(`PRIVATE synthetic provider body https://api.telegram.org/bot${config.token}/sendRichMessage ${config.groqKey} ${config.elevenKey}`, { cause: { code: "UND_ERR_SOCKET" } });
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+    const text = String(body.rich_message?.markdown ?? "");
+    if (String(url).endsWith("/sendRichMessage") && text.includes("PRIVATE generated final") && ++sends <= 2) {
+      throw new Error(`PRIVATE synthetic provider body https://api.telegram.org/bot${config.token}/sendRichMessage ${config.groqKey} ${config.elevenKey}`, { cause: { code: "UND_ERR_SOCKET" } });
+    }
     return response;
   };
   const h = await fixture(t, { server }); h.server.feed(message()); await until(() => h.submissions.length === 1);
@@ -1296,14 +1314,15 @@ test("durable final failure and its separately acknowledged warning share reply 
   assert.notEqual(warning.delivery, failed.delivery);
   assert.ok(records.some(r => r.phase === "generated" && r.reply === failed.reply && r.outcome === "not_applicable"));
   assert.ok(!records.some(r => r.phase === "sent" && r.operation === "reply"));
-  assert.equal(sends, 2, "one uncertain original and one warning, never an original replay");
-  assert.deepEqual(records.filter(r => r.operation === "reply").map(r => r.phase), ["generated", "settled", "send_attempt", "api_attempt", "api_failed", "send_failed"]);
+  assert.equal(sends, 2, "two uncertain final attempts, never a third replay");
+  assert.deepEqual(records.filter(r => r.operation === "reply").map(r => r.phase), ["generated", "settled", "send_attempt", "api_attempt", "api_failed", "api_attempt", "api_failed", "send_failed"]);
   assert.deepEqual(records.filter(r => r.operation === "warning").map(r => r.phase), ["send_attempt", "api_attempt", "api_ack", "sent"]);
   assert.equal(h.notices.length, 1, "real delivery failure still reaches the UI");
   assert.match(h.notices[0], /TG_TRANSPORT_FAILED.*Delivery outcome unknown/);
-  assert.match(h.server.texts()[1].text, /TG_TRANSPORT_FAILED.*Delivery outcome unknown/);
+  const warningText = h.server.texts().find(item => item.text.includes("Delivery outcome unknown"))!.text;
+  assert.match(warningText, /TG_TRANSPORT_FAILED.*Delivery outcome unknown/);
   for (const privateValue of ["PRIVATE", "synthetic provider body", "https://api.telegram.org", config.token, config.groqKey!, config.elevenKey!, h.dir]) {
-    assert.ok(!JSON.stringify({ records, notices: h.notices, warning: h.server.texts()[1].text }).includes(privateValue));
+    assert.ok(!JSON.stringify({ records, notices: h.notices, warning: warningText }).includes(privateValue));
   }
   await h.bridge.stop();
   assertConsoleSilent(terminal);

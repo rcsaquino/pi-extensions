@@ -183,9 +183,9 @@ test("diagnostic persistence failures and throwing observers never change delive
   const api = f.api(async () => { calls++; return ok(); }); await api.sendText(123, "SYNTHETIC", new AbortController().signal);
   assert.equal(calls, 1); await f.read(); assert.ok(f.ledger.dropped >= 4); assert.equal(await readFile(f.ledger.path, "utf8"), "PRIVATE");
   const broken = { append() { throw new Error("PRIVATE"); } } as unknown as DeliveryLedger;
-  const throwing = new TelegramApi(f.config, async () => { calls++; throw new Error("PRIVATE", { cause: { code: "ECONNRESET" } }); }, broken);
+  const throwing = new TelegramApi(f.config, async () => { calls++; throw new Error("PRIVATE", { cause: { code: "ECONNRESET" } }); }, broken, [0]);
   await assert.rejects(throwing.sendText(123, "SYNTHETIC", new AbortController().signal), e => e instanceof TransportFailure && e.causeCode === "ECONNRESET");
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
 });
 
 test("provably pre-connect send failures retry through the bounded schedule and never duplicate", async t => {
@@ -234,7 +234,7 @@ test("an ambiguous final and a partially delivered final are never offered to th
   const first = ambiguous.api(async () => { ambiguousCalls++; throw new Error("PRIVATE", { cause: { code: "ECONNRESET" } }); }, [0, 0, 0]);
   await assert.rejects(first.sendText(123, "SYNTHETIC", new AbortController().signal, undefined, async text => { ambiguousQueued = text; }),
     error => error instanceof TransportFailure && !error.queuedForRetry);
-  assert.equal(ambiguousCalls, 1); assert.equal(ambiguousQueued, undefined);
+  assert.equal(ambiguousCalls, 2); assert.equal(ambiguousQueued, undefined);
 
   const partial = await fixture(t); let partialCalls = 0; let partialQueued: string | undefined;
   const second = partial.api(async () => {
@@ -247,14 +247,14 @@ test("an ambiguous final and a partially delivered final are never offered to th
   assert.equal(partialCalls, 5); assert.equal(partialQueued, undefined);
 });
 
-test("ambiguous outgoing failures are never retried", async t => {
+test("ambiguous single text failures retry exactly once before reporting", async t => {
   const f = await fixture(t); let calls = 0;
   const api = f.api(async () => { calls++; throw new Error("PRIVATE", { cause: { code: "ECONNRESET" } }); });
   await assert.rejects(api.sendText(123, "SYNTHETIC", new AbortController().signal), error => {
     assert.ok(error instanceof TransportFailure); assert.equal(error.deliveryOutcome, "unknown");
     assert.match(error.message, /Delivery outcome unknown/); return true;
   });
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
 });
 
 test("pre-connect retry reuses a media upload body without duplicating it", async t => {
@@ -301,8 +301,8 @@ test("actual fetch throws with cyclic, hostile or secret-bearing exceptions reta
   for (const exception of [cycle, hostile, proxy, new Error(f.config.token, { cause: { code: "ERR_TLS_CERT_ALTNAME_INVALID", message: f.config.token } })]) {
     await assert.rejects(f.api(async () => { calls++; throw exception; }).sendText(123, "PRIVATE reply", new AbortController().signal), e => e instanceof TransportFailure && !e.message.includes(f.config.token));
   }
-  const records = await f.read(); assert.equal(calls, 4); assert.equal(getters, 0);
-  assert.deepEqual(records.filter(r => r.phase === "api_failed").map(r => r.cause), ["unknown", "unknown", "unknown", "ERR_TLS_CERT_ALTNAME_INVALID"]);
+  const records = await f.read(); assert.equal(calls, 8); assert.equal(getters, 0);
+  assert.deepEqual(records.filter(r => r.phase === "api_failed").map(r => r.cause), ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_TLS_CERT_ALTNAME_INVALID"]);
   for (const privateValue of [f.config.token, "PRIVATE", "https:", "stack", "message"]) assert.ok(!JSON.stringify(records).includes(privateValue));
 });
 

@@ -27,6 +27,10 @@ test("settled runs and missing ETAs are never due", () => {
   assert.equal(reminderState({ ...base, etaMinutes: 0 }, start + 60 * 60_000), "none");
 });
 
+test("a silent run is never due", () => {
+  assert.equal(reminderState({ ...base, notify: false }, start + 60 * 60_000), "none");
+});
+
 test("an unanswered reminder becomes an error at the next interval", () => {
   const sentAt = start + 10 * 60_000;
   const sent: RunMeta = { ...base, reminders: 1, lastReminderAt: new Date(sentAt).toISOString(), etaPending: new Date(sentAt).toISOString() };

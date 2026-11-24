@@ -119,11 +119,13 @@ test("a definitive rich rejection falls back to one legacy send, never a duplica
   assert.deepEqual(calls[1].body.entities.map((entity: any) => entity.type), ["bold", "code"]);
 });
 
-test("an ambiguous rich transport failure is never replayed through the legacy path", async () => {
+test("an ambiguous rich transport failure retries once and is never replayed through the legacy path", async () => {
   let calls = 0;
-  const api = new TelegramApi(config, async () => { calls++; throw new Error("offline", { cause: { code: "ECONNRESET" } }); });
+  const urls: string[] = [];
+  const api = new TelegramApi(config, async url => { calls++; urls.push(String(url)); throw new Error("offline", { cause: { code: "ECONNRESET" } }); }, undefined, [0]);
   await assert.rejects(api.sendText(123, "hello", signal), /TG_TRANSPORT_FAILED/);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+  assert.ok(urls.every(url => url.endsWith("/sendRichMessage")), "the retry must not fall back to sendMessage");
 });
 
 test("multiple photos/videos are one captionless sendMediaGroup operation", async () => {

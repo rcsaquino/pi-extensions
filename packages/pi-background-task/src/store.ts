@@ -18,6 +18,8 @@ export interface RunMeta {
   status: RunStatus;
   exitCode?: number | null;
   notified?: boolean;
+  /** False when the caller does not want a settle notice or ETA reminder. */
+  notify?: boolean;
   note?: string;
   /** Caller's expected runtime; a reminder arrives when the run passes it. */
   etaMinutes?: number;
@@ -148,6 +150,7 @@ function record(value: unknown, id: string): RunMeta | undefined {
     ...(timestamp(raw.finishedAt) ? { finishedAt: raw.finishedAt } : {}),
     ...(raw.exitCode === null || nonNegativeInteger(raw.exitCode) ? { exitCode: raw.exitCode as number | null } : {}),
     ...(typeof raw.notified === "boolean" ? { notified: raw.notified } : {}),
+    ...(typeof raw.notify === "boolean" ? { notify: raw.notify } : {}),
     ...(typeof raw.note === "string" ? { note: raw.note } : {}),
     ...(typeof raw.etaMinutes === "number" && Number.isFinite(raw.etaMinutes) && raw.etaMinutes > 0 ? { etaMinutes: raw.etaMinutes } : {}),
     ...(timestamp(raw.etaFrom) ? { etaFrom: raw.etaFrom } : {}),

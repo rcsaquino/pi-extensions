@@ -170,6 +170,7 @@ export class TelegramApi {
     const outgoing = ["sendMessage", "sendRichMessage", "sendDocument", "sendPhoto", "sendVideo", "sendVoice", "sendMediaGroup"].includes(method);
     const base = { ...(outgoing ? this.context(context) : { operation: "incoming" as const }), method: methods.includes(method as typeof methods[number]) ? method as typeof methods[number] : "other" as const,
       chunk, chunks, album };
+    let ambiguousTextRetried = false;
     for (let attempt = 0; ; attempt++) {
       let rejected = false;
       try {
@@ -210,6 +211,22 @@ export class TelegramApi {
         } catch { /* Hostile local errors keep their original identity. */ }
         if (retryable) {
           await delay(this.retryDelays[attempt], undefined, { signal });
+          continue;
+        }
+        // A single text final is safe to retry once when the outcome is ambiguous. The operator
+        // accepts a possible duplicate over an uncertain missing message. Chunked sends and
+        // attachments keep the no-replay policy because a duplicate would be partial or large.
+        const retryAmbiguousText = !ambiguousTextRetried && !signal.aborted && chunks === 1 &&
+          (method === "sendRichMessage" || method === "sendMessage") &&
+          error instanceof TransportFailure && error.code === "TG_TRANSPORT_FAILED" &&
+          error.deliveryOutcome === "unknown";
+        if (retryAmbiguousText) {
+          ambiguousTextRetried = true;
+          try {
+            await delay(this.retryDelays[0] ?? 1_000, undefined, { signal });
+          } catch {
+            throw error;
+          }
           continue;
         }
         throw error;

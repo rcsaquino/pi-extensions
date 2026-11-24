@@ -39,7 +39,7 @@ test("a record missing what the store relies on is absent, never half-trusted", 
 
 test("wrong-typed optional fields are dropped and unknown keys ignored", async () => {
   await persisted("bg-meta-optional", valid("bg-meta-optional", {
-    notified: "yes", finishedAt: "not-a-date", etaMinutes: "10", reminders: -1, futureField: true,
+    notified: "yes", notify: "no", finishedAt: "not-a-date", etaMinutes: "10", reminders: -1, futureField: true,
     note: 7, status: "done",
   }));
 
@@ -47,10 +47,15 @@ test("wrong-typed optional fields are dropped and unknown keys ignored", async (
   assert.ok(meta, "a record with a coherent core stays readable");
   assert.equal(meta.status, "done");
   assert.equal(meta.pid, 4242);
-  for (const key of ["notified", "finishedAt", "etaMinutes", "reminders", "note"] as const) {
+  for (const key of ["notified", "notify", "finishedAt", "etaMinutes", "reminders", "note"] as const) {
     assert.equal(meta[key], undefined, `${key} must not survive with the wrong type`);
   }
   assert.equal("futureField" in meta, false, "keys from another version are not promoted");
+});
+
+test("a valid silent flag is preserved", async () => {
+  await persisted("bg-meta-silent", valid("bg-meta-silent", { notify: false, status: "running" }));
+  assert.equal((await readMeta(parent, "bg-meta-silent"))?.notify, false);
 });
 
 test("an untrusted record cannot be pruned as though it had settled", async () => {

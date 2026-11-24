@@ -4,9 +4,9 @@ import { formatDuration } from "./store.ts";
 export const NOTICE_EXCERPT = 1200;
 export const DEFAULT_ETA_MINUTES = 10;
 
-/** Explicit kills settle silently; every other settled run still reports. */
-export function shouldNotify(meta: Pick<RunMeta, "status">): boolean {
-  return meta.status !== "killed";
+/** Explicit kills and silent runs settle without a notice. */
+export function shouldNotify(meta: Pick<RunMeta, "status" | "notify">): boolean {
+  return meta.status !== "killed" && meta.notify !== false;
 }
 
 export function truncate(text: string, max: number): string {
@@ -21,10 +21,10 @@ export type ReminderState = "none" | "remind" | "missing";
 
 /** What a running task is owed right now: nothing, a reminder, or an ETA error. */
 export function reminderState(
-  meta: Pick<RunMeta, "status" | "startedAt" | "etaMinutes" | "etaFrom" | "reminders" | "lastReminderAt" | "etaPending">,
+  meta: Pick<RunMeta, "status" | "notify" | "startedAt" | "etaMinutes" | "etaFrom" | "reminders" | "lastReminderAt" | "etaPending">,
   now = Date.now(),
 ): ReminderState {
-  if (meta.status !== "running") return "none";
+  if (meta.status !== "running" || meta.notify === false) return "none";
   const eta = meta.etaMinutes;
   if (!eta || !Number.isFinite(eta) || eta <= 0) return "none";
   const base = Date.parse(meta.etaFrom ?? meta.startedAt);

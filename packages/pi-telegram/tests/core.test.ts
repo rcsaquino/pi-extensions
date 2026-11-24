@@ -237,9 +237,20 @@ test("API errors never expose Telegram description, including secrets", async ()
   await assert.rejects(api.call("getUpdates", {}, signal), error => error instanceof ApiError && error.code === 409 && !error.message.includes(config.token));
 });
 
-test("ambiguous outgoing network failures are precise, unknown, secret-free and not retried", async () => {
+test("an ambiguous single text final retries once and can succeed", async () => {
   let count = 0;
-  const api = new TelegramApi(config, async () => { count++; throw new Error(`network down ${config.token} https://private.example/path`); });
+  const api = new TelegramApi(config, async () => {
+    count++;
+    if (count === 1) throw new Error("Synthetic lost acknowledgement", { cause: { code: "ECONNRESET" } });
+    return ok({ message_id: 1 });
+  }, undefined, [0]);
+  await api.sendText(123, "hello", signal);
+  assert.equal(count, 2, "a single ambiguous text send gets exactly one retry");
+});
+
+test("an ambiguous single text final retries once then reports the unknown outcome safely", async () => {
+  let count = 0;
+  const api = new TelegramApi(config, async () => { count++; throw new Error(`network down ${config.token} https://private.example/path`, { cause: { code: "ECONNRESET" } }); }, undefined, [0]);
   await assert.rejects(api.sendText(123, "hello", signal), error => {
     assert.match((error as Error).message, /TG_TRANSPORT_FAILED/);
     assert.match((error as Error).message, /Delivery outcome unknown/);
@@ -248,7 +259,21 @@ test("ambiguous outgoing network failures are precise, unknown, secret-free and 
     assert.ok(!(error as Error).message.includes("deadline elapsed"));
     return true;
   });
-  assert.equal(count, 1);
+  assert.equal(count, 2, "the retry is bounded to one extra attempt");
+});
+
+test("a multi-chunk text send is never retried after an ambiguous failure", async () => {
+  let count = 0;
+  const api = new TelegramApi(config, async () => { count++; throw new Error("Synthetic lost chunk", { cause: { code: "ECONNRESET" } }); }, undefined, [0]);
+  await assert.rejects(api.call("sendMessage", { chat_id: 123, text: "part" }, signal, 45_000, undefined, undefined, 1, 2), /TG_TRANSPORT_FAILED/);
+  assert.equal(count, 1, "a chunk with later parts is not replayed");
+});
+
+test("an ambiguous attachment send is never retried", async () => {
+  let count = 0;
+  const api = new TelegramApi(config, async () => { count++; throw new Error("Synthetic lost upload", { cause: { code: "ECONNRESET" } }); }, undefined, [0]);
+  await assert.rejects(api.call("sendDocument", new FormData(), signal), /TG_TRANSPORT_FAILED/);
+  assert.equal(count, 1, "attachments stay at the no-replay boundary");
 });
 
 test("outgoing deadline, cancellation and unreadable acknowledgements do not invent delivery outcomes", async () => {

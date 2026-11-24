@@ -64,6 +64,24 @@ test("recover silences an unnotified killed run and never announces it", async (
   assert.ok(settled?.finishedAt);
 });
 
+test("recover never announces a silent settled run and marks it notified", async (t) => {
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const run = meta("bg-20261102-000000-silent1", {
+    status: "done", exitCode: 0, finishedAt: "2026-11-02T00:12:00.000Z", notified: false, notify: false,
+  });
+  await prepareRun(run);
+  await writeFile(reportPath(PARENT, run.id), "silent report\n");
+  const { notices, start } = harness();
+
+  await start();
+  await delay(900);
+
+  assert.equal(notices.length, 0, "a notify:false run must not produce a follow-up turn");
+  const settled = await readMeta(PARENT, run.id);
+  assert.equal(settled?.status, "done");
+  assert.equal(settled?.notified, true, "silence must not be retried on the next start");
+});
+
 test("background_kill on an already-dead run settles silently as killed", async (t) => {
   t.after(() => rm(root, { recursive: true, force: true }));
   const run = meta("bg-20261102-000000-kill02");

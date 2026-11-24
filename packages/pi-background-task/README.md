@@ -32,21 +32,23 @@ Run `/reload` in an idle session to activate it. If the worker binary is not `pi
 
 | Tool | Purpose |
 |---|---|
-| `background_task` | Fork `PI_SESSION_FILE` into a detached `pi -p` run and return a run id |
+| `background_task` | Fork `PI_SESSION_FILE` into a detached `pi -p` run and return a run id; `notify: false` makes a helper run settle silently |
 | `background_eta` | Rebase a running task's ETA from now and restart its reminder window |
-| `background_list` | Status, elapsed time, pid, and report path for this session's runs |
+| `background_list` | Status, silent marker, elapsed time, pid, and report path for this session's runs |
 | `background_result` | Paged report text, with stderr tail fallback when nothing was produced |
+| `background_wait` | Wait for a run to settle, claim it, and return its report; times out as still-running |
 | `background_kill` | SIGTERM the process group, SIGKILL after 4s |
 
 ## Behavior
 
 - Command: `$PI_BACKGROUND_PI` (default `pi`) `--fork <session file> --session-id <run id> --name <title> -p <prompt>` with `detached: true`, so the worker survives this process. `<prompt>` is the caller's task prefixed by a fixed operational note: the worker is detached, cannot ask questions, must end with a report, and must not nest dispatch unless the task requires it.
 - The note travels in the user message, so the system prompt and forked history stay byte-identical to the parent for prompt caching.
-- Every dispatch carries `eta_minutes` (default 10). A run still going past its ETA sends a follow-up turn asking for a revised estimate to relay, then keeps checking once per current estimate. `background_eta` rebases that window from now, so the next check follows the new promise. If no estimate is recorded by the next interval, the run raises an ETA error instead of another reminder, and repeats it until one lands or the run is killed. A run that beats its ETA sends only the settle notice. The reminder carries facts and the obligation to tell the user; wording is left to the agent.
-- One notice per run, injected with `pi.sendMessage(..., { triggerTurn: true, deliverAs: "followUp" })`, carrying a 1,200 character excerpt and the run id. A run explicitly cancelled with `background_kill` settles silently: no follow-up notice, but its report and `background_result` stay available.
+- Every dispatch carries `eta_minutes` (default 10). A run still going past its ETA sends a follow-up turn asking for a revised estimate to relay, then keeps checking once per current estimate. `background_eta` rebases that window from now, so the next check follows the new promise. If no estimate is recorded by the next interval, the run raises an ETA error instead of another reminder, and repeats it until one lands or the run is killed. A run that beats its ETA sends only the settle notice. The reminder carries facts and the obligation to tell the user; wording is left to the agent. A run dispatched with `notify: false` sends neither reminder nor settle notice.
+- One notice per run by default, injected with `pi.sendMessage(..., { triggerTurn: true, deliverAs: "followUp" })`, carrying a 1,200 character excerpt and the run id. A run explicitly cancelled with `background_kill` settles silently: no follow-up notice, but its report and `background_result` stay available. A run dispatched with `notify: false` also settles silently and records `notified: true`, so recovery never retries it.
+- `background_wait` claims a running run before waiting by persisting `notify: false`, then polls until it settles or `timeout_seconds` expires (default 120). The claim suppresses the settle notice and ETA reminder, including after a timeout. A settled run is read without mutation. A timed-out wait says the run is now silent and requires another wait or result read; `background_list` marks every silent run. The report page and stderr fallback are shared with `background_result`.
 - At most four concurrent runs per session, and at most two nesting levels.
 - No timeout. A stuck run is stopped with `background_kill`.
-- Runs are recovered on `session_start`: a dead pid finalizes the run, an unnotified result is re-sent.
+- Runs are recovered on `session_start`: a dead pid finalizes the run, an unnotified result is re-sent unless the run opted out with `notify: false`.
 - A running worker is visible to `pi-idle-compaction` through a process-local global-scope provider. That package defers idle compaction while any worker is alive. The provider is inert when the idle-compaction package is absent; it does not change the prompt, tools, or run lifecycle.
 - Artifacts are pruned on `session_start` and after recovery: a settled run is deleted when it is older than 30 days or beyond the newest 25 runs for that session, whichever comes first. Running runs and runs whose notice was never delivered are never deleted. The forked sessions are not touched.
 
@@ -56,7 +58,7 @@ Artifacts live outside the session store:
 
 ```
 <agent dir>/background/<parent session id>/<run id>/
-  meta.json    status, pid, timestamps, exit code, notified flag
+  meta.json    status, pid, timestamps, exit code, notified and notify flags
   task.md      the dispatched prompt (note plus task)
   report.md    worker stdout (the final answer)
   stderr.log   worker stderr

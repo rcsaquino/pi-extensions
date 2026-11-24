@@ -45,7 +45,7 @@ The package has no `verify` script; root `npm run verify` combines its typecheck
 - Never add captions. A compatible multi-file request is one album; invalid combinations fail before sending. Intentional silence and attachment-only empty finals are valid.
 - Retain exact configured ElevenLabs voice/model and native OGG/Opus. Do not silently downgrade, transcode valid `.oga` inputs unnecessarily, or add enhancement model calls.
 - Preserve secret-path/content checks, resolved-target boundaries, bounded media/text sizes, UTF-16 entity offsets, and emoji/tag-safe splitting.
-- Never return raw provider response bodies, authenticated URLs, exception details, or configured secret values. Do not retry an ambiguous outgoing send as though it certainly failed; a failure proven to occur before a connection may retry once.
+- Never return raw provider response bodies, authenticated URLs, exception details, or configured secret values. Do not retry an ambiguous outgoing send as though it certainly failed; a failure proven to occur before a connection receives bounded retries, and a whole final may be saved once to `pending-finals.json` for replay after a successful poll. A chunked final with any acknowledged part is never replayed.
 - Delivery records contain only random/task IDs and closed labels/counters. Generation, task result retrieval and partial API acknowledgment are not whole-operation acknowledgment or phone receipt. Keep separate warning/attachment correlation, uncertain crash outcomes, fixed namespace/size/retention bounds, safe read-only tool annotations and best-effort logging that cannot change transport results. Routine delivery traces belong only in the ledger, never direct stdout/stderr or routine UI notifications; retain real user-facing errors. The API owns send-phase records; do not duplicate them in the bridge. Never reconstruct a destination or turn identity from the ledger.
 
 ## Testing and review
@@ -53,7 +53,7 @@ The package has no `verify` script; root `npm run verify` combines its typecheck
 Add regression cases in the corresponding suite:
 
 - `prompt-guidelines.test.ts`: Telegram-origin gating and the `<pi_telegram>` section, so local/custom turns receive no Telegram-specific guidance and `<rules>` stays untouched.
-- `bridge.test.ts`: ordering, steering, albums, lifecycle, mirrored turns, final/voice-only delivery.
+- `bridge.test.ts`: ordering, steering, albums, lifecycle, mirrored turns, final/voice-only delivery, and persistent pre-connect final replay.
 - `connection-lease.test.ts`: cross-process ownership, cancellation, crashes, and no takeover.
 - `delivery-ledger.test.ts`: cause redaction/hostile errors, per-chunk/multipart outcomes, explicit 429 plus provably pre-connect retries, secure corruption/retention/concurrent persistence and logging failure isolation. `delivery-ledger-jsonl.test.ts` additionally checks JSONL ordering/filtering, byte/count/tail bounds, trap nodes/ancestor swaps, real cross-process compaction, SIGKILL recovery, read-only legacy inspection and guarded offline conversion. `report-sdk.test.ts` verifies standalone mirroring of Telegram, local and extension-notice turns through actual host events.
 - `core.test.ts`: config, authentication, redaction, media boundaries, transcription, and synthesis contracts.

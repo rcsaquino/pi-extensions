@@ -36,6 +36,8 @@ export class DeliveryRefusal extends SafeError {
 
 export type TransportFailureCode = "TG_TRANSPORT_CANCELLED" | "TG_TRANSPORT_TIMEOUT" | "TG_TRANSPORT_FAILED" | "TG_TRANSPORT_RESPONSE";
 export class TransportFailure extends SafeError {
+  /** Set only after a provably pre-connect final has been durably queued for a later attempt. */
+  queuedForRetry = false;
   constructor(readonly code: TransportFailureCode, readonly deliveryOutcome: "unknown" | "not_applicable", readonly causeCode: CauseCode = "unknown") {
     const reason = code === "TG_TRANSPORT_CANCELLED" ? "request was cancelled" : code === "TG_TRANSPORT_TIMEOUT" ? "request deadline elapsed"
       : code === "TG_TRANSPORT_RESPONSE" ? "response could not be confirmed" : "network request failed (cause unverified)";

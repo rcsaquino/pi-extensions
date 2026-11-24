@@ -18,7 +18,7 @@ async function fixture(t: test.TestContext) {
   const ledger = new DeliveryLedger(resolve(root, "diagnostics"));
   const config: Config = { token: "SYNTHETIC-SECRET-TOKEN", allowed: new Set(["123"]), dataDir: root };
   const read = async () => { while (ledger.pendingWrites) await ledger.flush(); return (await readDeliveryLedger(ledger.path, { limit: 200 })).records; };
-  return { root, ledger, config, read, api: (fetcher: Fetch) => new TelegramApi(config, fetcher, ledger) };
+  return { root, ledger, config, read, api: (fetcher: Fetch, retryDelays?: readonly number[]) => new TelegramApi(config, fetcher, ledger, retryDelays) };
 }
 
 test("cause codes use only bounded own-data allowlist, never messages, getters, cycles or arbitrary codes", () => {
@@ -188,13 +188,13 @@ test("diagnostic persistence failures and throwing observers never change delive
   assert.equal(calls, 2);
 });
 
-test("provably pre-connect send failures retry once and never duplicate", async t => {
+test("provably pre-connect send failures retry through the bounded schedule and never duplicate", async t => {
   const f = await fixture(t); let calls = 0; const bodies: string[] = [];
   const api = f.api(async (_url, init) => {
     calls++;
     if (calls === 1) throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
     bodies.push(String(init!.body)); return ok();
-  });
+  }, [0, 0, 0]);
   await api.sendText(123, "SYNTHETIC", new AbortController().signal);
   assert.equal(calls, 2); assert.equal(bodies.length, 1);
   const records = await f.read();
@@ -208,16 +208,43 @@ test("provably pre-connect send failures retry once and never duplicate", async 
 
 test("exhausted pre-connect retries report a definite non-delivery", async t => {
   const f = await fixture(t); let calls = 0;
-  const api = f.api(async () => { calls++; throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }); });
+  const api = f.api(async () => { calls++; throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }); }, [0, 0, 0]);
   await assert.rejects(api.sendText(123, "SYNTHETIC", new AbortController().signal), error => {
     assert.ok(error instanceof TransportFailure); assert.equal(error.deliveryOutcome, "not_applicable");
     assert.doesNotMatch(error.message, /Delivery outcome unknown/); return true;
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
   const records = await f.read();
   assert.deepEqual(records.filter(r => r.phase === "api_failed").map(r => [r.attempt, r.outcome, r.cause]),
-    [[1, "not_applicable", "UND_ERR_CONNECT_TIMEOUT"], [2, "not_applicable", "UND_ERR_CONNECT_TIMEOUT"]]);
+    [[1, "not_applicable", "UND_ERR_CONNECT_TIMEOUT"], [2, "not_applicable", "UND_ERR_CONNECT_TIMEOUT"],
+      [3, "not_applicable", "UND_ERR_CONNECT_TIMEOUT"], [4, "not_applicable", "UND_ERR_CONNECT_TIMEOUT"]]);
   assert.equal(records.at(-1)!.phase, "send_failed"); assert.equal(records.at(-1)!.outcome, "not_applicable");
+});
+
+test("only an exhausted definite non-delivery is offered to the durable final queue", async t => {
+  const f = await fixture(t); let calls = 0; let queued: string | undefined;
+  const api = f.api(async () => { calls++; throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }); }, [0, 0, 0]);
+  await assert.rejects(api.sendText(123, "SYNTHETIC", new AbortController().signal, undefined, async text => { queued = text; }),
+    error => error instanceof TransportFailure && error.queuedForRetry);
+  assert.equal(calls, 4); assert.equal(queued, "SYNTHETIC");
+});
+
+test("an ambiguous final and a partially delivered final are never offered to the durable queue", async t => {
+  const ambiguous = await fixture(t); let ambiguousCalls = 0; let ambiguousQueued: string | undefined;
+  const first = ambiguous.api(async () => { ambiguousCalls++; throw new Error("PRIVATE", { cause: { code: "ECONNRESET" } }); }, [0, 0, 0]);
+  await assert.rejects(first.sendText(123, "SYNTHETIC", new AbortController().signal, undefined, async text => { ambiguousQueued = text; }),
+    error => error instanceof TransportFailure && !error.queuedForRetry);
+  assert.equal(ambiguousCalls, 1); assert.equal(ambiguousQueued, undefined);
+
+  const partial = await fixture(t); let partialCalls = 0; let partialQueued: string | undefined;
+  const second = partial.api(async () => {
+    partialCalls++;
+    if (partialCalls === 1) return ok();
+    throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
+  }, [0, 0, 0]);
+  await assert.rejects(second.sendText(123, "a".repeat(33_000), new AbortController().signal, undefined, async text => { partialQueued = text; }),
+    error => error instanceof TransportFailure && !error.queuedForRetry);
+  assert.equal(partialCalls, 5); assert.equal(partialQueued, undefined);
 });
 
 test("ambiguous outgoing failures are never retried", async t => {
@@ -236,7 +263,7 @@ test("pre-connect retry reuses a media upload body without duplicating it", asyn
     calls++;
     if (calls === 1) throw new Error("PRIVATE", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } });
     bodies.push(init!.body as FormData); return ok({ message_id: 1 });
-  });
+  }, [0, 0, 0]);
   await api.sendMedia(123, "document", Buffer.from("Synthetic"), "artifact.txt", new AbortController().signal);
   assert.equal(calls, 2); assert.equal(bodies.length, 1);
   assert.equal(bodies[0].get("chat_id"), "123"); assert.ok(bodies[0].get("document") instanceof Blob);

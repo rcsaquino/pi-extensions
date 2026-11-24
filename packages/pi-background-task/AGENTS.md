@@ -19,6 +19,7 @@ Tests are offline and cover prompt composition, notice framing, retention, settl
 
 - `index.ts`: tool registration, run admission, settle notices, and session-start recovery.
 - `src/store.ts`: run paths, atomic metadata writes, bounded reads, process identity checks, retention.
+- `src/background-work.ts`: process-local global-scope active-work provider for `pi-idle-compaction`.
 - `src/launch.ts`: detached spawn and process-group termination.
 - `src/notice.ts`: notice framing, excerpt truncation, and duration formatting.
 
@@ -32,6 +33,7 @@ Tests are offline and cover prompt composition, notice framing, retention, settl
 - One notice per settled run, sent with `sendMessage(..., { triggerTurn: true, deliverAs: "followUp" })` and a 1,200 character excerpt. An explicit `background_kill` settles silently and records `notified: true`, so it is never announced or retried; other runs keep a failed send as `notified: false` so `session_start` recovery retries.
 - `background_kill` signals the process group with SIGTERM and escalates to SIGKILL after four seconds. Never signal this process's own group.
 - `session_start` recovery finalizes dead running runs and resends unnotified reports. Retention keeps running runs and undelivered notices, and removes settled runs older than 30 days or beyond the newest 25.
+- `src/background-work.ts` registers one provider named `pi-background-task` under `Symbol.for('idle-compaction.background-work.v1')` with `scope: 'global'`. It reports only runs whose status is `running` and whose pid plus `PI_BACKGROUND_RUN` identity is alive. It never changes the prompt, tools, or run lifecycle, and it is inert when `pi-idle-compaction` is absent. The disposer runs on `session_shutdown` and removes only its own registration.
 - Liveness checks prefer the `PI_BACKGROUND_RUN` environment marker because Pi rewrites `process.title` and `/proc/<pid>/cmdline`. The cmdline check is only a fallback for callers without that marker.
 - Print mode does not stream; the report exists only after the worker settles.
 - The worker sees the conversation as of the fork and inherits the service environment. Never persist provider credentials or write another extension's runtime state.

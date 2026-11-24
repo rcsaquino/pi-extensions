@@ -20,6 +20,8 @@ export type Fetch = typeof globalThis.fetch;
 const preConnectCauses: ReadonlySet<CauseCode> = new Set([
   "UND_ERR_CONNECT_TIMEOUT", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH",
 ]);
+/** A short stall should not lose a final; each delay starts a fresh connect attempt. */
+const preConnectRetryDelays = [1_000, 4_000, 10_000] as const;
 
 export interface TgFile {
   file_id: string;
@@ -111,7 +113,8 @@ export function safeFilename(name: string): string {
 }
 
 export class TelegramApi {
-  constructor(readonly config: Config, private fetcher: Fetch = globalThis.fetch, private ledger?: DeliveryLedger) {}
+  constructor(readonly config: Config, private fetcher: Fetch = globalThis.fetch, private ledger?: DeliveryLedger,
+    private retryDelays: readonly number[] = preConnectRetryDelays) {}
 
   private observe(event: DeliveryEvent): void {
     // Do not yield to filesystem I/O inside the reply/report ownership lifecycle.
@@ -190,18 +193,18 @@ export class TelegramApi {
         rejected = true;
         this.observe({ ...base, phase: "api_rejected", outcome: outgoing ? "rejected" : "not_applicable", attempt: attempt + 1,
           rejection: error.code === 429 ? "rate_limit" : error.code === 401 ? "authentication" : error.code === 403 ? "access" : error.code === 409 ? "conflict" : "other" });
-        // Only explicit 429s retry here; the catch below retries provably pre-connect failures once.
+        // Only explicit 429s retry here; the catch below retries provably pre-connect failures.
         if (error.code !== 429 || attempt >= 2) throw error;
         await delay(error.retryAfter * 1000, undefined, { signal });
       } catch (error) {
         if (!rejected) this.observe({ ...base, phase: "api_failed", attempt: attempt + 1, ...this.failure(error, outgoing) });
         let retryable = false;
         try {
-          retryable = !rejected && outgoing && attempt === 0 && !signal.aborted && error instanceof TransportFailure &&
+          retryable = !rejected && outgoing && attempt < this.retryDelays.length && !signal.aborted && error instanceof TransportFailure &&
             error.code === "TG_TRANSPORT_FAILED" && error.deliveryOutcome === "not_applicable" && preConnectCauses.has(error.causeCode);
         } catch { /* Hostile local errors keep their original identity. */ }
         if (retryable) {
-          await delay(250, undefined, { signal });
+          await delay(this.retryDelays[attempt], undefined, { signal });
           continue;
         }
         throw error;
@@ -209,9 +212,22 @@ export class TelegramApi {
     }
   }
 
-  async sendText(chat: number, text: string, signal: AbortSignal, context?: DeliveryContext): Promise<void> {
+  /** A pre-connect failure is a definite non-delivery, so a final may be saved for later. */
+  private canDefer(error: unknown, signal: AbortSignal): error is TransportFailure {
+    return error instanceof TransportFailure && error.code === "TG_TRANSPORT_FAILED" &&
+      error.deliveryOutcome === "not_applicable" && preConnectCauses.has(error.causeCode) && !signal.aborted;
+  }
+
+  async sendText(chat: number, text: string, signal: AbortSignal, context?: DeliveryContext,
+    onUndelivered?: (text: string) => Promise<void>): Promise<void> {
     const redacted = redact(text, this.config), delivery = this.context(context);
     if (!redacted.trim()) { this.observe({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "empty_final" }); return; }
+    const defer = async (error: unknown): Promise<never> => {
+      if (onUndelivered && this.canDefer(error, signal)) {
+        try { await onUndelivered(redacted); error.queuedForRetry = true; } catch { /* A failed save keeps the original error. */ }
+      }
+      throw error;
+    };
     await this.delivery(delivery, async () => {
       if (Buffer.byteLength(redacted, "utf8") <= RICH_TEXT_LIMIT) {
         try {
@@ -220,13 +236,21 @@ export class TelegramApi {
         } catch (error) {
           // A server rejection means nothing was delivered, so the entity path is a safe fallback.
           // Transport failures stay unknown: resending could duplicate a message Telegram accepted.
-          if (!(error instanceof ApiError)) throw error;
+          if (!(error instanceof ApiError)) return defer(error);
         }
       }
       const parts = formattedChunks(telegramFormat(redacted));
+      let delivered = 0;
       for (let index = 0; index < parts.length; index++) {
         const part = parts[index];
-        await this.call("sendMessage", { chat_id: chat, text: part.text, ...(part.entities.length ? { entities: part.entities } : {}) }, signal, 45_000, undefined, delivery, index + 1, parts.length);
+        try {
+          await this.call("sendMessage", { chat_id: chat, text: part.text, ...(part.entities.length ? { entities: part.entities } : {}) }, signal, 45_000, undefined, delivery, index + 1, parts.length);
+          delivered++;
+        } catch (error) {
+          // Earlier chunks are already visible. Replaying the whole final would duplicate them.
+          if (delivered === 0) return defer(error);
+          throw error;
+        }
       }
     });
   }

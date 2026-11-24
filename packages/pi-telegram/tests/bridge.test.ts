@@ -51,6 +51,8 @@ class Server {
   transcript = "A spoken request.";
   abortedPolls = 0;
   sendDelayMs = 0;
+  sendFailures = 0;
+  sendFailureCause = "UND_ERR_CONNECT_TIMEOUT";
   feed(msg: TgMessage, updateId = this.nextId++): void {
     this.updates.push([{ update_id: updateId, message: msg }]);
     this.wake?.();
@@ -63,6 +65,10 @@ class Server {
     if (String(url).includes("api.elevenlabs.io")) return new Response(Buffer.from("OggS---OpusHead audio"));
     if (String(url).includes("/file/bot")) return new Response(new Uint8Array(this.file));
     if (this.fatal) return Response.json({ ok: false, error_code: this.fatal, description: "mock failure" });
+    if ((method === "sendMessage" || method === "sendRichMessage") && this.sendFailures > 0) {
+      this.sendFailures--;
+      throw new Error("PRIVATE", { cause: { code: this.sendFailureCause } });
+    }
     if ((method === "sendMessage" || method === "sendRichMessage") && this.sendDelayMs) {
       const wait = this.sendDelayMs;
       this.sendDelayMs = 0;
@@ -91,7 +97,7 @@ class Server {
   }
 }
 
-async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; consumeReports?: boolean; deferDuringSettle?: boolean; mode?: string; lockDir?: string; start?: boolean; dir?: string } = {}) {
+async function fixture(t: test.TestContext, options: { server?: Server; consume?: boolean; consumeReports?: boolean; deferDuringSettle?: boolean; mode?: string; lockDir?: string; start?: boolean; dir?: string; retryDelays?: readonly number[] } = {}) {
   const dir = options.dir || await mkdtemp(resolve(workspace, "telegram-bridge-"));
   const server = options.server || new Server();
   const submissions: (TextContent | ImageContent)[][] = [];
@@ -139,7 +145,7 @@ async function fixture(t: test.TestContext, options: { server?: Server; consume?
     if (options.deferDuringSettle && settling) { deferredConsumers.push(start); return; }
     if (options.consume !== false) consume();
   } } as unknown as ExtensionAPI;
-  bridge = new TelegramBridge(pi, ctx, { ...config, allowed: new Set(config.allowed), dataDir: resolve(dir, "downloads"), stateDir: resolve(dir, "state"), tmpDir: resolve(dir, "tmp"), lockDir: options.lockDir }, server.fetch);
+  bridge = new TelegramBridge(pi, ctx, { ...config, allowed: new Set(config.allowed), dataDir: resolve(dir, "downloads"), stateDir: resolve(dir, "state"), tmpDir: resolve(dir, "tmp"), lockDir: options.lockDir }, server.fetch, options.retryDelays);
   t.after(async () => { await bridge.stop(); if (!options.dir) await rm(dir, { recursive: true, force: true }); });
   if (options.start !== false) await bridge.start();
   return {
@@ -218,6 +224,61 @@ test("successful delivery and cancellation keep redacted ledger records without 
   assert.equal(h.server.texts().length, 2, "the navigation-suppressed final must not send");
   assert.deepEqual(h.notices, [], "routine traces must not become UI notifications");
   assertConsoleSilent(terminal);
+});
+
+test("a provably pre-connect final is persisted and replayed once after restart", { concurrency: false }, async t => {
+  const dir = await mkdtemp(resolve(workspace, "telegram-pending-"));
+  let first: Awaited<ReturnType<typeof fixture>> | undefined;
+  let second: Awaited<ReturnType<typeof fixture>> | undefined;
+  try {
+    const server = new Server();
+    server.sendFailures = 4;
+    first = await fixture(t, { server, dir, retryDelays: [0, 0, 0] });
+    await until(() => first!.bridge.status === "connected");
+    server.feed(message(1, "Queue this final"));
+    await until(() => first!.submissions.length === 1);
+    await first.finish("Durable final.");
+    const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
+    const pending = resolve(dir, "state", bot, "pending-finals.json");
+    const queued = JSON.parse(await readFile(pending, "utf8"));
+    assert.equal(queued.finals.length, 1);
+    assert.equal(queued.finals[0].text, "Durable final.");
+    assert.equal((await stat(pending)).mode & 0o777, 0o600);
+    const attempts = server.texts().filter(item => item.text === "Durable final.").length;
+    assert.equal(attempts, 4, "all bounded attempts failed before the queue was used");
+    assert.equal(server.sendFailures, 0);
+    assert.deepEqual(first.notices, [], "a queued final is not a user-facing failure");
+    await first.bridge.stop();
+
+    server.sendFailures = 0;
+    second = await fixture(t, { server, dir, retryDelays: [0, 0, 0] });
+    await until(() => server.wake !== undefined, 3000);
+    server.updates.push([]);
+    server.wake?.();
+    await until(() => second!.bridge.status === "connected", 3000);
+    await until(() => server.texts().filter(item => item.text === "Durable final.").length === attempts + 1, 5000);
+    assert.deepEqual(JSON.parse(await readFile(pending, "utf8")).finals, []);
+  } finally {
+    await first?.bridge.stop();
+    await second?.bridge.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an ambiguous final is never queued and keeps the existing failure warning", { concurrency: false }, async t => {
+  const server = new Server();
+  server.sendFailures = 1;
+  server.sendFailureCause = "ECONNRESET";
+  const h = await fixture(t, { server, retryDelays: [0, 0, 0] });
+  await until(() => h.bridge.status === "connected");
+  server.feed(message(1, "Ambiguous final"));
+  await until(() => h.submissions.length === 1);
+  await h.finish("Ambiguous final.");
+  const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
+  const pending = resolve(h.dir, "state", bot, "pending-finals.json");
+  await assert.rejects(readFile(pending, "utf8"), /ENOENT/);
+  assert.ok(server.texts().some(item => item.text.includes("Delivery outcome unknown")));
+  assert.equal(h.notices.length, 1);
 });
 
 test("authenticate before replying, downloading, STT or Pi dispatch; reject groups and bots", async t => {

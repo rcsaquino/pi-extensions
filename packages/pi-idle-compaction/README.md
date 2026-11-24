@@ -8,7 +8,7 @@
 
 </div>
 
-A standalone extension using Node built-ins and the public Pi API. No runtime npm dependencies, required companion package, extra model provider, or child agent. It calls Pi's native compaction rather than replacing the summarization prompt or retention policy.
+A standalone extension using Node built-ins and the public Pi API. No runtime npm dependencies, required companion package, extra model provider, or child agent. It calls Pi's native compaction rather than replacing the summarization prompt or retention policy. It also starts one fresh session per local day, after the same idle period.
 
 ## Requirements
 
@@ -49,6 +49,22 @@ Input, agent/tool starts, dialogs, history navigation, compaction, and shutdown 
 
 Compaction uses only `ctx.compact({ onComplete, onError })`. Pi's normal model selection, summarization instructions, reserve/retention budgets, and compaction settings remain in control. A real compaction may incur its normal model request/cost.
 
+## Daily new session
+
+Once per local day, the extension starts a new session the way `/new` does. It waits for local midnight, then requires the same 60-minute idle period used by compaction. If the session is busy at midnight, it waits for the next settled turn plus a full idle period.
+
+Examples:
+
+- Last settle at 23:00 or earlier, reset at 00:00.
+- Last settle at 23:30, reset at 00:30.
+- Busy at 00:00 and settled at 00:10, reset at 01:10.
+
+A session needs at least one user or assistant message, so an empty session is left alone. A cancelled reset, for example because the session became busy, waits a fresh idle period rather than retrying immediately. If the request produces no result, a 60-second guard falls back to the next midnight.
+
+While registered background work is active, the reset stays pending and checks again after one minute. This includes a running `pi-background-task` worker, whose global-scope provider makes detached work visible even though it uses a separate session.
+
+The host exposes `ctx.newSession()` only to command handlers, so the timer dispatches the internal `idle-daily-reset` command through `pi.sendUserMessage(..., { expandPromptTemplates: true })`. The command calls `ctx.newSession()` and makes no model request. Both actions require a TUI or RPC host, as with compaction. `/idle-compact status` shows the daily reset state.
+
 Native Pi controls:
 
 ```text
@@ -56,6 +72,8 @@ Native Pi controls:
 /idle-compact on
 /idle-compact off
 ```
+
+`/idle-compact status` also reports the daily reset state. `idle-daily-reset` is an internal command used by the midnight scheduler; it is not part of the normal control surface.
 
 On/off is session-local and in memory. A fresh extension runtime defaults to enabled; reapply an intentional `off` after reload. These are Pi commands, not Telegram bot-menu commands.
 
@@ -65,12 +83,14 @@ On/off is session-local and in memory. A fresh extension runtime defaults to ena
 
 Any extension may register a synchronous `idle-compaction.background-work.v1` provider for its active runs. If no provider is registered, compaction proceeds on its ordinary idle, history and token checks. This package works standalone; installing it alongside another package does not imply that package's work is covered.
 
-The guard can read reviewed process-local v1 background registries. Unknown versions, malformed items, throwing providers, asynchronous results, duplicates, and same-session active work defer compaction.
+The guard can read reviewed process-local v1 background registries. Unknown versions, malformed items, throwing providers, asynchronous results, duplicates, and same-session active work defer compaction. Malformed or unknown global state defers the daily reset.
 
 Other extensions can explicitly use `registerBackgroundWorkProvider()` from `background.mjs` with neutral key `idle-compaction.background-work.v1`. Providers return bounded synchronous items containing only `id` and `sessionId`; optional reconciliation/wake metadata must follow that contract. Old disposers cannot unregister a replacement provider.
 
+Providers may set `scope: 'session'` (default) or `scope: 'global'`. Session providers block compaction and the daily reset only when their items match the current session. Global providers block only the daily reset, regardless of session, and are intended for detached work such as background workers.
+
 > [!IMPORTANT]
-> This is not an OS-wide job supervisor. Arbitrary shell processes, remote jobs, and private extension state are invisible. This package does not register a provider itself. Other background-capable packages may or may not register one; for example, `@rcsaquino/pi-background-task`, if installed, does not, because its forked workers have separate sessions and are not treated as same-session work. Co-installing a package does not by itself prove that its work is covered. Review status and admission integration before relying on coordination.
+> This is not an OS-wide job supervisor. Arbitrary shell processes, remote jobs, and private extension state are invisible. This package does not register a provider itself. Other background-capable packages may or may not register one. `@rcsaquino/pi-background-task`, when installed, registers a global-scope provider for its running workers; that global work defers the daily reset but does not block same-session compaction. Co-installing a package does not by itself prove that its work is covered. Review status and admission integration before relying on coordination.
 
 Provider snapshots are observations, not exclusion leases. They are rechecked after asynchronous provider admission, but cannot prevent unregistered or newly starting work.
 

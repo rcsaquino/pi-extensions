@@ -47,6 +47,7 @@ Run `/reload` in an idle session to activate it. If the worker binary is not `pi
 - At most four concurrent runs per session, and at most two nesting levels.
 - No timeout. A stuck run is stopped with `background_kill`.
 - Runs are recovered on `session_start`: a dead pid finalizes the run, an unnotified result is re-sent.
+- A running worker is visible to `pi-idle-compaction` through a process-local global-scope provider. That package uses it to defer its daily new-session reset while any worker is alive. The provider is inert when the idle-compaction package is absent; it does not change the prompt, tools, or run lifecycle.
 - Artifacts are pruned on `session_start` and after recovery: a settled run is deleted when it is older than 30 days or beyond the newest 25 runs for that session, whichever comes first. Running runs and runs whose notice was never delivered are never deleted. The forked sessions are not touched.
 
 ## Layout
@@ -68,6 +69,7 @@ The forked session itself is written by Pi to the normal project session directo
 - Print mode does not stream, so the report appears only when the run ends.
 - If the Telegram package is installed, `telegram_send` exists in the worker but refuses because it needs an inbound Telegram request context.
 - The worker sees the conversation as of the fork. Anything said afterward is invisible to it.
+- The global provider reports only runs from this Pi process. A worker launched by another Pi process is not visible to this process's daily reset.
 
 ## Development
 

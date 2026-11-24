@@ -6,6 +6,7 @@ import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { buildEtaMissing, buildEtaReminder, buildNotice, DEFAULT_ETA_MINUTES, reminderState, shouldNotify } from "./src/notice.ts";
 import { buildWorkerPrompt, forceKill, launchDetached, terminate } from "./src/launch.ts";
+import { createActiveWorkProvider, registerActiveWorkProvider } from "./src/background-work.ts";
 import { createRunLock } from "./src/lock.ts";
 import {
   applyEta, formatDuration, killIntentPath, listRuns, processAlive, prepareRun, pruneRuns, readMeta, readText,
@@ -39,6 +40,7 @@ function depth(): number {
 export default function backgroundTask(pi: ExtensionAPI): void {
   const timers = new Map<string, ReturnType<typeof setInterval>>();
   const live = new Map<string, RunMeta>();
+  const unregisterActiveWork = registerActiveWorkProvider(createActiveWorkProvider(live));
   const finalized = new Set<string>();
   const reminding = new Set<string>();
   const withRunLock = createRunLock();
@@ -173,6 +175,7 @@ export default function backgroundTask(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", () => {
+    unregisterActiveWork();
     for (const timer of timers.values()) clearInterval(timer);
     timers.clear();
     live.clear();

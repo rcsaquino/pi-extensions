@@ -40,7 +40,7 @@ test('current Pi loads an isolated standalone copy with NO node_modules or compa
     const agentDir = join(sandbox, 'agent'), cwd = join(sandbox, 'cwd');
     const installDir = join(agentDir, 'extensions', 'pi-idle-compaction');
     await mkdir(installDir, { recursive: true }); await mkdir(cwd);
-    for (const name of ['index.ts', 'controller.mjs', 'background.mjs', 'package.json'])
+    for (const name of ['index.ts', 'controller.mjs', 'background.mjs', 'daily.mjs', 'package.json'])
       await copyFile(join(runtimeRoot, name), join(installDir, name));
     const manifest = JSON.parse(await readFile(join(installDir, 'package.json'), 'utf8'));
     assert.equal(manifest.name, 'pi-idle-compaction');
@@ -55,7 +55,7 @@ test('current Pi loads an isolated standalone copy with NO node_modules or compa
     assert.equal(extensions.length, 1);
     const [extension] = extensions;
     assert.equal(extension.path, join(installDir, 'index.ts'));
-    assert.deepEqual([...extension.commands.keys()], ['idle-compact']);
+    assert.deepEqual([...extension.commands.keys()], ['idle-compact', 'idle-daily-reset']);
     assert.equal(extension.tools.size, 0);
     assert.equal(extension.handlers.has('before_agent_start'), false, 'must not mutate the system prompt');
     assert.equal(runtime.pendingProviderRegistrations.length, 0);
@@ -64,6 +64,14 @@ test('current Pi loads an isolated standalone copy with NO node_modules or compa
     assert.match(notices.pop(), /^Enabled: 60 minutes idle, at least 100000 tokens context/);
     await extension.commands.get('idle-compact').handler('off', ctx);
     assert.match(notices.pop(), /^Disabled:/);
+    let newSessionCalls = 0;
+    await extension.commands.get('idle-daily-reset').handler('', {
+      isIdle: () => true, hasPendingMessages: () => false,
+      newSession: async () => { newSessionCalls++; return { cancelled: true }; },
+    });
+    assert.equal(newSessionCalls, 1, 'internal daily command must call ctx.newSession once');
+    await extension.commands.get('idle-compact').handler('status', ctx);
+    assert.match(notices.pop(), /Daily reset: cancelled/);
     for (const handler of extension.handlers.get('session_shutdown')) await handler({}, ctx);
     runtime.invalidate();
     assert.equal(networkCalls, 0);

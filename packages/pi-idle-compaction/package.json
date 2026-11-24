@@ -1,7 +1,7 @@
 {
   "name": "pi-idle-compaction",
   "version": "0.1.0",
-  "description": "Standalone, fail-closed idle compaction with optional background-work coordination",
+  "description": "Standalone, fail-closed idle compaction and daily session reset with optional background-work coordination",
   "type": "module",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/rcsaquino/pi-extensions.git", "directory": "packages/pi-idle-compaction" },
@@ -9,7 +9,7 @@
   "bugs": { "url": "https://github.com/rcsaquino/pi-extensions/issues" },
   "publishConfig": { "access": "public" },
   "keywords": ["pi-package"],
-  "files": ["index.ts", "controller.mjs", "background.mjs", "README.md", "AGENTS.md", "LICENSE"],
+  "files": ["index.ts", "controller.mjs", "background.mjs", "daily.mjs", "README.md", "AGENTS.md", "LICENSE"],
   "pi": { "extensions": ["./index.ts"] },
   "engines": { "node": ">=26.12.0 <27" },
   "scripts": {

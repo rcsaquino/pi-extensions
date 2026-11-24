@@ -4,8 +4,8 @@ import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { AgentActivityOutcome, ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
-import { ApiError, MAX_ATTACHMENT_TOTAL_BYTES, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type OutgoingFile, type TgMessage, type TgUpdate, type TgUser } from "./api.ts";
-import { type Config, DeliveryRefusal, type DeliveryRefusalCode, SafeError, redact, safeError, stamp } from "./config.ts";
+import { ApiError, MAX_ATTACHMENT_TOTAL_BYTES, RICH_TEXT_LIMIT, TelegramApi, imageMime, outboundFile, type Fetch, type MediaKind, type OutgoingFile, type TgMessage, type TgUpdate, type TgUser } from "./api.ts";
+import { type Config, DeliveryRefusal, type DeliveryRefusalCode, SafeError, TransportFailure, redact, safeError, stamp } from "./config.ts";
 import { ConnectionLease } from "./connection-lease.ts";
 import { HumanInputScope } from "./human-input.ts";
 import { formatReplyContext } from "./reply-context.ts";
@@ -18,6 +18,10 @@ const ALBUM_WAIT_MS = 1000;
 const STAMP_INTERVAL_MS = 30 * 60_000;
 
 interface QueuedRequest { messages: TgMessage[]; readyAt: number; content?: (TextContent | ImageContent)[] }
+/** A final whose first attempt proved no connection existed; safe to send once after reconnect. */
+interface PendingFinal { chat: number; text: string; delivery: string; reply?: string; revision?: number; createdAt: number }
+const MAX_PENDING_FINALS = 8;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 /** One observed Pi run. Telegram requests carry their messages; every other run is mirrored. */
 interface Reply {
   sessionId: string;
@@ -48,6 +52,9 @@ export class TelegramBridge {
   private queue: QueuedRequest[] = [];
   private preparing?: Request;
   private queueFile = "";
+  private pendingFinals: PendingFinal[] = [];
+  private pendingFinalsFile = "";
+  private flushingFinals = false;
   private active?: Request;
   private run?: Reply;
   private foregroundRunning = false;
@@ -73,9 +80,9 @@ export class TelegramBridge {
   private lastStamp?: { sessionId: string; at: number };
   private readonly destination: number;
 
-  constructor(private pi: ExtensionAPI, private ctx: ExtensionContext, readonly config: Config, fetcher?: Fetch) {
+  constructor(private pi: ExtensionAPI, private ctx: ExtensionContext, readonly config: Config, fetcher?: Fetch, retryDelays?: readonly number[]) {
     this.ledger = new DeliveryLedger(config.diagnosticsDir || resolve(config.stateDir || config.dataDir, "diagnostics"));
-    this.api = new TelegramApi(config, fetcher, this.ledger);
+    this.api = new TelegramApi(config, fetcher, this.ledger, retryDelays);
     const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
     this.directory = resolve(config.dataDir, bot);
     this.stateDirectory = resolve(config.stateDir || config.dataDir, bot);
@@ -123,6 +130,7 @@ export class TelegramBridge {
   private statusChanged(connected: boolean, detail?: string): void {
     this.connected = connected;
     this.state = connected ? "connected" : `disconnected${detail ? `: ${detail}` : ""}`;
+    if (connected) void this.flushPendingFinals();
     if (this.ctx.mode === "tui") {
       this.ctx.ui.setStatus("pi-telegram", this.ctx.ui.theme.fg(connected ? "success" : "warning", `Telegram ${connected ? "● connected" : "○ disconnected"}`));
     }
@@ -160,7 +168,9 @@ export class TelegramBridge {
       await mkdir(this.directory, { recursive: true, mode: 0o700 });
       await mkdir(this.stateDirectory, { recursive: true, mode: 0o700 });
       this.queueFile = resolve(this.stateDirectory, "queue.json");
+      this.pendingFinalsFile = resolve(this.stateDirectory, "pending-finals.json");
       await this.restoreQueue();
+      await this.restorePendingFinals();
       this.media = new SentMediaRegistry(resolve(this.stateDirectory, "media-index.json"));
       await this.media.load();
       const path = resolve(this.stateDirectory, "cursor.json");
@@ -256,6 +266,75 @@ export class TelegramBridge {
     }
   }
 
+  /** Persist only definite non-deliveries. Message text lives here, never in the metadata ledger. */
+  private async persistPendingFinals(): Promise<void> {
+    if (!this.pendingFinalsFile) return;
+    const temp = `${this.pendingFinalsFile}.${randomUUID()}.tmp`;
+    await writeFile(temp, JSON.stringify({ finals: this.pendingFinals }), { mode: 0o600 });
+    await rename(temp, this.pendingFinalsFile);
+  }
+
+  private async restorePendingFinals(): Promise<void> {
+    let parsed: { finals?: unknown };
+    try { parsed = JSON.parse(await readFile(this.pendingFinalsFile, "utf8")); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new SafeError("Telegram pending finals are unreadable; refusing to guess what was delivered.");
+    }
+    if (!Array.isArray(parsed.finals)) throw new SafeError("Telegram pending finals are malformed.");
+    for (const item of parsed.finals.slice(0, MAX_PENDING_FINALS) as PendingFinal[]) {
+      if (!item || typeof item !== "object") continue;
+      if (!this.validId(item.chat) || !this.config.allowed.has(String(item.chat))) continue;
+      if (typeof item.text !== "string" || !item.text.trim() || Buffer.byteLength(item.text, "utf8") > RICH_TEXT_LIMIT) continue;
+      if (typeof item.delivery !== "string" || !UUID.test(item.delivery)) continue;
+      if (this.pendingFinals.some(existing => existing.delivery === item.delivery)) continue;
+      this.pendingFinals.push({ chat: item.chat, text: item.text, delivery: item.delivery,
+        ...(typeof item.reply === "string" && UUID.test(item.reply) ? { reply: item.reply } : {}),
+        ...(typeof item.revision === "number" && Number.isSafeInteger(item.revision) && item.revision >= 0 ? { revision: item.revision } : {}),
+        createdAt: Number.isFinite(item.createdAt) && item.createdAt > 0 ? item.createdAt : Date.now() });
+    }
+  }
+
+  private async queueFinal(chat: number, text: string, context: DeliveryContext): Promise<void> {
+    if (!this.running || this.controller.signal.aborted) throw new SafeError("Telegram bridge stopped before the final could be queued.");
+    if (!this.validId(chat) || !this.config.allowed.has(String(chat))) throw new SafeError("The final recipient is no longer allowed.");
+    if (Buffer.byteLength(text, "utf8") > RICH_TEXT_LIMIT) throw new SafeError("The final exceeds the durable queue limit.");
+    const delivery = context.delivery || randomUUID();
+    if (this.pendingFinals.some(item => item.delivery === delivery)) return;
+    if (this.pendingFinals.length >= MAX_PENDING_FINALS) this.pendingFinals.shift();
+    this.pendingFinals.push({ chat, text, delivery,
+      ...(context.reply ? { reply: context.reply } : {}),
+      ...(context.revision !== undefined ? { revision: context.revision } : {}), createdAt: Date.now() });
+    await this.persistPendingFinals();
+  }
+
+  /** Retry queued finals only after a successful poll; never while the transport is still down. */
+  private async flushPendingFinals(): Promise<void> {
+    if (this.flushingFinals || !this.running || !this.connected || !this.pendingFinals.length) return;
+    this.flushingFinals = true;
+    try {
+      while (this.running && this.connected && this.pendingFinals.length) {
+        const item = this.pendingFinals[0];
+        let whole = false;
+        try {
+          await this.serial(() => this.api.sendText(item.chat, item.text, this.controller.signal,
+            { operation: "reply", delivery: item.delivery, ...(item.reply ? { reply: item.reply } : {}),
+              ...(item.revision !== undefined ? { revision: item.revision } : {}) }, async () => { whole = true; }));
+        } catch (error) {
+          // Shutdown is not a delivery verdict; keep the record for the next process.
+          if (this.controller.signal.aborted || !this.running) return;
+          // A whole pre-connect failure is still a definite non-delivery; keep it for the next poll.
+          if (whole && error instanceof TransportFailure && error.deliveryOutcome === "not_applicable") return;
+          // Anything else is ambiguous, rejected, partially delivered, or cancelled.
+          // Replaying it could duplicate a message.
+          if (this.ctx.hasUI) this.ctx.ui.notify(safeError(error), "warning");
+        }
+        this.pendingFinals.shift();
+        await this.persistPendingFinals();
+      }
+    } finally { this.flushingFinals = false; }
+  }
+
   private async poll(): Promise<void> {
     const signal = this.controller.signal;
     let verified = false;
@@ -307,9 +386,24 @@ export class TelegramBridge {
     return task;
   }
 
-  private async text(chat: number, text: string, signal?: AbortSignal, context?: DeliveryContext): Promise<void> {
+  private async text(chat: number, text: string, signal?: AbortSignal, context?: DeliveryContext,
+    onUndelivered?: (text: string) => Promise<void>): Promise<void> {
     const combined = signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal;
-    await this.serial(() => { combined.throwIfAborted(); return this.api.sendText(chat, text, combined, context); });
+    await this.serial(() => { combined.throwIfAborted(); return this.api.sendText(chat, text, combined, context, onUndelivered); });
+  }
+
+  /** A queued final is intentionally not reported as sent; it is delivered after reconnect. */
+  private async finalText(chat: number, text: string, signal: AbortSignal, context: DeliveryContext): Promise<boolean> {
+    try {
+      await this.text(chat, text, signal, context, async queued => {
+        if (signal.aborted) throw new SafeError("Delivery context was cancelled before the final could be queued.");
+        await this.queueFinal(chat, queued, context);
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof TransportFailure && error.queuedForRetry) return false;
+      throw error;
+    }
   }
 
   private record(event: DeliveryEvent): void { try { void this.ledger.append(event).catch(() => {}); } catch {} }
@@ -612,7 +706,7 @@ export class TelegramBridge {
         request.final = undefined;
         const finals = queued.filter((item, index) => index === 0 || item.text !== queued[index - 1].text);
         for (const item of finals) {
-          await this.text(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
+          await this.finalText(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
         }
         await this.text(chat, request.outcome === "aborted" ? "Pi request was cancelled." : "Pi could not complete this request. Check the TUI for details.", request.controller.signal, this.correlation(request, "warning", delivery.delivery));
       } else if (request.spoke) {
@@ -624,8 +718,8 @@ export class TelegramBridge {
         const finals = queued.filter((item, index) => index === 0 || item.text !== queued[index - 1].text);
         for (const item of finals) {
           this.diagnostic(request, "send_attempt");
-          await this.text(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
-          this.diagnostic(request, "sent");
+          const delivered = await this.finalText(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
+          if (delivered) this.diagnostic(request, "sent");
         }
         // An explicit voice message is the complete reply, even if the model says 'Sent' afterward.
         this.record({ ...delivery, phase: "suppressed", outcome: "suppressed", reason: "voice_only" });
@@ -647,14 +741,14 @@ export class TelegramBridge {
         } else if (finals.length === 1 && !queued.length) {
           // Input format does not opt the user into speech. Only explicit tool sends produce voice.
           this.diagnostic(request, "send_attempt");
-          await this.text(chat, finals[0].text, request.controller.signal, delivery);
-          this.diagnostic(request, "sent");
+          const delivered = await this.finalText(chat, finals[0].text, request.controller.signal, delivery);
+          if (delivered) this.diagnostic(request, "sent");
         } else for (const item of finals) {
           // Steered intermediate finals keep their own revision and delivery
           // identity under the same reply, parented to this settlement.
           this.diagnostic(request, "send_attempt");
-          await this.text(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
-          this.diagnostic(request, "sent");
+          const delivered = await this.finalText(chat, item.text, request.controller.signal, { ...this.correlation(request, "reply"), revision: item.revision, delivery: randomUUID(), parent: delivery.delivery });
+          if (delivered) this.diagnostic(request, "sent");
         }
       }
       // A successful empty final or attachment-only reply intentionally sends no chat.

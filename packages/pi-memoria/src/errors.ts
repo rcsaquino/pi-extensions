@@ -5,8 +5,8 @@ export type ErrorCode =
   | "conflict"
   | "duplicate_hot_content"
   | "hot_capacity"
-  | "store_unavailable"
-  | "hot_locked";
+  | "hot_migration"
+  | "store_unavailable";
 
 export type ErrorDetails = Record<string, unknown>;
 

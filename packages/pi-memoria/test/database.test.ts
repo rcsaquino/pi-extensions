@@ -93,14 +93,14 @@ test("upgrading a version 1 database preserves existing duplicates, archives, an
   let db = new MemoryDatabase(path);
   t.after(() => db.close());
   const { memory: original } = db.add({ content: "The user likes apples.", tags: ["fruit"], source: "first-session" });
-  const archiveId = db.archive([{ id: "h_archived", content: original.content }], "MEMORY.md")[0]!;
+  const archiveId = db.archive([{ id: "h_archived", content: original.content }], "hot-memory")[0]!;
   db.rememberRoots(["/tmp/legacy-sessions"]);
   db.close();
 
   const raw = new DatabaseSync(path);
   try {
     // Recreate the previous on-disk schema with two pre-existing copies of a fact.
-    raw.exec("DROP INDEX memories_content; PRAGMA user_version=1;");
+    raw.exec("DROP INDEX memories_content; DROP TABLE hot_memories; DROP TABLE app_meta; PRAGMA user_version=1;");
     raw.prepare(`INSERT INTO memories(id,content,tags,tag_text,source,created_at,updated_at)
       SELECT ?,content,tags,tag_text,?,created_at,updated_at FROM memories WHERE id=?`)
       .run("m_legacy_duplicate", "second-session", original.id);
@@ -121,7 +121,7 @@ test("upgrading a version 1 database preserves existing duplicates, archives, an
   db = new MemoryDatabase(path);
   assert.equal(db.search().results.length, 2);
   const check = new DatabaseSync(path);
-  try { assert.equal(check.prepare("PRAGMA user_version").get()?.user_version, 2); }
+  try { assert.equal(check.prepare("PRAGMA user_version").get()?.user_version, 3); }
   finally { check.close(); }
 });
 
@@ -189,8 +189,8 @@ test("two database connections see each other's changes; archived hot entries su
   second.edit(value.id, { content: "cross-session update" });
   assert.equal(first.search("cross").results[0]?.id, value.id);
   const items = [{ id: "h_test", content: "startup preference" }];
-  first.archive(items, "/global/MEMORY.md");
-  second.archive(items, "/global/MEMORY.md");
+  first.archive(items, "/global/hot-memory");
+  second.archive(items, "/global/hot-memory");
   assert.equal(first.search("hot-archive").results.length, 1);
   second.rememberRoots(["/tmp/root", "/tmp/root"]);
   assert.deepEqual(first.roots(), ["/tmp/root"]);

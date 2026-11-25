@@ -58,7 +58,7 @@ test("hardlinks, nonregular entries, ancestor symlinks and companion aliases rej
 test("new empty files, recognized legacy migration and current reopen preserve durable facts", async t => {
   const dir = await temporary(t), path = join(dir, "memoria.sqlite"); await fs.writeFile(path, "");
   let db = new MemoryDatabase(path); const fact = db.add({ content: "Synthetic durable fact" }).memory; db.close();
-  const raw = new DatabaseSync(path); raw.exec("DROP INDEX memories_content; PRAGMA user_version=1; PRAGMA application_id=0;"); raw.close();
+  const raw = new DatabaseSync(path); raw.exec("DROP INDEX memories_content; DROP TABLE hot_memories; DROP TABLE app_meta; PRAGMA user_version=1; PRAGMA application_id=0;"); raw.close();
   db = new MemoryDatabase(path); assert.deepEqual(db.get(fact.id), fact); db.close();
   db = new MemoryDatabase(path); assert.deepEqual(db.get(fact.id), fact); db.close();
 });

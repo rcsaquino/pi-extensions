@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir, cpus } from "node:os";
 import { join } from "node:path";
 import { MemoryDatabase } from "../src/database.ts";
-import { HotMemoryStore } from "../src/hot-memory.ts";
 import { SessionSearch } from "../src/sessions.ts";
 
 const directory = await mkdtemp(join(tmpdir(), "pi-memoria-bench-"));
@@ -36,14 +35,13 @@ try {
     corpusBytes += Buffer.byteLength(lines);
     await writeFile(join(sessionsRoot, `${String(batch).padStart(3, "0")}.jsonl`), lines);
   }
-  const hot = new HotMemoryStore(join(directory, "MEMORY.md"), () => {});
-  await hot.add("Start every sentence with beep_boop.");
+  database.hotAdd("Start every sentence with beep_boop.");
   const sessions = new SessionSearch(() => [sessionsRoot]);
   const results = [];
   results.push(await measure("SQLite FTS5 selective lookup", () => database.search("marker9876"), 200));
   results.push(await measure("SQLite FTS5 exact-tag filtered lookup", () => database.search("marker", "any", 20, 0, { tags: ["topic42"] }), 200));
   results.push(await measure("SQLite literal full scan", () => database.search("marker9876", "literal"), 30));
-  results.push(await measure("Hot file refresh with lock", () => hot.load(), 100));
+  results.push(await measure("Hot memory SQLite refresh", () => database.hotSnapshot(), 100));
   results.push(await measure("rg session lookup near end of corpus", () => sessions.search({ query: "marker49999" }), 15));
   results.push(await measure("rg absent term, complete scan", () => sessions.search({ query: "unrecordedneedle" }), 15));
   console.log(JSON.stringify({ node: process.version, platform: `${process.platform}/${process.arch}`, cpu: cpus()[0]?.model, memory_count: memoryCount, session_entries: entryCount, session_bytes: corpusBytes, cache: "warm after three warmup runs; timings include process startup for rg", results }, null, 2));

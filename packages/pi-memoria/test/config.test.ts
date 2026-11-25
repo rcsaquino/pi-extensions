@@ -6,7 +6,7 @@ import { configuration, managedRipgrepPath } from "../src/config.ts";
 
 test("memory paths are global and configuration never accepts a project-relative directory", () => {
   const config = configuration("/global/agent", {});
-  assert.deepEqual(Object.keys(config).sort(), ["directory", "ripgrepPath", "hotPath", "databasePath", "sessionRoots"].sort());
+  assert.deepEqual(Object.keys(config).sort(), ["directory", "ripgrepPath", "databasePath", "sessionRoots"].sort());
   assert.equal(config.directory, join("/global/agent", "memoria"));
   assert.equal(configuration("~/custom-agent/../agent", { PI_MEMORIA_DIR: "/separate/memory" }).ripgrepPath,
     join(homedir(), "agent", "bin", process.platform === "win32" ? "rg.exe" : "rg"));

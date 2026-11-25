@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 
-export const APPLICATION_ID = 0x4d454d4f; // MEMO. Pre-identifier v1/v2 stores remain supported.
+export const APPLICATION_ID = 0x4d454d4f; // MEMO. Pre-identifier v1/v2 stores and v3 remain supported.
 export const INITIAL_SCHEMA = `
   CREATE TABLE memories (
     rowid INTEGER PRIMARY KEY,
@@ -33,6 +33,23 @@ export const INITIAL_SCHEMA = `
   PRAGMA user_version=1;
 `;
 export const VERSION_TWO = "CREATE INDEX memories_content ON memories(content); PRAGMA user_version=2;";
+export const VERSION_THREE = `
+  CREATE TABLE hot_memories (
+    id TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 50 CHECK (priority BETWEEN 0 AND 100),
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1
+  ) STRICT;
+  CREATE INDEX hot_memories_position ON hot_memories(position, id);
+  CREATE TABLE app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  ) STRICT;
+  PRAGMA user_version=3;
+`;
 
 const schemas = new Map<number, string>();
 function fingerprint(db: DatabaseSync): string {
@@ -49,16 +66,17 @@ function recognized(version: number): string {
   const template = new DatabaseSync(":memory:");
   try {
     template.exec(INITIAL_SCHEMA);
-    if (version === 2) template.exec(VERSION_TWO);
+    if (version >= 2) template.exec(VERSION_TWO);
+    if (version >= 3) template.exec(VERSION_THREE);
     value = fingerprint(template); schemas.set(version, value); return value;
   } finally { template.close(); }
 }
 export function attestSchema(db: DatabaseSync): number {
   const version = Number(db.prepare("PRAGMA user_version").get()?.user_version);
   const application = Number(db.prepare("PRAGMA application_id").get()?.application_id);
-  if (version > 2) throw new Error(`Database schema ${version} is newer than this pi-memoria version.`);
+  if (version > 3) throw new Error(`Database schema ${version} is newer than this pi-memoria version.`);
   if (application !== 0 && application !== APPLICATION_ID) throw new Error("Unrecognized database application.");
   if (version === 0 && application === 0 && db.prepare("SELECT COUNT(*) AS n FROM sqlite_master").get()?.n === 0) return 0;
-  if ((version !== 1 && version !== 2) || fingerprint(db) !== recognized(version)) throw new Error("Unsupported or unrelated memoria database schema.");
+  if ((version !== 1 && version !== 2 && version !== 3) || fingerprint(db) !== recognized(version)) throw new Error("Unsupported or unrelated memoria database schema.");
   return version;
 }

@@ -2,7 +2,7 @@ import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import type { Memory, SearchMode } from "./database.ts";
+import type { Memory, SearchMode, SearchRow } from "./database.ts";
 import { ExpectedError } from "./errors.ts";
 import type { HotMemory, HotSnapshot } from "./hot-memory.ts";
 import { RESULT_BYTES } from "./text.ts";
@@ -32,11 +32,6 @@ export interface LongTermWriteResult {
 
 export interface LongTermDeleteResult { store: "long_term"; deleted: Memory }
 
-export interface SearchRow extends Memory {
-  content_characters: number;
-  content_clipped: boolean;
-}
-
 export interface SearchDetails {
   mode: SearchMode | "browse";
   query: string;
@@ -47,11 +42,9 @@ export interface SearchDetails {
   hint: string;
 }
 
-export interface MemoryReadDetails extends Memory {
-  content: string;
-  next_text_offset: number | null;
-  total_characters: number;
-}
+export type MemoryReadDetails =
+  | (Memory & { store: "long_term"; next_text_offset: number | null; total_characters: number })
+  | (HotMemory & { store: "hot"; next_text_offset: number | null; total_characters: number });
 
 export interface SessionHit {
   entry_type: string;
@@ -184,9 +177,8 @@ export function renderHotWrite(operation: string, details: HotWriteResult): stri
     `budget: ${details.characters}/${details.cap} characters used; ${details.remaining} remaining`,
   ];
   if (details.archived.length) {
-    lines.push(`archived: ${details.archived.map((entry) => entry.id).join(", ")} — saved in SQLite with tag hot-archive; retrieve with memoria_search query "hot-archive" or by the archived source IDs.`);
+    lines.push(`archived: ${details.archived.map((entry) => entry.id).join(", ")}; saved in long-term SQLite with tag hot-archive; retrieve with memoria_search query "hot-archive" or by the archived source IDs.`);
   }
-  if (details.backup) lines.push(`backup: ${details.backup}`);
   if (details.ignored_fields?.length) lines.push(`ignored_fields: ${details.ignored_fields.join(", ")} (hot memory stores content and priority only)`);
   for (const warning of details.warnings ?? []) lines.push(`warning: ${warning}`);
   if (details.note) lines.push(`note: ${details.note}`);
@@ -235,11 +227,19 @@ export function renderSearch(details: SearchDetails): string {
   ];
   if (details.tags.length) lines.push(`required tags (exact, case-sensitive): ${details.tags.join(", ")}`);
   for (const row of details.results) {
-    lines.push(
-      `[${row.id}] revision=${row.revision}; tags=[${row.tags.join(", ")}]`,
-      `${row.content}${row.content_clipped ? " …" : ""}`,
-      `source: ${row.source || "(none)"}; created ${row.created_at}; updated ${row.updated_at}`,
-    );
+    if (row.store === "hot") {
+      lines.push(
+        `[${row.id}] store=hot; priority=${row.priority}; revision=${row.revision}`,
+        `${row.content}${row.content_clipped ? " …" : ""}`,
+        `source: hot memory; created ${row.created_at}; updated ${row.updated_at}`,
+      );
+    } else {
+      lines.push(
+        `[${row.id}] store=long_term; revision=${row.revision}; tags=[${row.tags.join(", ")}]`,
+        `${row.content}${row.content_clipped ? " …" : ""}`,
+        `source: ${row.source || "(none)"}; created ${row.created_at}; updated ${row.updated_at}`,
+      );
+    }
   }
   if (!details.results.length) lines.push("No results on this page. Follow the hint before concluding that nothing is stored.");
   lines.push(`hint: ${details.hint}`);
@@ -247,8 +247,17 @@ export function renderSearch(details: SearchDetails): string {
 }
 
 export function renderMemoryRead(details: MemoryReadDetails): string {
+  if (details.store === "hot") {
+    return [
+      `memoria_search: id=${details.id}; store=hot; priority=${details.priority}; revision=${details.revision}`,
+      `timestamps: created=${details.created_at}; updated=${details.updated_at}`,
+      `content (characters ${details.content.length} of ${details.total_characters}):`,
+      details.content,
+      `next_text_offset=${details.next_text_offset ?? "null"}`,
+    ].join("\n");
+  }
   return [
-    `memoria_search: id=${details.id}; revision=${details.revision}`,
+    `memoria_search: id=${details.id}; store=long_term; revision=${details.revision}`,
     `tags: ${tagList(details.tags)}; source: ${details.source || "(none)"}`,
     `timestamps: created=${details.created_at}; updated=${details.updated_at}`,
     `content (characters ${details.content.length} of ${details.total_characters}):`,

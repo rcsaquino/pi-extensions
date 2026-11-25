@@ -3,7 +3,7 @@
 
 # pi-memoria
 
-**Global memory for [Pi](https://github.com/earendil-works/pi): startup rules in `MEMORY.md`, durable facts in SQLite FTS5, and cited search across every past conversation.**
+**Global memory for [Pi](https://github.com/earendil-works/pi): startup rules in SQLite, durable facts in SQLite FTS5, and cited search across every past conversation.**
 
 [![Node.js >= 22.19](https://img.shields.io/badge/Node.js-%3E%3D22.19-3c873a?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
@@ -13,7 +13,7 @@
 
 </div>
 
-pi-memoria gives Pi one memory shared across every project: instructions that must apply from the first message go in a capped `MEMORY.md`, everything else in SQLite with FTS5, and past conversations stay searchable through ripgrep. Five tools, local storage only. No embeddings, no network calls, no background model work.
+pi-memoria gives Pi one memory shared across every project: instructions that must apply from the first message go in a capped hot-memory table in `memoria.sqlite`, everything else lives in SQLite with FTS5, and past conversations stay searchable through ripgrep. Five tools, local storage only. No embeddings, no network calls, no background model work.
 
 ## Requirements
 
@@ -53,7 +53,7 @@ pi -e /absolute/path/to/pi-extensions/packages/pi-memoria/index.ts
 
 | Store | What belongs there | How it is retrieved |
 |---|---|---|
-| `MEMORY.md` | Instructions that must apply before any retrieval cue appears | Loaded at startup and refreshed before every user prompt |
+| SQLite hot table | Instructions that must apply before any retrieval cue appears | Injected before every user prompt and stored in `memoria.sqlite` |
 | SQLite + FTS5 | Preferences, facts, decisions, names, conventions | `memoria_search` |
 | Original Pi JSONL sessions | What was actually said, including old branches and pre-compaction messages | `memoria_sessions`, with file and line citations |
 
@@ -63,17 +63,28 @@ The model decides what to save and when to search; nothing is extracted automati
 
 ## Hot memory
 
+Hot rules live in the `hot_memories` table in `memoria.sqlite`. The prompt receives only the rendered rules, never IDs, priorities, or a filesystem path:
+
 ```md
-- [h_0123456789abcdef] [p=90] Start every sentence with beep_boop.
+- Start every sentence with beep_boop.
 ```
 
-Priority is **0–100** (default 50). The **entire file**, including IDs and newlines, must fit in **5,000 UTF-16 code units**, checked before every write. Content is single-line; CR, LF, U+2028, and U+2029 are rejected.
+Priority is **0–100** (default 50) and controls eviction order only. The rendered block must fit in **5,000 UTF-16 code units**; IDs, priorities, timestamps, and the wrapper do not consume that budget. Content is single-line; CR, LF, U+2028, and U+2029 are rejected.
 
-Duplicate adds reuse the existing bullet and consume no capacity. When space is needed, strictly lower-priority bullets are archived to SQLite first (`hot-archive`), then the file is atomically replaced; if that cannot free enough room, the write fails with the live file unchanged.
+Duplicate adds reuse the existing row and consume no capacity. When space is needed, strictly lower-priority rules are archived to long-term SQLite with tag `hot-archive` in the same transaction as the new write. If that cannot free enough room, the write fails and nothing changes.
+
+`memoria_search` returns hot rules first and supports reading an `h_` ID directly. Hot results carry no tags, so a tag filter returns long-term memories only.
+
+If `memoria.sqlite` cannot be opened, hot rules are not injected. The prompt status reports that memory is unavailable instead of presenting an empty block.
+
+### Upgrading from `MEMORY.md`
+
+The first run of this version imports a legacy `MEMORY.md` once, preserves its IDs and priorities, and then renames the file to `backups/MEMORY-pre-sqlite-<timestamp>-<uuid>.md`. The import and the hot-row insert share one transaction. A malformed file, a symbolic link, or a hot table without a migration marker fails closed and leaves the file untouched. Once imported, the file is never read again.
+
+The schema moves to version 3 and an existing v1/v2 database is snapshotted first as `backups/memoria-pre-v3-<timestamp>-<uuid>.sqlite`. Older pi-memoria versions refuse a v3 database, so keep that snapshot until the upgrade is proven.
 
 > [!WARNING]
-> Prefer the tools for edits. External edits can bypass the cap until the next load, and oversized content is never injected.
-> `MEMORY.md` must be a regular file. A symbolic link is refused rather than followed, because replacement writes would swap the link for a file and could inject its target into the prompt.
+> Do not edit `memoria.sqlite` directly. Manual `MEMORY.md` edits stop working after the one-time import; use the memoria tools instead.
 
 ## Recall
 
@@ -86,7 +97,7 @@ Keyword search uses the supplied terms with prefix matching and English stemming
 | `memoria_add` | Save a fact to SQLite or a startup rule to hot memory |
 | `memoria_edit` | Change content, tags, priority, or hot text by ID |
 | `memoria_delete` | Remove a memory by ID |
-| `memoria_search` | Search SQLite with keywords, modes, and exact tags |
+| `memoria_search` | Search hot and long-term SQLite memory with keywords, modes, and exact tags |
 | `memoria_sessions` | Search or read original Pi session entries with citations |
 
 Tool replies are compact; oversized results spill to a private `pi-memoria-result-*` file.
@@ -121,9 +132,9 @@ Tool replies are compact; oversized results spill to a private `pi-memoria-resul
 {"action":"read","path":"/absolute/path/to/session.jsonl","line":42}
 ```
 
-- **Add:** `store` is `long_term` (default) or `hot`; SQLite accepts `tags` and `source`. Identical content is reused with `created: false`; edits are the only way to change a fact. SQLite limits: 20,000 characters, 30 tags, 2,000-character source.
-- **Edit/delete:** pass an `id` (`m_` for SQLite, `h_` for hot) and only the fields to change. `expected_revision` or hot `expected_content` catches concurrent writes. Deletion never archives hot bullets or erases sessions.
-- **Search:** `memoria_search` searches SQLite only; hot `h_` entries are injected from `MEMORY.md` and cannot be searched or read by this tool. `mode` is `any` (default), `all`, `phrase`, or `literal`; a miss falls back to a literal scan and reports the mode used. `tags` match exactly and case-sensitively. Read an SQLite memory with its `m_` ID; long content paginates via `text_offset`.
+- **Add:** `store` is `long_term` (default) or `hot`; long-term memory accepts `tags` and `source`. Identical content is reused with `created: false`; edits are the only way to change a fact. SQLite limits: 20,000 characters, 30 tags, 2,000-character source. Hot rules share a 5,000-character rendered budget and ignore tags/source.
+- **Edit/delete:** pass an `id` (`m_` for long-term, `h_` for hot) and only the fields to change. `expected_revision` or hot `expected_content` catches concurrent writes. Deletion never archives hot rules or erases sessions.
+- **Search:** `memoria_search` searches both hot and long-term SQLite memory. Hot results are listed first and expose their priority; `tags` match exactly, case-sensitively, and exclude hot entries. `mode` is `any` (default), `all`, `phrase`, or `literal`; a long-term miss falls back to a literal scan and reports the mode used. Read any memory with its `h_` or `m_` ID; long content paginates via `text_offset`.
 - **Sessions:** decoded JSON is searched, including hidden, ignored, and inactive-branch files. Results carry path/line citations. Symlinks are never followed during recursive search, so a link to an outside tree is not traversed or read; an in-root symlinked archive remains searchable through its canonical target path. Reads authorize only the canonical path, and a file that disappears mid-search is skipped with a warning. `exhausted: true` means every accessible root was scanned without errors; warnings mean partial results, never absence.
 
 ## Configuration
@@ -139,12 +150,13 @@ Tool replies are compact; oversized results spill to a private `pi-memoria-resul
 
 ```text
 ~/.pi/agent/memoria/
-├── MEMORY.md
 ├── memoria.sqlite
+├── memoria.sqlite-wal
+├── memoria.sqlite-shm
 └── backups/
 ```
 
-Database startup recognizes truly empty stores and the exact shipped memoria v1/v2 schemas, including legacy stores without an application identifier. Current stores receive the `MEMO` application identifier without a schema-version bump. Foreign, future, customized or unsupported schemas are refused before chmod, journal-mode changes or migration. Supported v1 migration preserves facts, archives, duplicates and FTS indexes.
+Database startup recognizes truly empty stores and the exact shipped memoria v1/v2/v3 schemas, including legacy stores without an application identifier. A v1/v2 store is snapshotted before the v3 migration, and existing facts, archives, duplicates, and FTS indexes are preserved. Foreign, future, customized, or unsupported schemas are refused before chmod, journal-mode changes, or migration. Older package versions refuse a v3 store.
 
 Database/companion files must be regular single-link files, and existing directory components cannot be symlinks. Unsafe `-wal`, `-shm`, `-journal` aliases and orphan companions are refused. A regular companion observed with zero links during SQLite last-close is rechecked by name, at most 32 times; it is never accepted as an unlinked file. Main-file unlink, nonregular entries and multiple links remain fatal. Ownership inspection uses a private mode-0700 temporary snapshot of the database/WAL/journal, because even SQLite READONLY can alter original SHM read marks. Snapshot files use 0600, copying uses a fixed-size buffer with bounded change retries, and cleanup runs on success/failure. Startup inspection is linear in stored bytes and needs temporary disk capacity; normal queries do not copy the store. Companion disappearance between stat/open or unlink of the same opened companion restarts the bounded snapshot inspection; identity changes and other open errors are not ignored. Concurrent supported startup still re-attests under its migration transaction. WAL-mode selection retries only the driver's numeric SQLITE_BUSY condition, rechecking path safety on every attempt within a five-second deadline; other errors fail immediately. These are focused startup checks, not an OS lease against uncoordinated path/schema mutations by another process.
 
@@ -168,11 +180,11 @@ Oversized tool results spill a private complete payload under the OS temporary d
 | Selective SQLite FTS5 lookup | 0.093 ms | 0.119 ms |
 | Exact-tag filtered FTS5 lookup (10,000 matching rows) | 6.308 ms | 7.365 ms |
 | Literal SQLite full scan | 4.709 ms | 5.094 ms |
-| Hot-file refresh with locking | 0.148 ms | 0.249 ms |
+| Hot-file refresh with locking (historical) | 0.148 ms | 0.249 ms |
 | Session match near the end of the corpus | 26.776 ms | 34.777 ms |
 | Absent session term, complete scan | 4.325 ms | 5.172 ms |
 
-`npm run bench` recreates this synthetic corpus in a temporary directory. These historical warm-cache medians were measured on Linux, Node 24.20, Ryzen 5 7500F, including `rg` startup; they are not current Node 26.12/Pi 1.6.0 acceptance evidence. Indexed lookups stay fast; scans grow with corpus size. Not a performance guarantee.
+`npm run bench` recreates this synthetic corpus in a temporary directory. These historical warm-cache medians were measured on Linux, Node 24.20, Ryzen 5 7500F, including `rg` startup; the hot row predates the SQLite hot table and is retained only as history. They are not current Node 26.12/Pi 1.6.0 acceptance evidence. Indexed lookups stay fast; scans grow with corpus size. Not a performance guarantee.
 
 </details>
 
@@ -189,7 +201,7 @@ npm --prefix packages/pi-memoria run bench
 
 No package lockfile is currently committed, so `npm ci` is not a fresh-checkout setup command. The shared host-link helper preserves working dependencies and only repairs missing/broken links.
 
-There is no build step: Pi loads `index.ts` directly. `src/database.ts`, `src/hot-memory.ts`, and `src/sessions.ts` own the storage layers; `index.ts` wires them to lifecycle events and the tool schemas. Tests use temporary directories, real SQLite FTS5, real `rg`, concurrent writers, and Pi's extension loader. Test and benchmark files are checkout-only and excluded from the published tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
+There is no build step: Pi loads `index.ts` directly. `src/database.ts` owns persistence, `src/hot-memory.ts` owns the hot model and prompt renderer, `src/hot-migration.ts` owns the one-time import, and `src/sessions.ts` owns session search; `index.ts` wires them to lifecycle events and the tool schemas. Tests use temporary directories, real SQLite FTS5, real `rg`, concurrent writers, and Pi's extension loader. Test and benchmark files are checkout-only and excluded from the published tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
 
 ## Support and contact
 

@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test, { type TestContext } from "node:test";
 import type { TObject } from "typebox";
 import { DefaultResourceLoader, ExtensionRunner, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, type BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
-import { MEMORY_GUIDANCE } from "../index.ts";
 import { ExpectedError } from "../src/errors.ts";
 import { pruneSpillFiles, toolError } from "../src/results.ts";
 import { makeForeignOwned, temporary } from "./helpers.ts";
@@ -176,7 +174,6 @@ test("Pi loads the package, executes all five tools, injects content-only hot me
   await h.call("memoria_delete", { id: fact.details.memory.id, expected_revision: 2 });
   await h.call("memoria_delete", { id });
   assert.equal((await h.call("memoria_search", {})).details.results.length, 0);
-  await assert.rejects(stat(join(h.memoryDir, "MEMORY.md")), { code: "ENOENT" });
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(h.call("memoria_add", { content: "must not persist" }, controller.signal), /abort/iu);
@@ -215,81 +212,6 @@ test("malformed PI_MEMORIA_SESSION_DIRS falls back safely and reports the config
   assert.equal(fact.details.created, true);
 });
 
-test("legacy MEMORY.md migrates into SQLite and the prompt drops IDs, priorities, and the path", async (t) => {
-  const h = await harness(t);
-  const original = [
-    "- [h_aaaaaaaaaaaaaaaa] [p=90] Rule one.",
-    "- [h_bbbbbbbbbbbbbbbb] [p=60] Rule two.",
-    "- Hand-written rule.",
-    "",
-  ].join("\n");
-  await mkdir(h.memoryDir, { recursive: true });
-  await writeFile(join(h.memoryDir, "MEMORY.md"), original);
-  await h.dispatch("session_start");
-  const prompt = await h.renderPrompt();
-  const hot = block(prompt.rendered, "hot_memory");
-  assert.equal(hot, "- Rule one.\n- Rule two.\n- Hand-written rule.");
-  assert.doesNotMatch(hot, /h_[0-9a-f]|\[p=|MEMORY\.md|\/tmp\//u);
-  assert.equal(block(block(prompt.rendered, "pi_memoria"), "instructions"), MEMORY_GUIDANCE);
-  assert.doesNotMatch(MEMORY_GUIDANCE, /MEMORY\.md/u);
-  assert.equal(existsSync(join(h.memoryDir, "MEMORY.md")), false);
-  const backups = join(h.memoryDir, "backups");
-  const names = readdirSync(backups);
-  assert.equal(names.length, 1);
-  assert.equal(readFileSync(join(backups, names[0]!), "utf8"), original);
-
-  const found = await h.call("memoria_search", { query: "Rule one", mode: "literal" });
-  assert.equal(found.details.results[0].store, "hot");
-  assert.equal(found.details.results[0].priority, 90);
-  assert.equal(found.details.results[0].id, "h_aaaaaaaaaaaaaaaa");
-  assert.equal((await h.call("memoria_search", { id: "h_aaaaaaaaaaaaaaaa" })).details.content, "Rule one.");
-
-  await h.dispatch("session_shutdown");
-  await h.dispatch("session_start");
-  assert.equal(block((await h.renderPrompt()).rendered, "hot_memory"), "- Rule one.\n- Rule two.\n- Hand-written rule.");
-  assert.equal((await h.call("memoria_search", { query: "Rule one", mode: "literal" })).details.results.length, 1);
-});
-
-test("migration failure leaves MEMORY.md untouched, blocks hot writes, and recovers after repair", async (t) => {
-  const h = await harness(t);
-  await mkdir(h.memoryDir, { recursive: true });
-  const file = join(h.memoryDir, "MEMORY.md");
-  await writeFile(file, "- [h_duplicate] [p=10] One.\n- [h_duplicate] [p=20] Two.\n");
-  await h.dispatch("session_start");
-  const failed = await h.renderPrompt();
-  assert.match(block(failed.rendered, "pi_memoria"), /HOT MEMORY MIGRATION FAILED/u);
-  assert.doesNotMatch(failed.rendered, /<hot_memory>/u);
-  await assert.rejects(h.call("memoria_add", { store: "hot", content: "Blocked." }), (error: Error) => /\[hot_migration\]/u.test(error.message));
-  assert.equal((await h.call("memoria_add", { content: "Long-term still works." })).details.created, true);
-  assert.equal(readFileSync(file, "utf8"), "- [h_duplicate] [p=10] One.\n- [h_duplicate] [p=20] Two.\n");
-
-  await writeFile(file, "- Repaired rule.\n");
-  await h.dispatch("session_start");
-  const recovered = await h.renderPrompt();
-  assert.equal(block(recovered.rendered, "hot_memory"), "- Repaired rule.");
-  assert.doesNotMatch(block(recovered.rendered, "pi_memoria"), /HOT MEMORY MIGRATION FAILED/u);
-  await h.call("memoria_add", { store: "hot", content: "A second rule." });
-  assert.equal(block((await h.renderPrompt()).rendered, "hot_memory"), "- Repaired rule.\n- A second rule.");
-});
-
-test("oversized legacy memory archives low-priority rules and reports the original backup", async (t) => {
-  const h = await harness(t);
-  const original = `- [h_low000000000000] [p=10] ${"L".repeat(3000)}\n- [h_high00000000000] [p=90] ${"H".repeat(3000)}\n`;
-  await mkdir(h.memoryDir, { recursive: true });
-  await writeFile(join(h.memoryDir, "MEMORY.md"), original);
-  await h.dispatch("session_start");
-  const prompt = await h.renderPrompt();
-  const hot = block(prompt.rendered, "hot_memory");
-  assert.match(hot, /H{3000}/u);
-  assert.doesNotMatch(hot, /L{3000}|h_low|h_high|\[p=/u);
-  const names = readdirSync(join(h.memoryDir, "backups"));
-  assert.ok(names.some((name) => name.startsWith("MEMORY-pre-sqlite-")));
-  const backup = names.find((name) => name.startsWith("MEMORY-pre-sqlite-"))!;
-  assert.equal(readFileSync(join(h.memoryDir, "backups", backup), "utf8"), original);
-  const archived = await h.call("memoria_search", { tags: ["hot-archive"] });
-  assert.ok(archived.details.results.length > 0);
-});
-
 test("empty hot memory is explicit, and a SQLite failure is not fabricated as empty", async (t) => {
   const empty = await harness(t);
   await empty.dispatch("session_start");
@@ -297,7 +219,6 @@ test("empty hot memory is explicit, and a SQLite failure is not fabricated as em
 
   const h = await harness(t);
   await mkdir(h.memoryDir, { recursive: true });
-  await writeFile(join(h.memoryDir, "MEMORY.md"), "- Recovered rule.\n");
   await mkdir(join(h.memoryDir, "memoria.sqlite"));
   await h.dispatch("session_start");
   const failed = await h.renderPrompt("Opaque prompt.");
@@ -306,7 +227,7 @@ test("empty hot memory is explicit, and a SQLite failure is not fabricated as em
   await rm(join(h.memoryDir, "memoria.sqlite"), { recursive: true, force: true });
   await h.dispatch("session_start");
   const recovered = await h.renderPrompt();
-  assert.equal(block(recovered.rendered, "hot_memory"), "- Recovered rule.");
+  assert.equal(block(recovered.rendered, "hot_memory"), "(empty)");
   assert.doesNotMatch(block(recovered.rendered, "pi_memoria"), /MEMORY UNAVAILABLE/u);
 });
 

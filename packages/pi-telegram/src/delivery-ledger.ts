@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { migrateRecords, persistRecords, readRecords } from "./delivery-ledger-storage.ts";
+import { persistRecords, readRecords } from "./delivery-ledger-storage.ts";
 export { LEDGER_SLOTS, LEDGER_RECORD_BYTES, LEDGER_RETENTION_MS, LEDGER_BYTES } from "./delivery-ledger-storage.ts";
-// Retired values stay listed so older ledgers remain readable; see the legacy ledger notes in README.md.
-const phases = ["task_captured", "notice_queued", "notice_suppressed", "report_submitted", "report_started", "generated", "settled", "cancelled", "suppressed", "send_attempt", "api_attempt", "api_ack", "api_rejected", "api_failed", "sent", "send_failed"] as const;
+const phases = ["generated", "settled", "cancelled", "suppressed", "send_attempt", "api_attempt", "api_ack", "api_rejected", "api_failed", "sent", "send_failed"] as const;
 const operations = ["reply", "warning", "attachment", "voice", "notice", "incoming", "service"] as const;
 const outcomes = ["not_applicable", "pending", "acknowledged", "rejected", "unknown", "suppressed"] as const;
 const reasons = ["foreign_input", "unowned_user_start", "custom_interruption", "context_revoked", "owner_session_or_allowlist_changed", "outcome_unknown", "navigation_or_shutdown", "route_expired", "queue_full", "start_failed", "start_watchdog", "voice_only", "empty_final", "agent_aborted", "agent_error", "local_refusal", "local_failure"] as const;
@@ -12,19 +11,16 @@ const causeCodes = ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ECO
 export type CauseCode = typeof causeCodes[number];
 export interface DeliveryRecord {
   v: 1; at: number; event: string; writer?: string; sequence?: number; phase: typeof phases[number]; operation: typeof operations[number]; outcome: typeof outcomes[number];
-  reply?: string; delivery?: string; parent?: string; notice?: string; task?: string; revision?: number;
-  kind?: "eta" | "overdue" | "settled" | "unknown";
-  status?: "completed" | "failed" | "cancelled" | "interrupted" | "unknown";
+  reply?: string; delivery?: string; parent?: string; notice?: string; revision?: number;
   method?: typeof methods[number]; attempt?: number; chunk?: number; chunks?: number; album?: number;
   reason?: typeof reasons[number]; code?: typeof transportCodes[number]; cause?: CauseCode;
   rejection?: "rate_limit" | "authentication" | "access" | "conflict" | "other";
 }
-export type DeliveryContext = Pick<DeliveryRecord, "reply" | "delivery" | "parent" | "notice" | "revision" | "operation" | "kind" | "status">;
+export type DeliveryContext = Pick<DeliveryRecord, "reply" | "delivery" | "parent" | "notice" | "revision" | "operation">;
 export type DeliveryEvent = Omit<DeliveryRecord, "v" | "at" | "event" | "writer" | "sequence">;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const taskId = /^bg-[a-f0-9]{12}$/;
-const allowedKeys = new Set(["v", "at", "event", "writer", "sequence", "phase", "operation", "outcome", "reply", "delivery", "parent", "notice", "task", "revision", "kind", "status", "method", "attempt", "chunk", "chunks", "album", "reason", "code", "cause", "rejection"]);
-const enums: Record<string, readonly string[]> = { phase: phases, operation: operations, outcome: outcomes, kind: ["eta", "overdue", "settled", "unknown"], status: ["completed", "failed", "cancelled", "interrupted", "unknown"], method: methods, reason: reasons, code: transportCodes, cause: causeCodes, rejection: ["rate_limit", "authentication", "access", "conflict", "other"] };
+const allowedKeys = new Set(["v", "at", "event", "writer", "sequence", "phase", "operation", "outcome", "reply", "delivery", "parent", "notice", "revision", "method", "attempt", "chunk", "chunks", "album", "reason", "code", "cause", "rejection"]);
+const enums: Record<string, readonly string[]> = { phase: phases, operation: operations, outcome: outcomes, method: methods, reason: reasons, code: transportCodes, cause: causeCodes, rejection: ["rate_limit", "authentication", "access", "conflict", "other"] };
 /** Strict projection is shared by writes and reads. Never stringify caller objects or raw exceptions. */
 function record(value: unknown): DeliveryRecord {
   if (!value || typeof value !== "object") throw new Error();
@@ -36,7 +32,6 @@ function record(value: unknown): DeliveryRecord {
     if (item === undefined) continue;
     if (enums[key]) { if (typeof item !== "string" || !enums[key].includes(item)) throw new Error(); }
     else if (["reply", "delivery", "parent", "notice", "event", "writer"].includes(key)) { if (typeof item !== "string" || !uuid.test(item)) throw new Error(); }
-    else if (key === "task") { if (typeof item !== "string" || !taskId.test(item)) throw new Error(); }
     else if (key === "v") { if (item !== 1) throw new Error(); }
     else if (typeof item !== "number" || !Number.isSafeInteger(item) || item < 0 || (!["at", "sequence"].includes(key) && item > 1_000_000)) throw new Error();
     out[key] = item;
@@ -76,11 +71,6 @@ export async function readDeliveryLedger(path: string, query: LedgerQuery = {}, 
     view.truncated = result.truncated || view.records.length > limit; view.records = view.records.slice(-limit);
   } catch (e) { view.state = (e as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unavailable"; view.records = []; }
   return view;
-}
-
-/** Explicit operator-only offline migration; never called by a tool, reader or live writer. */
-export async function migrateDeliveryLedger(path: string, options: { writersStopped: true; now?: number }): Promise<{ retained: number; removed: number }> {
-  return migrateRecords(path, record, options);
 }
 
 /** Best effort bounded JSONL. Private ledger lock only, never delivery authority or a global lock. */

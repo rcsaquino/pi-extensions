@@ -77,14 +77,8 @@ Duplicate adds reuse the existing row and consume no capacity. When space is nee
 
 If `memoria.sqlite` cannot be opened, hot rules are not injected. The prompt status reports that memory is unavailable instead of presenting an empty block.
 
-### Upgrading from `MEMORY.md`
-
-The first run of this version imports a legacy `MEMORY.md` once, preserves its IDs and priorities, and then renames the file to `backups/MEMORY-pre-sqlite-<timestamp>-<uuid>.md`. The import and the hot-row insert share one transaction. A malformed file, a symbolic link, or a hot table without a migration marker fails closed and leaves the file untouched. Once imported, the file is never read again.
-
-The schema moves to version 3 and an existing v1/v2 database is snapshotted first as `backups/memoria-pre-v3-<timestamp>-<uuid>.sqlite`. Older pi-memoria versions refuse a v3 database, so keep that snapshot until the upgrade is proven.
-
 > [!WARNING]
-> Do not edit `memoria.sqlite` directly. Manual `MEMORY.md` edits stop working after the one-time import; use the memoria tools instead.
+> Do not edit `memoria.sqlite` directly. Use the memoria tools instead.
 
 ## Recall
 
@@ -152,13 +146,12 @@ Tool replies are compact; oversized results spill to a private `pi-memoria-resul
 ~/.pi/agent/memoria/
 ├── memoria.sqlite
 ├── memoria.sqlite-wal
-├── memoria.sqlite-shm
-└── backups/
+└── memoria.sqlite-shm
 ```
 
-Database startup recognizes truly empty stores and the exact shipped memoria v1/v2/v3 schemas, including legacy stores without an application identifier. A v1/v2 store is snapshotted before the v3 migration, and existing facts, archives, duplicates, and FTS indexes are preserved. Foreign, future, customized, or unsupported schemas are refused before chmod, journal-mode changes, or migration. Older package versions refuse a v3 store.
+Database startup recognizes truly empty stores and the exact current memoria v3 schema. Existing v1/v2 stores are refused rather than migrated; use the published 0.6.0 release to migrate one first. Foreign, future, customized, or unsupported schemas are refused before chmod or journal-mode changes. Older package versions refuse a v3 store.
 
-Database/companion files must be regular single-link files, and existing directory components cannot be symlinks. Unsafe `-wal`, `-shm`, `-journal` aliases and orphan companions are refused. A regular companion observed with zero links during SQLite last-close is rechecked by name, at most 32 times; it is never accepted as an unlinked file. Main-file unlink, nonregular entries and multiple links remain fatal. Ownership inspection uses a private mode-0700 temporary snapshot of the database/WAL/journal, because even SQLite READONLY can alter original SHM read marks. Snapshot files use 0600, copying uses a fixed-size buffer with bounded change retries, and cleanup runs on success/failure. Startup inspection is linear in stored bytes and needs temporary disk capacity; normal queries do not copy the store. Companion disappearance between stat/open or unlink of the same opened companion restarts the bounded snapshot inspection; identity changes and other open errors are not ignored. Concurrent supported startup still re-attests under its migration transaction. WAL-mode selection retries only the driver's numeric SQLITE_BUSY condition, rechecking path safety on every attempt within a five-second deadline; other errors fail immediately. These are focused startup checks, not an OS lease against uncoordinated path/schema mutations by another process.
+Database/companion files must be regular single-link files, and existing directory components cannot be symlinks. Unsafe `-wal`, `-shm`, `-journal` aliases and orphan companions are refused. A regular companion observed with zero links during SQLite last-close is rechecked by name, at most 32 times; it is never accepted as an unlinked file. Main-file unlink, nonregular entries and multiple links remain fatal. Ownership inspection uses a private mode-0700 temporary snapshot of the database/WAL/journal, because even SQLite READONLY can alter original SHM read marks. Snapshot files use 0600, copying uses a fixed-size buffer with bounded change retries, and cleanup runs on success/failure. Startup inspection is linear in stored bytes and needs temporary disk capacity; normal queries do not copy the store. Companion disappearance between stat/open or unlink of the same opened companion restarts the bounded snapshot inspection; identity changes and other open errors are not ignored. Concurrent supported startup still re-attests under its initialization transaction. WAL-mode selection retries only the driver's numeric SQLITE_BUSY condition, rechecking path safety on every attempt within a five-second deadline; other errors fail immediately. These are focused startup checks, not an OS lease against uncoordinated path/schema mutations by another process.
 
 Session search prefers Pi's managed `<agent-dir>/bin/rg` (`rg.exe` on Windows), then inherited PATH if the managed executable is missing (ENOENT). Permission errors or other operational failures are reported, not hidden by fallback. Resolution is retried on each search so a binary provisioned after extension loading is recognized. `PI_CODING_AGENT_DIR` uses the same absolute/tilde normalization as the memory configuration; `PI_MEMORIA_DIR` does not move the managed-bin location. Explicit executable overrides for custom callers/tests remain authoritative.
 
@@ -201,7 +194,7 @@ npm --prefix packages/pi-memoria run bench
 
 No package lockfile is currently committed, so `npm ci` is not a fresh-checkout setup command. The shared host-link helper preserves working dependencies and only repairs missing/broken links.
 
-There is no build step: Pi loads `index.ts` directly. `src/database.ts` owns persistence, `src/hot-memory.ts` owns the hot model and prompt renderer, `src/hot-migration.ts` owns the one-time import, and `src/sessions.ts` owns session search; `index.ts` wires them to lifecycle events and the tool schemas. Tests use temporary directories, real SQLite FTS5, real `rg`, concurrent writers, and Pi's extension loader. Test and benchmark files are checkout-only and excluded from the published tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
+There is no build step: Pi loads `index.ts` directly. `src/database.ts` owns persistence, `src/hot-memory.ts` owns the hot model and prompt renderer, and `src/sessions.ts` owns session search; `index.ts` wires them to lifecycle events and the tool schemas. Tests use temporary directories, real SQLite FTS5, real `rg`, concurrent writers, and Pi's extension loader. Test and benchmark files are checkout-only and excluded from the published tarball. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
 
 ## Support and contact
 

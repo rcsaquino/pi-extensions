@@ -5,7 +5,6 @@ import { Type } from "typebox";
 import { configuration } from "./src/config.ts";
 import { MemoryDatabase } from "./src/database.ts";
 import { ExpectedError } from "./src/errors.ts";
-import { migrateLegacyHot } from "./src/hot-migration.ts";
 import type { HotSnapshot } from "./src/hot-memory.ts";
 import {
   reply, renderHotDelete, renderHotWrite, renderLongTermDelete, renderLongTermWrite,
@@ -36,7 +35,6 @@ interface Runtime {
   context: ExtensionContext;
   configurationError?: unknown;
   rootsEvicted?: number;
-  hotMigrationError?: unknown;
 }
 
 export default function memoria(pi: ExtensionAPI) {
@@ -117,12 +115,6 @@ export default function memoria(pi: ExtensionAPI) {
     };
   };
 
-  const requireHotReady = (current: Runtime) => {
-    if (current.hotMigrationError) {
-      throw new ExpectedError("hot_migration", "Hot memory migration from MEMORY.md failed. Repair the file, then reload before changing hot memory.", {});
-    }
-  };
-
   const guarded = async <T>(work: () => Promise<T>): Promise<T> => {
     try { return await work(); }
     catch (error) { return await toolError(error); }
@@ -130,26 +122,11 @@ export default function memoria(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     const current = stores(ctx);
-    current.hotMigrationError = undefined;
     if (current.configurationError && ctx.hasUI) {
       ctx.ui.notify(`pi-memoria configuration: ${(current.configurationError as Error).message} Safe fallback paths are in use; invalid overrides were ignored.`, "warning");
     }
-    try {
-      const db = database(current);
-      try {
-        const migration = await migrateLegacyHot(db, current.config.directory);
-        current.hotMigrationError = undefined;
-        if (ctx.hasUI) {
-          if (migration.status === "migrated") {
-            ctx.ui.notify(`pi-memoria: imported ${migration.entries} hot memories into SQLite${migration.archived ? `; ${migration.archived} over-cap rules archived` : ""}.${migration.backup ? ` Original saved at ${migration.backup}.` : ""}`, migration.warning ? "warning" : "info");
-          }
-          if (migration.warning) ctx.ui.notify(`pi-memoria: ${migration.warning}`, "warning");
-        }
-      } catch (error) {
-        current.hotMigrationError = error;
-        if (ctx.hasUI) ctx.ui.notify(`pi-memoria hot memory migration: ${(error as Error).message}`, "error");
-      }
-    } catch (error) {
+    try { database(current); }
+    catch (error) {
       if (ctx.hasUI) ctx.ui.notify(`pi-memoria SQLite unavailable: ${(error as Error).message}`, "warning");
     }
   });
@@ -158,16 +135,12 @@ export default function memoria(pi: ExtensionAPI) {
     let text = `<instructions>\n${MEMORY_GUIDANCE}\n</instructions>`;
     const status: string[] = [];
     const current = stores(ctx);
-    if (current.hotMigrationError) {
-      status.push(`HOT MEMORY MIGRATION FAILED: ${(current.hotMigrationError as Error).message} MEMORY.md was not changed and hot memory is not injected. Repair it, then reload before adding, editing, or deleting hot memory.`);
-    } else {
-      try {
-        const snapshot = database(current).hotSnapshot();
-        const hot = (snapshot.text || "(empty)").trimEnd();
-        text += `\n\n<hot_memory>\n${hot}\n</hot_memory>`;
-      } catch (error) {
-        status.push(`MEMORY UNAVAILABLE: ${(error as Error).message}. Hot and long-term memory were not loaded; tell the user and do not assume that memory is empty. Session search uses default, configured, and current roots only, so remembered custom roots may be missing.`);
-      }
+    try {
+      const snapshot = database(current).hotSnapshot();
+      const hot = (snapshot.text || "(empty)").trimEnd();
+      text += `\n\n<hot_memory>\n${hot}\n</hot_memory>`;
+    } catch (error) {
+      status.push(`MEMORY UNAVAILABLE: ${(error as Error).message}. Hot and long-term memory were not loaded; tell the user and do not assume that memory is empty. Session search uses default, configured, and current roots only, so remembered custom roots may be missing.`);
     }
     if (current.configurationError) {
       status.push(`MEMORY CONFIGURATION INVALID: ${(current.configurationError as Error).message} Safe fallback memory paths and session roots are in use; invalid overrides were ignored.`);
@@ -205,7 +178,6 @@ export default function memoria(pi: ExtensionAPI) {
         const current = stores(ctx);
         signal?.throwIfAborted();
         if (params.store === "hot") {
-          requireHotReady(current);
           const details = hotResult(database(current).hotAdd(singleLine(params.content), params.priority), params);
           return reply(details, renderHotWrite("memoria_add", details));
         }
@@ -235,7 +207,6 @@ export default function memoria(pi: ExtensionAPI) {
         if (params.id.startsWith("h_")) {
           if (params.expected_revision !== undefined) throw new ExpectedError("invalid_input", "Use expected_content for hot memory, not expected_revision.", { field: "expected_revision" });
           if (params.content === undefined && params.priority === undefined) throw new ExpectedError("invalid_input", "Provide content or priority to edit.", { field: "content" });
-          requireHotReady(current);
           const details = hotResult(database(current).hotEdit(params.id, params.content === undefined ? undefined : singleLine(params.content), params.priority, params.expected_content), params);
           return reply(details, renderHotWrite("memoria_edit", details));
         }
@@ -258,7 +229,6 @@ export default function memoria(pi: ExtensionAPI) {
         signal?.throwIfAborted();
         if (params.id.startsWith("h_")) {
           if (params.expected_revision !== undefined) throw new ExpectedError("invalid_input", "Use expected_content for hot memory.", { field: "expected_revision" });
-          requireHotReady(current);
           const details = hotResult(database(current).hotDelete(params.id, params.expected_content));
           return reply(details, renderHotDelete(details));
         }

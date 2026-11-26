@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
@@ -174,16 +174,7 @@ export class TelegramBridge {
       this.media = new SentMediaRegistry(resolve(this.stateDirectory, "media-index.json"));
       await this.media.load();
       const path = resolve(this.stateDirectory, "cursor.json");
-      const legacy = resolve(this.directory, "cursor.json");
-      const positions = [await this.cursor(path)];
-      if (legacy !== path) positions.push(await this.cursor(legacy));
-      const valid = positions.filter((value): value is number => value !== undefined);
-      this.offset = valid.length ? Math.max(...valid) : undefined;
-      if (legacy !== path && positions[1] !== undefined) {
-        // Migration happens only while holding ownership. Retain the newest accepted update.
-        await this.saveCursor();
-        await rm(legacy);
-      }
+      this.offset = await this.cursor(path);
       this.controller.signal.throwIfAborted();
       this.worker = setInterval(() => {
         if (!this.workTask) {

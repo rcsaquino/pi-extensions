@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { closeSync } from "node:fs";
+import { resolve } from "node:path";
 import { databasePath } from "./database-path.ts";
-import { APPLICATION_ID, INITIAL_SCHEMA, VERSION_THREE, VERSION_TWO, attestSchema } from "./database-schema.ts";
+import { APPLICATION_ID, CURRENT_SCHEMA, attestSchema } from "./database-schema.ts";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { ExpectedError, isSqliteError, sqliteInfo, storeUnavailable } from "./errors.ts";
 import {
@@ -28,15 +28,6 @@ export type SearchMode = "any" | "all" | "phrase" | "literal";
 export interface MemorySearchOptions {
   /** Require exact, case-sensitive membership for every supplied tag. */
   tags?: string[];
-}
-
-export interface HotMigrationMarker {
-  status: "migrated" | "absent";
-  source?: string;
-  sha256?: string;
-  entries: number;
-  archived: number;
-  at: string;
 }
 
 interface Row { [key: string]: unknown }
@@ -105,7 +96,7 @@ export class MemoryDatabase {
     try {
       location = databasePath(path);
       // A rejected existing database never receives a writable connection, chmod,
-      // journal-mode change or migration. Version zero alone is not ownership.
+      // journal-mode change or schema initialization. Version zero alone is not ownership.
       const existing = location.check();
       if (existing) {
         location.inspect(snapshot => {
@@ -120,15 +111,11 @@ export class MemoryDatabase {
     try {
       this.db.exec("PRAGMA busy_timeout=5000;");
       this.db.function("memoria_fold", { deterministic: true }, (value) => String(value).toLowerCase());
-      const preliminary = attestSchema(this.db);
-      if (preliminary > 0 && preliminary < 3) this.backupBeforeV3();
       this.transaction(() => {
         // Re-attest under the writer transaction for concurrent initialization.
         const version = attestSchema(this.db);
         location.check();
-        if (version === 0) this.db.exec(INITIAL_SCHEMA);
-        if (version < 2) this.db.exec(VERSION_TWO);
-        if (version < 3) this.db.exec(VERSION_THREE);
+        if (version === 0) this.db.exec(CURRENT_SCHEMA);
         this.db.exec(`PRAGMA application_id=${APPLICATION_ID};`);
       });
       this.lockFd = location.privateMode();
@@ -153,16 +140,6 @@ export class MemoryDatabase {
       if (this.lockFd !== undefined) { try { closeSync(this.lockFd); } catch { /* keep the original failure */ } this.lockFd = undefined; }
       throw storeUnavailable("open", path, error);
     }
-  }
-
-  /** A version-two store has no downgrade path from v3, so snapshot it before the schema moves. */
-  private backupBeforeV3(): void {
-    const directory = join(dirname(resolve(this.path)), "backups");
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const name = `memoria-pre-v3-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.sqlite`;
-    const target = join(directory, name);
-    this.db.prepare("VACUUM INTO ?").run(target);
-    chmodSync(target, 0o600);
   }
 
   private attempt<T>(operation: string, work: () => T): T {
@@ -352,45 +329,6 @@ export class MemoryDatabase {
       }
       this.deleteHotRow(id);
       return { ...buildHotSnapshot(current.filter((entry) => entry.id !== id)), deleted };
-    }));
-  }
-
-  hotMigration(): HotMigrationMarker | undefined {
-    return this.attempt("hot_migration", () => {
-      const row = this.statement("SELECT value FROM app_meta WHERE key=?").get("legacy_hot_migration");
-      if (!row) return undefined;
-      let parsed: unknown;
-      try { parsed = JSON.parse(String(row.value)); }
-      catch { throw new ExpectedError("hot_migration", "Invalid hot memory migration marker in SQLite.", {}); }
-      const value = parsed as Partial<HotMigrationMarker> | null;
-      if (!value || typeof value !== "object" || !["migrated", "absent"].includes(String(value.status)) ||
-          !Number.isInteger(value.entries) || !Number.isInteger(value.archived) || typeof value.at !== "string") {
-        throw new ExpectedError("hot_migration", "Invalid hot memory migration marker in SQLite.", {});
-      }
-      return value as HotMigrationMarker;
-    });
-  }
-
-  migrateHot(entries: HotMemory[], archived: HotMemory[], source: string, sha256: string): "migrated" | "already" {
-    return this.attempt("hot_migration", () => this.transaction(() => {
-      if (this.hotMigration()) return "already";
-      const count = Number(this.statement("SELECT COUNT(*) AS n FROM hot_memories").get()?.n ?? 0);
-      if (count > 0) throw new ExpectedError("hot_migration", "Hot memory already contains rows but has no migration marker; refusing to import MEMORY.md.", { count });
-      this.archiveRows(archived, "hot-memory");
-      for (const entry of entries) this.insertHot(entry);
-      const marker: HotMigrationMarker = { status: "migrated", source, sha256, entries: entries.length, archived: archived.length, at: new Date().toISOString() };
-      this.statement("INSERT INTO app_meta(key,value) VALUES(?,?)").run("legacy_hot_migration", JSON.stringify(marker));
-      return "migrated";
-    }));
-  }
-
-  markHotAbsent(): void {
-    this.attempt("hot_migration", () => this.transaction(() => {
-      if (this.hotMigration()) return;
-      const count = Number(this.statement("SELECT COUNT(*) AS n FROM hot_memories").get()?.n ?? 0);
-      if (count > 0) throw new ExpectedError("hot_migration", "Hot memory contains rows without a migration marker; refusing to mark it absent.", { count });
-      const marker: HotMigrationMarker = { status: "absent", entries: 0, archived: 0, at: new Date().toISOString() };
-      this.statement("INSERT INTO app_meta(key,value) VALUES(?,?)").run("legacy_hot_migration", JSON.stringify(marker));
     }));
   }
 

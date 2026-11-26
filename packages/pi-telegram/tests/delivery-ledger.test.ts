@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, chown, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, chown, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { ApiError, TelegramApi, type Fetch } from "../src/api.ts";
 import { TransportFailure, type Config } from "../src/config.ts";
-import { DeliveryLedger, LEDGER_RECORD_BYTES, LEDGER_RETENTION_MS, LEDGER_SLOTS, migrateDeliveryLedger, readDeliveryLedger, transportCause, type DeliveryEvent } from "../src/delivery-ledger.ts";
+import { DeliveryLedger, readDeliveryLedger, transportCause, type DeliveryEvent } from "../src/delivery-ledger.ts";
 
 const scratch = process.env.TELEGRAM_TEST_DIR || resolve(process.env.TMPDIR || "/tmp", "pi-telegram-tests");
 await mkdir(scratch, { recursive: true });
@@ -121,20 +121,6 @@ test("strict persistence rejects payloads, hostile getters, arbitrary identifier
   assert.equal(f.ledger.dropped, 4); assert.equal((await f.read()).length, 0);
 });
 
-test("corrupt, oversized, symlinked, hardlinked and unsafe-mode slots are never exposed or modified", async t => {
-  const f = await fixture(t); await mkdir(f.ledger.path, { mode: 0o700 });
-  const outside = resolve(f.root, "outside"); await writeFile(outside, "PRIVATE", { mode: 0o600 });
-  await writeFile(resolve(f.ledger.path, "0000.json"), "PRIVATE malformed", { mode: 0o600 });
-  await writeFile(resolve(f.ledger.path, "0001.json"), "x".repeat(LEDGER_RECORD_BYTES + 1), { mode: 0o600 });
-  await symlink(outside, resolve(f.ledger.path, "0002.json")); await link(outside, resolve(f.ledger.path, "0003.json"));
-  await writeFile(resolve(f.ledger.path, "0004.json"), "PRIVATE", { mode: 0o644 });
-  const view = await readDeliveryLedger(f.ledger.path); assert.equal(view.skipped, 5); assert.deepEqual(view.records, []);
-  await f.ledger.append(event); await f.read();
-  assert.equal((await readDeliveryLedger(f.ledger.path)).skipped, 5);
-  assert.equal(await readFile(outside, "utf8"), "PRIVATE");
-  assert.equal((await stat(outside)).mode & 0o777, 0o600);
-});
-
 test("ancestor symlinks and writable directories fail closed without chmod or touching aliased state", async t => {
   const f = await fixture(t); const target = resolve(f.root, "target"); await mkdir(target, { mode: 0o700 });
   const alias = resolve(f.root, "alias"); await symlink(target, alias);
@@ -143,26 +129,6 @@ test("ancestor symlinks and writable directories fail closed without chmod or to
   assert.equal((await readDeliveryLedger(ledger.path)).state, "unavailable");
   await chmod(target, 0o777); const unsafe = new DeliveryLedger(resolve(target, "diagnostics")); await unsafe.append(event);
   assert.equal(unsafe.dropped, 1); assert.equal((await stat(target)).mode & 0o777, 0o777);
-});
-
-test("offline slot conversion preserves bounds and expiry without automatic cleanup by a live writer", async t => {
-  const f = await fixture(t); await mkdir(f.ledger.path, { mode: 0o700 });
-  const old = { ...event, v: 1, at: Date.now() - LEDGER_RETENTION_MS - 10_000, event: randomUUID() };
-  const bytes = JSON.stringify(old);
-  await Promise.all(Array.from({ length: LEDGER_SLOTS }, async (_, n) => {
-    const path = resolve(f.ledger.path, `${n.toString().padStart(4, "0")}.json`);
-    await writeFile(path, bytes, { mode: 0o600 }); await utimes(path, new Date(old.at), new Date(old.at));
-  }));
-  assert.equal((await readDeliveryLedger(f.ledger.path)).records.length, 0);
-  await f.ledger.append(event); await f.read(); assert.equal(f.ledger.dropped, 1);
-  assert.equal((await readdir(f.ledger.path)).length, LEDGER_SLOTS, "new live writer never cleans old-runtime slots");
-  assert.deepEqual(await migrateDeliveryLedger(f.ledger.path, { writersStopped: true }), { retained: 0, removed: LEDGER_SLOTS });
-  for (let n = 0; n < 25; n++) await f.ledger.append(event);
-  await f.read();
-  const names = await readdir(f.ledger.path); assert.deepEqual(names.sort(), ["events.jsonl", "writer.lock"]);
-  const view = await readDeliveryLedger(f.ledger.path, { limit: 10 }); assert.equal(view.records.length, 10); assert.equal(view.truncated, true);
-  for (const name of names) { const s = await stat(resolve(f.ledger.path, name)); assert.ok(s.size <= LEDGER_SLOTS * LEDGER_RECORD_BYTES); assert.equal(s.mode & 0o777, 0o600); }
-  assert.equal((await stat(f.ledger.path)).mode & 0o777, 0o700);
 });
 
 test("independent subprocess writers coordinate JSONL appends, with best-effort contention drops", async t => {

@@ -985,7 +985,7 @@ test("failed cursor initialization also releases ownership", async t => {
   const lockDir = await mkdtemp(resolve(workspace, "telegram-cursor-owner-"));
   t.after(() => rm(lockDir, { recursive: true, force: true }));
   const first = await fixture(t, { lockDir, start: false });
-  const botDir = resolve(first.dir, "downloads", createHash("sha256").update(config.token).digest("hex").slice(0, 16));
+  const botDir = resolve(first.dir, "state", createHash("sha256").update(config.token).digest("hex").slice(0, 16));
   await mkdir(botDir, { recursive: true });
   await writeFile(resolve(botDir, "cursor.json"), "corrupt");
   await assert.rejects(first.bridge.start(), /cursor is unreadable/);
@@ -1147,22 +1147,6 @@ test("inbound downloaded media is indexed and resolvable on a later reply withou
   assert.ok(ref.statuses.includes("text_unavailable; local_media_copy_available"));
   await h.finish("");
   assert.deepEqual(h.server.calls.filter(call => call.method === "getFile").map(call => call.args.file_id), ["incoming-photo"]);
-});
-
-test("legacy cursor is migrated to persistent state only under ownership, retaining the newest offset", async t => {
-  const h = await fixture(t, { start: false });
-  const bot = createHash("sha256").update(config.token).digest("hex").slice(0, 16);
-  const downloads = resolve(h.dir, "downloads", bot);
-  const state = resolve(h.dir, "state", bot);
-  await mkdir(downloads, { recursive: true });
-  await mkdir(state, { recursive: true });
-  await writeFile(resolve(downloads, "cursor.json"), '{"offset":101}');
-  await writeFile(resolve(state, "cursor.json"), '{"offset":90}');
-  await h.bridge.start();
-  await until(() => h.bridge.status === "connected");
-  assert.equal(JSON.parse(await readFile(resolve(state, "cursor.json"), "utf8")).offset, 101);
-  await assert.rejects(stat(resolve(downloads, "cursor.json")), { code: "ENOENT" });
-  assert.equal(h.server.calls.find(call => call.method === "getUpdates")!.args.offset, 101);
 });
 
 test("successful voice tools with an empty final remain voice-only; actual cancellation still reports an error", async t => {

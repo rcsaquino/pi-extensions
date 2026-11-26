@@ -14,7 +14,6 @@ const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const fileFlags = constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const uid = () => process.getuid?.();
 type Codec = (value: unknown) => DeliveryRecord;
-const legacyName = (name: string) => /^\d{4}\.json$/.test(name) && Number(name.slice(0, 4)) < LEDGER_SLOTS;
 function directorySafe(stat: Stats, privateDir: boolean): void {
   const owner = uid();
   if (!stat.isDirectory() || owner === undefined || (stat.uid !== owner && stat.uid !== 0) ||
@@ -62,10 +61,10 @@ class PrivateDirectory {
     const names: string[] = [];
     const stream = await opendir(this.entry("."));
     for await (const node of stream) {
-      if (names.length >= LEDGER_SLOTS + 3 || (!legacyName(node.name) && ![ACTIVE, LOCK, TEMP].includes(node.name))) throw new Error();
+      if (names.length > 3 || ![ACTIVE, LOCK, TEMP].includes(node.name)) throw new Error();
       names.push(node.name);
     }
-    // Readers inspect but never lock, repair, migrate or remove the temporary namespace.
+    // Readers inspect but never lock, repair or remove the temporary namespace.
     await this.stat(LOCK, 0); await this.stat(TEMP, LEDGER_BYTES);
     return names;
   }
@@ -165,7 +164,7 @@ async function acquire(dir: PrivateDirectory): Promise<FileHandle> {
 }
 async function replace(dir: PrivateDirectory, items: DeliveryRecord[], expected: Stats | undefined, lock: FileHandle): Promise<void> {
   // Only invoked with the permanent lock held. A safe crash temp can be discarded: old active
-  // remains authoritative until atomic rename. No archive and no automatic legacy cleanup.
+  // remains authoritative until atomic rename. No archive.
   await checkLock(dir, lock);
   const stale = await dir.stat(TEMP, LEDGER_BYTES);
   if (stale) await dir.remove(TEMP, stale, LEDGER_BYTES);
@@ -188,11 +187,9 @@ export async function persistRecords(path: string, batch: DeliveryRecord[], code
   const data = Buffer.concat(batch.map(encode)), dir = await PrivateDirectory.open(path, true);
   let lock: FileHandle | undefined;
   try {
-    const names = await dir.inventory();
-    // Refuse coexistence with a slot writer. Conversion is explicit, offline and separately approved.
-    if (names.some(legacyName)) throw new Error();
+    await dir.inventory();
     lock = await acquire(dir);
-    if ((await dir.inventory()).some(legacyName)) throw new Error();
+    await dir.inventory();
     const snapshot = await dir.bytes(ACTIVE, LEDGER_BYTES), now = Date.now();
     const parsed = snapshot ? parseLines(snapshot.data, codec) : { records: [], skipped: 0 };
     const items = retain(parsed.records, now);
@@ -223,58 +220,13 @@ export async function persistRecords(path: string, batch: DeliveryRecord[], code
 export async function readRecords(path: string, codec: Codec, now: number): Promise<{ records: DeliveryRecord[]; skipped: number; truncated: boolean }> {
   const dir = await PrivateDirectory.open(path, false);
   try {
-    const names = await dir.inventory(); let skipped = 0;
+    await dir.inventory(); let skipped = 0;
     const active = await dir.bytes(ACTIVE, LEDGER_BYTES, true);
     const parsed = active ? parseLines(active.data, codec) : { records: [], skipped: 0 };
     const records = parsed.records; skipped += parsed.skipped;
-    // Transition-only read ceiling: <=2 MiB JSONL + <=2 MiB slots. Output is still <=2048 records.
-    for (const name of names.filter(legacyName).sort()) {
-      try { const bytes = await dir.bytes(name, LEDGER_RECORD_BYTES); if (bytes) records.push(decode(bytes.data, codec)); }
-      catch { skipped++; }
-    }
     await dir.check();
     const retained = retain(records, now);
     const validUnique = new Set(records.filter(r => r.at >= now - LEDGER_RETENTION_MS && r.at <= now + 60_000).map(r => r.event)).size;
     return { records: retained, skipped, truncated: validUnique > LEDGER_SLOTS };
   } finally { await dir.handle.close(); }
-}
-
-/** Operator-only offline conversion. Caller must stop ALL old and new diagnostic writers first.
- * No runtime/tool invokes this. It refuses unsafe/corrupt legacy entries rather than erasing them.
- * Rerunning after interruption deduplicates event UUIDs and safely finishes exact-slot cleanup.
- */
-export async function migrateRecords(path: string, codec: Codec, options: { writersStopped: true; now?: number }): Promise<{ retained: number; removed: number }> {
-  if (options.writersStopped !== true) throw new Error();
-  const dir = await PrivateDirectory.open(path, false); let lock: FileHandle | undefined;
-  try {
-    const names = await dir.inventory();
-    // Preflight every slot BEFORE publishing anything or creating a coordination file.
-    const slots: { name: string; stat: Stats; item: DeliveryRecord }[] = [];
-    for (const name of names.filter(legacyName).sort()) {
-      const bytes = await dir.bytes(name, LEDGER_RECORD_BYTES); if (!bytes) throw new Error();
-      const item = decode(bytes.data, codec); encode(item); slots.push({ name, stat: bytes.stat, item });
-    }
-    lock = await acquire(dir);
-    const active = await dir.bytes(ACTIVE, LEDGER_BYTES);
-    const parsed = active ? parseLines(active.data, codec) : { records: [], skipped: 0 };
-    if (parsed.skipped) throw new Error();
-    const combined = [...parsed.records, ...slots.map(s => s.item)], identities = new Map<string, Buffer>();
-    for (const item of combined) {
-      encode(item);
-      const bytes = Buffer.from(JSON.stringify(Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))))), prior = identities.get(item.event);
-      // Key order is not data; conflicting duplicate IDs cannot overwrite an observation.
-      if (prior && !prior.equals(bytes)) throw new Error(); identities.set(item.event, bytes);
-    }
-    const now = options.now ?? Date.now(), items = retain(combined, now);
-    for (const slot of slots) {
-      const current = await dir.stat(slot.name, LEDGER_RECORD_BYTES);
-      if (!current || !unchanged(current, slot.stat)) throw new Error();
-    }
-    await replace(dir, items, active?.stat, lock);
-    const published = await dir.bytes(ACTIVE, LEDGER_BYTES);
-    if (!published || !published.data.equals(Buffer.concat(items.map(encode)))) throw new Error();
-    let removed = 0;
-    for (const slot of slots) { await checkLock(dir, lock); await dir.remove(slot.name, slot.stat, LEDGER_RECORD_BYTES); removed++; }
-    await dir.handle.sync(); return { retained: items.length, removed };
-  } finally { await lock?.close(); await dir.handle.close(); }
 }

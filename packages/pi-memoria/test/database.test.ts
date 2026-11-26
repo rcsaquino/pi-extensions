@@ -88,35 +88,26 @@ test("concurrent cold opens and last-close WAL lifecycles preserve one durable d
   }
 });
 
-test("upgrading a version 1 database preserves existing duplicates, archives, and search indexes", async (t) => {
+test("reopening a current database preserves duplicates, archives, and search indexes", async (t) => {
   const path = join(await temporary(t), "memoria.sqlite");
   let db = new MemoryDatabase(path);
   t.after(() => db.close());
   const { memory: original } = db.add({ content: "The user likes apples.", tags: ["fruit"], source: "first-session" });
   const archiveId = db.archive([{ id: "h_archived", content: original.content }], "hot-memory")[0]!;
-  db.rememberRoots(["/tmp/legacy-sessions"]);
+  db.rememberRoots(["/tmp/current-sessions"]);
   db.close();
-
-  const raw = new DatabaseSync(path);
-  try {
-    // Recreate the previous on-disk schema with two pre-existing copies of a fact.
-    raw.exec("DROP INDEX memories_content; DROP TABLE hot_memories; DROP TABLE app_meta; PRAGMA user_version=1;");
-    raw.prepare(`INSERT INTO memories(id,content,tags,tag_text,source,created_at,updated_at)
-      SELECT ?,content,tags,tag_text,?,created_at,updated_at FROM memories WHERE id=?`)
-      .run("m_legacy_duplicate", "second-session", original.id);
-  } finally { raw.close(); }
 
   db = new MemoryDatabase(path);
   assert.deepEqual(db.add({ content: original.content }), { memory: original, created: false });
-  assert.equal(db.search("apples").results.length, 3);
-  assert.equal(db.get("m_legacy_duplicate").source, "second-session");
+  assert.equal(db.search("apples").results.length, 2);
   assert.deepEqual(db.get(archiveId).tags, ["hot-archive"]);
-  assert.deepEqual(db.roots(), ["/tmp/legacy-sessions"]);
+  assert.deepEqual(db.roots(), ["/tmp/current-sessions"]);
   db.edit(original.id, { content: "The user likes pears." });
   assert.equal(db.search("pears").results[0]?.id, original.id);
-  assert.equal(db.search("apples").results.length, 2);
+  assert.equal(db.search("apples").results.length, 1);
   db.delete(archiveId);
-  assert.equal(db.add({ content: original.content }).memory.id, "m_legacy_duplicate");
+  const readded = db.add({ content: original.content });
+  assert.equal(readded.created, true);
   db.close();
   db = new MemoryDatabase(path);
   assert.equal(db.search().results.length, 2);

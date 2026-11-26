@@ -96,7 +96,7 @@ test("hot search returns the rule and its h_ id while the prompt text stays meta
   assert.doesNotMatch(db.hotSnapshot().text, new RegExp(added.memory.id, "u"));
 });
 
-test("migrated hot rows keep their position and IDs through edits", async (t) => {
+test("hot rows keep their position and IDs through edits", async (t) => {
   const db = await database(t);
   const a = db.hotAdd("A", 10);
   const b = db.hotAdd("B", 20);

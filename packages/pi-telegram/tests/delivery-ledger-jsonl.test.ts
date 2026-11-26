@@ -6,7 +6,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
-import { DeliveryLedger, LEDGER_BYTES, LEDGER_RECORD_BYTES, LEDGER_RETENTION_MS, LEDGER_SLOTS, migrateDeliveryLedger, readDeliveryLedger, type DeliveryRecord } from "../src/delivery-ledger.ts";
+import { DeliveryLedger, LEDGER_BYTES, LEDGER_RECORD_BYTES, LEDGER_RETENTION_MS, LEDGER_SLOTS, readDeliveryLedger, type DeliveryRecord } from "../src/delivery-ledger.ts";
 import { FLOCK, systemBin } from "../src/system-bin.ts";
 
 // A FIFO trap needs the util-linux helper; its absence is an environment gap, not a defect.
@@ -49,7 +49,7 @@ test("JSONL append success has one closed redacted record per line and stable in
 
 test("all exact opaque filters, timestamp/writer ordering and latest truncation remain compatible", async t => {
   const f = await fixture(t), reply = randomUUID(), notice = randomUUID(), delivery = randomUUID(), writer = randomUUID();
-  const at = Date.now(), records = [3, 1, 2].map(sequence => item({ at, writer, sequence, reply, notice, delivery, task: "bg-012345abcdef" }));
+  const at = Date.now(), records = [3, 1, 2].map(sequence => item({ at, writer, sequence, reply, notice, delivery }));
   await writeFile(f.active, records.map(line).join("") + line(item({ at: at - 1 })), { mode: 0o600 });
   for (const query of [{ reply }, { notice }, { delivery }, { reply, notice, delivery }]) {
     const view = await readDeliveryLedger(f.path, { ...query, limit: 2 });
@@ -133,12 +133,11 @@ for (const name of ["events.jsonl", "writer.lock", "compact.tmp"]) for (const tr
   assert.equal(f.ledger.dropped, 1); assert.equal((await lstat(target)).ino, before.ino); assert.equal(await readFile(outside, "utf8"), "PRIVATE"); assert.equal((await stat(outside)).mode & 0o777, 0o600);
 });
 
-test("unknown names and out-of-range legacy slots fail closed and are never removed", async t => {
-  const f = await fixture(t); await writeFile(resolve(f.path, "2048.json"), "PRIVATE", { mode: 0o600 });
+test("unknown names fail closed and are never removed", async t => {
+  const f = await fixture(t); await writeFile(resolve(f.path, "unrelated.txt"), "PRIVATE", { mode: 0o600 });
   const before = await inventory(f.path); assert.equal((await readDeliveryLedger(f.path)).state, "unavailable"); await f.append();
-  await assert.rejects(migrateDeliveryLedger(f.path, { writersStopped: true })); assert.deepEqual(await inventory(f.path), before);
-  await rename(resolve(f.path, "2048.json"), resolve(f.path, "unrelated.txt")); await f.append();
-  assert.equal(f.ledger.dropped, 2); assert.equal(await readFile(resolve(f.path, "unrelated.txt"), "utf8"), "PRIVATE");
+  assert.equal(f.ledger.dropped, 1); assert.deepEqual(await inventory(f.path), before);
+  assert.equal(await readFile(resolve(f.path, "unrelated.txt"), "utf8"), "PRIVATE");
 });
 
 test("missing and unavailable readers never create directories, locks, repairs or temporary files", async t => {
@@ -184,41 +183,6 @@ test("concurrent subprocess writers open active after locking and preserve all c
   assert.deepEqual((await readdir(f.path)).sort(), ["events.jsonl", "writer.lock"]);
 });
 
-test("legacy transition reads/dedup stay read-only and offline conversion preserves exact event IDs and observations", async t => {
-  const f = await fixture(t), a = item({ task: "bg-012345abcdef" }), b = item({ at: Date.now() + 1 });
-  await writeFile(f.active, line(a), { mode: 0o600 });
-  // Key order alone does not turn an identical observation into a conflicting duplicate.
-  await writeFile(resolve(f.path, "0000.json"), JSON.stringify(Object.fromEntries(Object.entries(a).reverse())), { mode: 0o600 });
-  await writeFile(resolve(f.path, "2047.json"), JSON.stringify(b), { mode: 0o600 });
-  const before = await inventory(f.path), view = await readDeliveryLedger(f.path);
-  assert.deepEqual(view.records, [a, b]); assert.deepEqual(await inventory(f.path), before);
-  await f.append(); assert.equal(f.ledger.dropped, 1); assert.deepEqual(await inventory(f.path), before);
-  await assert.rejects(migrateDeliveryLedger(f.path, { writersStopped: false } as any)); assert.deepEqual(await inventory(f.path), before);
-  assert.deepEqual(await migrateDeliveryLedger(f.path, { writersStopped: true }), { retained: 2, removed: 2 });
-  assert.deepEqual((await readDeliveryLedger(f.path)).records, [a, b]); assert.deepEqual((await readdir(f.path)).sort(), ["events.jsonl", "writer.lock"]);
-  assert.deepEqual(await migrateDeliveryLedger(f.path, { writersStopped: true }), { retained: 2, removed: 0 });
-});
-
-test("interrupted migration publication plus partial slot cleanup is idempotently finalized by event UUID", async t => {
-  const f = await fixture(t), a = item(), b = item();
-  // Exact state after atomic publication and one cleanup, before process loss.
-  await writeFile(f.active, line(a) + line(b), { mode: 0o600 }); await writeFile(resolve(f.path, "0001.json"), line(b), { mode: 0o600 });
-  assert.deepEqual(await migrateDeliveryLedger(f.path, { writersStopped: true }), { retained: 2, removed: 1 });
-  assert.deepEqual((await readDeliveryLedger(f.path)).records.map(r => r.event), [a, b].sort((x, y) => x.at - y.at || x.event.localeCompare(y.event)).map(r => r.event));
-});
-
-for (const trap of ["corrupt", "symlink", "hardlink", "mode", "oversize"]) test(`migration preflight halts on ${trap} legacy entry before publication or cleanup`, async t => {
-  const f = await fixture(t), safe = item(), target = resolve(f.path, "0001.json"), outside = resolve(f.root, "outside");
-  await writeFile(resolve(f.path, "0000.json"), line(safe), { mode: 0o600 }); await writeFile(outside, line(item()), { mode: 0o600 });
-  if (trap === "corrupt") await writeFile(target, "PRIVATE", { mode: 0o600 });
-  if (trap === "symlink") await symlink(outside, target);
-  if (trap === "hardlink") await link(outside, target);
-  if (trap === "mode") await writeFile(target, line(item()), { mode: 0o644 });
-  if (trap === "oversize") await writeFile(target, "x".repeat(LEDGER_RECORD_BYTES + 1), { mode: 0o600 });
-  const before = await inventory(f.path); await assert.rejects(migrateDeliveryLedger(f.path, { writersStopped: true })); assert.deepEqual(await inventory(f.path), before);
-  assert.equal(await readFile(resolve(f.path, "0000.json"), "utf8"), line(safe));
-});
-
 test("descriptor-anchored operations reject ancestor alias and nonprivate final modes without modifying aliases", async t => {
   const f = await fixture(t), alias = resolve(f.root, "alias"); await symlink(f.path, alias);
   const ledger = new DeliveryLedger(alias); await ledger.append(pending); while (ledger.pendingWrites) await ledger.flush();
@@ -242,18 +206,11 @@ for (const kind of ["append", "compact"]) test(`SIGKILL during real ${kind} I/O 
   assert.equal(f.ledger.dropped, 0); assert.equal((await stat(resolve(f.path, "writer.lock"))).ino, lock); assert.ok(!(await readdir(f.path)).includes("compact.tmp"));
 });
 
-test("migration refuses conflicting duplicate event identities instead of silently overwriting an observation", async t => {
-  const f = await fixture(t), a = item(); await writeFile(f.active, line(a), { mode: 0o600 });
-  await writeFile(resolve(f.path, "0000.json"), line({ ...a, outcome: "acknowledged" }), { mode: 0o600 });
-  await assert.rejects(migrateDeliveryLedger(f.path, { writersStopped: true }));
-  assert.equal(await readFile(f.active, "utf8"), line(a)); assert.equal((await readdir(f.path)).filter(n => /\.json$/.test(n)).length, 1);
-});
-
-for (const operation of ["read", "write", "migration"]) test(`ancestor swap at real checked-file boundary cannot redirect ${operation} outside the anchored directory`, async t => {
-  const f = await fixture(t), outside = resolve(f.root, "outside"), target = operation === "migration" ? resolve(f.path, "0000.json") : f.active;
+for (const operation of ["read", "write"]) test(`ancestor swap at real checked-file boundary cannot redirect ${operation} outside the anchored directory`, async t => {
+  const f = await fixture(t), outside = resolve(f.root, "outside");
   await mkdir(outside, { mode: 0o700 }); const approved = item(), sentinel = "OUTSIDE_PRIVATE_SENTINEL";
-  await writeFile(target, line(approved), { mode: 0o600 }); await writeFile(resolve(outside, operation === "migration" ? "0000.json" : "events.jsonl"), sentinel, { mode: 0o600 });
-  const identity = await stat(target), originalOpen = promises.open, readBytes: Buffer[] = []; let mutated = false;
+  await writeFile(f.active, line(approved), { mode: 0o600 }); await writeFile(resolve(outside, "events.jsonl"), sentinel, { mode: 0o600 });
+  const identity = await stat(f.active), originalOpen = promises.open, readBytes: Buffer[] = []; let mutated = false;
   promises.open = (async (...args: Parameters<typeof promises.open>) => {
     const file = await originalOpen(...args), getStat = file.stat.bind(file), read = file.read.bind(file);
     file.stat = (async (...options: Parameters<typeof file.stat>) => {
@@ -271,11 +228,10 @@ for (const operation of ["read", "write", "migration"]) test(`ancestor swap at r
   syncBuiltinESMExports();
   try {
     if (operation === "read") assert.equal((await readDeliveryLedger(f.path)).state, "unavailable");
-    else if (operation === "write") { await f.append(); assert.equal(f.ledger.dropped, 1); }
-    else await assert.rejects(migrateDeliveryLedger(f.path, { writersStopped: true }));
+    else { await f.append(); assert.equal(f.ledger.dropped, 1); }
     assert.equal(mutated, true); assert.equal(Buffer.concat(readBytes).includes(Buffer.from(sentinel)), false);
-    assert.equal(await readFile(resolve(outside, operation === "migration" ? "0000.json" : "events.jsonl"), "utf8"), sentinel);
-    assert.deepEqual(await readdir(outside), [operation === "migration" ? "0000.json" : "events.jsonl"]);
+    assert.equal(await readFile(resolve(outside, "events.jsonl"), "utf8"), sentinel);
+    assert.deepEqual(await readdir(outside), ["events.jsonl"]);
   } finally { promises.open = originalOpen; syncBuiltinESMExports(); }
 });
 

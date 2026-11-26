@@ -46,15 +46,14 @@ function described(entry: HotMemory): CapacityEntry {
 
 /**
  * Evict the lowest-priority eligible entries until the rendered rules fit.
- * With a target, only strictly lower-priority entries are eligible. Without
- * one (migration), every entry is eligible, lowest priority first.
+ * Only strictly lower-priority entries are eligible.
  */
-export function fitHotMemory(entries: HotMemory[], target?: HotMemory): { kept: HotMemory[]; evicted: HotMemory[] } {
+export function fitHotMemory(entries: HotMemory[], target: HotMemory): { kept: HotMemory[]; evicted: HotMemory[] } {
   const kept = entries.slice();
   const evicted: HotMemory[] = [];
   while (renderHotMemory(kept).length > HOT_LIMIT) {
     const candidates = kept
-      .filter((entry) => entry.id !== target?.id && (!target || entry.priority < target.priority))
+      .filter((entry) => entry.id !== target.id && entry.priority < target.priority)
       .sort((a, b) => a.priority - b.priority || a.position - b.position);
     const victim = candidates[0];
     if (!victim) break;

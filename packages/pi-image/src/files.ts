@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { SafeError } from "./errors.ts";
 import { OUTPUT_ESCAPE, rejectSymlinkComponents, within } from "./paths.ts";
 
-export const MIN_IMAGE_BYTES = 1024;
+const MIN_IMAGE_BYTES = 1024;
 
 export type SavedMime = "image/png" | "image/jpeg";
 
@@ -31,7 +31,7 @@ export function slugify(prompt: string): string {
   return slug || "image";
 }
 
-export function stampSlug(date = new Date()): string {
+function stampSlug(date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }

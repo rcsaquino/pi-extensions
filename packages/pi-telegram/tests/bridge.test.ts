@@ -503,7 +503,7 @@ test("a notice queued before the final still preserves it when delivered later",
   h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Audit stopped at 16:15:03." }], stopReason: "stop" });
   // A follow-up notice keeps the timestamp from when it was queued, which can
   // predate the final it is delivered after.
-  h.bridge.userStart({ role: "custom", customType: "subagent-notice", content: "[Subagent settled]\nStatus: done", timestamp: Date.now() - 120_000 });
+  h.bridge.userStart({ role: "custom", customType: "background-task-notice", content: "[Background task finished]\nStatus: done", timestamp: Date.now() - 120_000 });
   h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Cancelled audit has settled." }], stopReason: "stop" });
   h.setIdle(true);
   await h.bridge.settled();
@@ -515,7 +515,7 @@ test("a later notice turn preserves an already generated final", async t => {
   h.server.feed(message(1, "Run the audit"));
   await until(() => h.submissions.length === 1);
   h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Audit stopped at 16:15:03." }], stopReason: "stop" });
-  h.bridge.userStart({ role: "custom", customType: "subagent-notice", content: "[Subagent settled]\nStatus: done" });
+  h.bridge.userStart({ role: "custom", customType: "background-task-notice", content: "[Background task finished]\nStatus: done" });
   h.bridge.assistantEnd({ role: "assistant", content: [{ type: "text", text: "Cancelled audit has settled." }], stopReason: "stop" });
   h.setIdle(true);
   await h.bridge.settled();

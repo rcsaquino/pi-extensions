@@ -105,7 +105,7 @@ class PrivateDirectory {
   }
 }
 
-export function orderRecords(a: DeliveryRecord, b: DeliveryRecord): number {
+function orderRecords(a: DeliveryRecord, b: DeliveryRecord): number {
   return a.at - b.at || (a.writer === b.writer ? (a.sequence || 0) - (b.sequence || 0) : a.event.localeCompare(b.event)) || a.event.localeCompare(b.event);
 }
 function retain(records: DeliveryRecord[], now: number): DeliveryRecord[] {

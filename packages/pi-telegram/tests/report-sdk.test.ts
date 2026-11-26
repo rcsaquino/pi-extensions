@@ -55,7 +55,7 @@ async function fixture(t: test.TestContext) {
       const last = context.messages.filter(item => item.role !== "system").at(-1)!;
       const content = JSON.stringify(last);
       const fromTelegram = content.includes("Telegram request") || content.includes("Please verify");
-      const fromNotice = content.includes("Subagent settled");
+      const fromNotice = content.includes("Background task finished");
       const local = content.includes("Local TUI question");
       const artifact = content.includes("Mirror the artifact");
       let visible = "Synthetic final.";
@@ -105,7 +105,7 @@ test("an inbound Telegram turn replies once to its chat", async t => {
 
 test("a settled custom notice with no Telegram origin is mirrored to the bound chat", async t => {
   const f = await fixture(t);
-  f.session.sendCustomMessage({ customType: "subagent-notice", content: "[Subagent settled]\nStatus: done", display: false }, { triggerTurn: true, deliverAs: "followUp" });
+  f.session.sendCustomMessage({ customType: "background-task-notice", content: "[Background task finished]\nStatus: done", display: false }, { triggerTurn: true, deliverAs: "followUp" });
   await until(() => f.sent.length === 1, "mirrored notice");
   await f.session.waitForIdle();
   assert.deepEqual(f.sent, [{ chat_id: 123, text: "Mirrored notice final." }]);
@@ -123,7 +123,7 @@ test("a local TUI turn is mirrored to the bound chat", async t => {
 
 test("a mirrored custom turn can deliver a captionless attachment and stays silent afterward", async t => {
   const f = await fixture(t);
-  f.session.sendCustomMessage({ customType: "subagent-notice", content: "Mirror the artifact", display: false }, { triggerTurn: true, deliverAs: "followUp" });
+  f.session.sendCustomMessage({ customType: "background-task-notice", content: "Mirror the artifact", display: false }, { triggerTurn: true, deliverAs: "followUp" });
   await until(() => f.uploads.length === 1, "mirrored upload");
   await f.session.waitForIdle();
   assert.equal(f.uploads[0].chat, "123");

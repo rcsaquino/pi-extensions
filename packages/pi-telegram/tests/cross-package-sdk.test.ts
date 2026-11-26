@@ -44,14 +44,14 @@ async function fixture(t: test.TestContext) {
     pi.registerTool({ name: "synthetic_notice", label: "Notice", description: "Synthetic notice producer", parameters: Type.Object({}),
       async execute() {
         notices++;
-        pi.sendMessage({ customType: "subagent-notice", content: "[Subagent settled]\nStatus: done\n---\nSynthetic worker report.", display: false }, { triggerTurn: true, deliverAs: "followUp" });
+        pi.sendMessage({ customType: "background-task-notice", content: "[Background task finished]\nStatus: done\n---\nSynthetic worker report.", display: false }, { triggerTurn: true, deliverAs: "followUp" });
         return { content: [{ type: "text", text: "Notice queued" }], details: undefined };
       },
     });
     pi.registerProvider(provider, { apiKey: "INERT", baseUrl: model.baseUrl, api: model.api, models: [model], streamSimple(m, context) {
       const stream = createAssistantMessageEventStream();
       const last = context.messages.filter(item => item.role !== "system").at(-1)!;
-      const fromNotice = JSON.stringify(last).includes("Subagent settled");
+      const fromNotice = JSON.stringify(last).includes("Background task finished");
       let tool: Pick<ToolCall, "name" | "arguments"> | undefined;
       if (last.role === "user" && !fromNotice) tool = { name: "synthetic_notice", arguments: {} };
       const message: AssistantMessage = { role: "assistant", api: m.api, provider: m.provider, model: m.id, timestamp: Date.now(), stopReason: tool ? "toolUse" : "stop",

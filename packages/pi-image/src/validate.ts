@@ -6,11 +6,11 @@ import { SafeError } from "./errors.ts";
 import { detectImageMime } from "./files.ts";
 import { canonicalRoot, OUTPUT_ESCAPE, rejectSymlinkComponents, within } from "./paths.ts";
 
-export const MAX_PROMPT_LENGTH = 4000;
-export const MAX_REFERENCE_IMAGES = 3;
-export const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
+const MAX_PROMPT_LENGTH = 4000;
+const MAX_REFERENCE_IMAGES = 3;
+const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
 export const MAX_REFERENCE_TOTAL_BYTES = 32 * 1024 * 1024;
-export const MAX_MODEL_LENGTH = 128;
+const MAX_MODEL_LENGTH = 128;
 
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.\-/]*$/;
 /** Explicit pixel sizes plus OpenRouter dimension tiers; "auto" omits the field. */

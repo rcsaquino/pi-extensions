@@ -67,7 +67,7 @@ export async function sessionFiles(): Promise<Map<string, string>> {
   return index;
 }
 
-export function runsRoot(): string {
+function runsRoot(): string {
   return join(agentDir(), "background");
 }
 
@@ -229,7 +229,7 @@ export function formatDuration(fromIso: string, toIso?: string): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-export const RETENTION_DAYS = 30;
+const RETENTION_DAYS = 30;
 export const RETENTION_RUNS = 25;
 
 /**

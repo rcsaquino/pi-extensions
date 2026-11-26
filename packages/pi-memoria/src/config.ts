@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 
-export function absolutePath(value: string, name: string): string {
+function absolutePath(value: string, name: string): string {
   const expanded = value === "~" ? homedir() : value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
   if (!expanded || !isAbsolute(expanded)) throw new Error(`${name} must be an absolute path (or start with ~/).`);
   return resolve(expanded);

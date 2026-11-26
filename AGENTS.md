@@ -51,7 +51,7 @@ npm --prefix packages/pi-telegram run typecheck
 npm --prefix packages/pi-telegram test
 ```
 
-Run focused checks while changing code, then the root suite for shared integration, imports, path changes, or final verification. Read failures; do not weaken a regression test to obtain a green run. Add relevant tests for behavioral changes. Package `test`/`check`/`link-host` scripts are checkout-only where they reference files excluded from the tarball (`tests/`, package-local `scripts/`); they are not runtime entry points.
+Run focused checks while changing code, then the root suite for shared integration, imports, path changes, or final verification. Read failures; do not weaken a regression test to obtain a green run. Add relevant tests for behavioral changes. Package `test`/`check` scripts are checkout-only where they reference files excluded from the tarball (`tests/`, package-local `scripts/`); they are not runtime entry points.
 
 Use synthetic providers, isolated agent directories, fake clocks/transports, real local SQLite where appropriate, and read-only loader verification without session startup. Never use real memory, sessions, user skills, Telegram ownership/cursors, credentials, or live provider calls as test fixtures.
 

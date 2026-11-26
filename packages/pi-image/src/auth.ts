@@ -27,7 +27,7 @@ export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
  * Parse a minimal .env file: `KEY=VALUE` lines with optional `export`, blank lines,
  * `#` comments, and single- or double-quoted values. No expansion or escape handling.
  */
-export function parseDotEnv(source: string): Record<string, string> {
+function parseDotEnv(source: string): Record<string, string> {
   const values: Record<string, string> = {};
   for (const rawLine of source.split(/\r?\n/)) {
     const line = rawLine.trim();

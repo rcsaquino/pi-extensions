@@ -15,8 +15,7 @@
   "scripts": {
     "test": "node --import ./scripts/no-network.mjs --test --test-concurrency=1 *.test.mjs",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm test",
-    "link-host": "node scripts/link-host.mjs"
+    "verify": "npm run typecheck && npm test"
   },
   "peerDependencies": { "@earendil-works/pi-coding-agent": ">=1.6.0 <2" },
   "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },

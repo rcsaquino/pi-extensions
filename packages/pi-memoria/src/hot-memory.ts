@@ -69,7 +69,7 @@ export function fitHotMemory(entries: HotMemory[], target?: HotMemory): { kept: 
  * pre-change list, `proposed` includes the requested add/edit, and `entry` is
  * the proposed or duplicated rule.
  */
-export function hotCapacityDetails(reason: string, operation: string, current: HotMemory[], proposed: HotMemory[], entry: HotMemory) {
+function hotCapacityDetails(reason: string, operation: string, current: HotMemory[], proposed: HotMemory[], entry: HotMemory) {
   const currentCharacters = renderHotMemory(current).length;
   const proposedCharacters = renderHotMemory(proposed).length;
   const eligible = current

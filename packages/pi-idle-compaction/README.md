@@ -117,7 +117,7 @@ Runtime modules:
 - `controller.mjs`: timers, thresholds, history invalidation, and lease lifetime.
 - `background.mjs`: bounded provider snapshots and provider admission, without foreign runtime files.
 
-Tests use fake timers/compaction, private local fixtures, and the actual Pi loader. A test-only preload forbids network operations. The isolated loader check requires no runtime `node_modules` or companion package. Its host-version gate accepts the declared `>=1.5.0 <2` range, not a pinned validation minor; actual public loading, registration, commands, and cleanup must still pass. A matching version alone does not establish compatibility.
+Tests use fake timers/compaction, private local fixtures, and the actual Pi loader. A test-only preload forbids network operations. The isolated loader check requires no runtime `node_modules` or companion package. Its host-version gate accepts the declared `>=1.6.0 <2` range, not a pinned validation minor; actual public loading, registration, commands, and cleanup must still pass. A matching version alone does not establish compatibility.
 
 Read [AGENTS.md](AGENTS.md) for race/recovery regression requirements. Passing tests does not prove a paid compaction, a real 60-minute idle soak, or activation in a running host.
 

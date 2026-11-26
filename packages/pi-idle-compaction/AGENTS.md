@@ -24,7 +24,6 @@ Install dependencies only when needed. Node `>=26.12.0 <27` and coding-agent `>=
 - `rotation.mjs`: compaction payload capture, retained-tail projection, and seeding the replacement session.
 - `background.mjs`: optional neutral provider contract with session/global scope, bounded status validation, and standalone admission without foreign runtime files.
 - `scripts/no-network.mjs`: test-process preload only; never a runtime dependency.
-- `scripts/link-host.mjs`: package-local development host linking; the root helper handles missing/broken links across packages.
 
 ## Invariants
 

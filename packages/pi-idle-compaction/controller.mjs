@@ -1,5 +1,5 @@
 export const IDLE_MS = 60 * 60 * 1000;
-export const MIN_TOKENS = 100_000;
+const MIN_TOKENS = 100_000;
 
 // Pure timer controller; Pi owns summarization, retained history, and prompts.
 // A background admission lease is held through compaction, not merely sampled.

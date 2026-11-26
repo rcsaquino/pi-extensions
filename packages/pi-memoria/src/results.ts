@@ -118,7 +118,7 @@ export interface SessionReadDetails {
 }
 
 /** Drop a UTF-8 prefix without splitting a multibyte sequence or surrogate pair. */
-export function truncateUtf8(text: string, maxBytes: number): string {
+function truncateUtf8(text: string, maxBytes: number): string {
   if (maxBytes <= 0) return "";
   if (Buffer.byteLength(text) <= maxBytes) return text;
   const encoded = Buffer.from(text, "utf8");

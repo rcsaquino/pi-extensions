@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { migrateRecords, persistRecords, readRecords } from "./delivery-ledger-storage.ts";
 export { LEDGER_SLOTS, LEDGER_RECORD_BYTES, LEDGER_RETENTION_MS, LEDGER_BYTES } from "./delivery-ledger-storage.ts";
-export const phases = ["task_captured", "notice_queued", "notice_suppressed", "report_submitted", "report_started", "generated", "settled", "cancelled", "suppressed", "send_attempt", "api_attempt", "api_ack", "api_rejected", "api_failed", "sent", "send_failed"] as const;
-export const operations = ["reply", "warning", "attachment", "voice", "notice", "incoming", "service"] as const;
-export const outcomes = ["not_applicable", "pending", "acknowledged", "rejected", "unknown", "suppressed"] as const;
-export const reasons = ["foreign_input", "unowned_user_start", "custom_interruption", "context_revoked", "owner_session_or_allowlist_changed", "outcome_unknown", "navigation_or_shutdown", "route_expired", "queue_full", "start_failed", "start_watchdog", "voice_only", "empty_final", "agent_aborted", "agent_error", "local_refusal", "local_failure"] as const;
+// Retired values stay listed so older ledgers remain readable; see the legacy ledger notes in README.md.
+const phases = ["task_captured", "notice_queued", "notice_suppressed", "report_submitted", "report_started", "generated", "settled", "cancelled", "suppressed", "send_attempt", "api_attempt", "api_ack", "api_rejected", "api_failed", "sent", "send_failed"] as const;
+const operations = ["reply", "warning", "attachment", "voice", "notice", "incoming", "service"] as const;
+const outcomes = ["not_applicable", "pending", "acknowledged", "rejected", "unknown", "suppressed"] as const;
+const reasons = ["foreign_input", "unowned_user_start", "custom_interruption", "context_revoked", "owner_session_or_allowlist_changed", "outcome_unknown", "navigation_or_shutdown", "route_expired", "queue_full", "start_failed", "start_watchdog", "voice_only", "empty_final", "agent_aborted", "agent_error", "local_refusal", "local_failure"] as const;
 export const methods = ["sendMessage", "sendRichMessage", "sendDocument", "sendPhoto", "sendVideo", "sendVoice", "sendMediaGroup", "getUpdates", "getMe", "getWebhookInfo", "deleteMyCommands", "sendChatAction", "getFile", "download", "transcribe", "generateSpeech", "other"] as const;
-export const transportCodes = ["TG_TRANSPORT_CANCELLED", "TG_TRANSPORT_TIMEOUT", "TG_TRANSPORT_FAILED", "TG_TRANSPORT_RESPONSE"] as const;
-export const causeCodes = ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET", "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_SSL_WRONG_VERSION_NUMBER", "unknown"] as const;
+const transportCodes = ["TG_TRANSPORT_CANCELLED", "TG_TRANSPORT_TIMEOUT", "TG_TRANSPORT_FAILED", "TG_TRANSPORT_RESPONSE"] as const;
+const causeCodes = ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET", "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_SSL_WRONG_VERSION_NUMBER", "unknown"] as const;
 export type CauseCode = typeof causeCodes[number];
 export interface DeliveryRecord {
   v: 1; at: number; event: string; writer?: string; sequence?: number; phase: typeof phases[number]; operation: typeof operations[number]; outcome: typeof outcomes[number];

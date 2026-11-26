@@ -134,7 +134,7 @@ During a Telegram run, the same chat's corrections use Pi **steering** at the ne
 > [!IMPORTANT]
 > Allowlisted users and the local TUI share one Pi conversation. This is not isolated multi-user hosting. The input buffer and pending work are not a durable job queue.
 
-`pi-telegram` is a standalone transport. It binds one Pi session to one destination chat and mirrors every settled assistant turn to Telegram. A Telegram request replies to its originating chat; a local TUI prompt, an extension-injected notice such as `subagent-notice`, or any other programmatic turn is delivered to the bound destination chat. There is no ownership event, claim listener, last-chat fallback, per-report route, or seven-day route expiry.
+`pi-telegram` is a standalone transport. It binds one Pi session to one destination chat and mirrors every settled assistant turn to Telegram. A Telegram request replies to its originating chat; a local TUI prompt, an extension-injected notice such as `background-task-notice`, or any other programmatic turn is delivered to the bound destination chat. There is no ownership event, claim listener, last-chat fallback, per-report route, or seven-day route expiry.
 
 An inbound request must still pass the private-chat allowlist and uses one-use reply admission. The run's final is delivered once at settlement; thinking, intermediate commentary, tool results and streaming deltas are not. Other chats stay FIFO queued behind the active run, and only a message from the active request's own chat may steer it. A local/RPC input during an in-flight Telegram run no longer cancels the reply: it joins the same Pi conversation, and the turn settles once.
 
